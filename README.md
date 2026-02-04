@@ -1,11 +1,11 @@
-# 🏆 ITSM AI Platform - Intelligent IT Service Management with AI & Automation
+#  ITSM AI Platform - Intelligent IT Service Management with AI & Automation
 
-## 📚 Academic Project - Engineering Thesis (PFE)
+##  Academic Project - Engineering Thesis (PFE)
 *Projet de Fin d'Études - Cycle Ingénieur | 5-Month Research & Development Project*
 
 ---
 
-## 🎖️ Project Overview
+##  Project Overview
 
 ### **The Challenge**
 Modern IT Service Desks face escalating ticket volumes, complex technical issues, and increasing user expectations. Manual ticket triage, misrouting, and knowledge fragmentation lead to extended resolution times, agent burnout, and poor service quality.
@@ -15,6 +15,6 @@ An intelligent ITSM platform that combines **AI-driven classification**, **n8n w
 
 ---
 
-## 🏗️ System Architecture
+##  System Architecture
 
 ### **Core Components**
