@@ -1,0 +1,567 @@
+"""Seed the database with mock users and tickets for local development."""
+
+from __future__ import annotations
+
+import datetime as dt
+import sys
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+sys.path.append(str(BASE_DIR))
+
+from app.core.security import hash_password  # noqa: E402
+from app.db.session import SessionLocal  # noqa: E402
+from app.models.enums import (
+    RecommendationImpact,
+    RecommendationType,
+    TicketCategory,
+    TicketPriority,
+    TicketStatus,
+    UserRole,
+)  # noqa: E402
+from app.models.ticket import Ticket, TicketComment  # noqa: E402
+from app.models.recommendation import Recommendation  # noqa: E402
+from app.models.user import User  # noqa: E402
+
+
+def parse_dt(value: str) -> dt.datetime:
+    return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+USERS = [
+    {
+        "email": "admin@teamwill.com",
+        "password": "admin123",
+        "name": "Admin TeamWill",
+        "role": UserRole.admin,
+    },
+    {
+        "email": "agent@teamwill.com",
+        "password": "agent123",
+        "name": "Karim Benali",
+        "role": UserRole.agent,
+    },
+    {
+        "email": "viewer@teamwill.com",
+        "password": "viewer123",
+        "name": "Sophie Leclerc",
+        "role": UserRole.viewer,
+    },
+    {
+        "email": "user@teamwill.com",
+        "password": "user123",
+        "name": "Maya Haddad",
+        "role": UserRole.viewer,
+    },
+]
+
+TICKETS = [
+    {
+        "id": "TW-1001",
+        "title": "Erreur de connexion au portail client",
+        "description": "Les utilisateurs signalent une erreur 503 lors de la connexion au portail client depuis ce matin. Le probleme semble intermittent et affecte environ 30% des utilisateurs.",
+        "status": TicketStatus.in_progress,
+        "priority": TicketPriority.critical,
+        "category": TicketCategory.bug,
+        "assignee": "Karim Benali",
+        "reporter": "Sarah Martin",
+        "created_at": "2026-02-01T08:30:00Z",
+        "updated_at": "2026-02-03T14:20:00Z",
+        "resolution": None,
+        "tags": ["portail", "authentification", "production"],
+        "comments": [
+            {"id": "c1", "author": "Karim Benali", "content": "J'ai identifie le probleme - le service d'authentification est sature. Je travaille sur un correctif.", "created_at": "2026-02-01T10:15:00Z"},
+            {"id": "c2", "author": "Sarah Martin", "content": "Merci Karim, les clients sont impatients. Combien de temps pour la resolution ?", "created_at": "2026-02-01T11:00:00Z"},
+        ],
+    },
+    {
+        "id": "TW-1002",
+        "title": "Migration base de donnees vers PostgreSQL 16",
+        "description": "Planifier et executer la migration de la base de donnees principale vers PostgreSQL 16 pour beneficier des ameliorations de performance.",
+        "status": TicketStatus.pending,
+        "priority": TicketPriority.high,
+        "category": TicketCategory.infrastructure,
+        "assignee": "Youssef Hamdi",
+        "reporter": "Marc Dupont",
+        "created_at": "2026-01-25T09:00:00Z",
+        "updated_at": "2026-02-02T16:45:00Z",
+        "resolution": None,
+        "tags": ["database", "migration", "postgresql"],
+        "comments": [
+            {"id": "c3", "author": "Youssef Hamdi", "content": "Plan de migration termine. En attente de validation de l'equipe DBA.", "created_at": "2026-01-28T14:00:00Z"},
+        ],
+    },
+    {
+        "id": "TW-1003",
+        "title": "Ajout du module de reporting avance",
+        "description": "Implementer un nouveau module de reporting avec des tableaux de bord interactifs et des exports PDF/Excel pour les managers.",
+        "status": TicketStatus.open,
+        "priority": TicketPriority.medium,
+        "category": TicketCategory.feature,
+        "assignee": "Amina Rafi",
+        "reporter": "Jean-Pierre Laurent",
+        "created_at": "2026-02-03T10:00:00Z",
+        "updated_at": "2026-02-03T10:00:00Z",
+        "resolution": None,
+        "tags": ["reporting", "dashboard", "export"],
+        "comments": [],
+    },
+    {
+        "id": "TW-1004",
+        "title": "Vulnerabilite XSS dans le formulaire de contact",
+        "description": "Une vulnerabilite XSS a ete detectee dans le formulaire de contact du site web. Les inputs ne sont pas correctement sanitizes.",
+        "status": TicketStatus.in_progress,
+        "priority": TicketPriority.critical,
+        "category": TicketCategory.security,
+        "assignee": "Nadia Boucher",
+        "reporter": "Thomas Bernard",
+        "created_at": "2026-02-02T15:30:00Z",
+        "updated_at": "2026-02-04T09:00:00Z",
+        "resolution": None,
+        "tags": ["securite", "xss", "urgent"],
+        "comments": [
+            {"id": "c4", "author": "Nadia Boucher", "content": "Correctif en cours de test. Deploiement prevu ce soir.", "created_at": "2026-02-04T09:00:00Z"},
+        ],
+    },
+    {
+        "id": "TW-1005",
+        "title": "Optimisation des temps de chargement",
+        "description": "Les pages du dashboard prennent plus de 5 secondes a charger. Besoin d'optimiser les requetes SQL et le cache.",
+        "status": TicketStatus.resolved,
+        "priority": TicketPriority.high,
+        "category": TicketCategory.bug,
+        "assignee": "Karim Benali",
+        "reporter": "Sophie Leclerc",
+        "created_at": "2026-01-20T08:00:00Z",
+        "updated_at": "2026-01-30T17:00:00Z",
+        "resolution": "Optimisation des requetes N+1, ajout de cache Redis, et lazy loading des composants. Temps de chargement reduit a 1.2s.",
+        "tags": ["performance", "optimization", "cache"],
+        "comments": [
+            {"id": "c5", "author": "Karim Benali", "content": "Requetes optimisees et cache mis en place. Temps de chargement passe de 5.2s a 1.2s.", "created_at": "2026-01-30T17:00:00Z"},
+        ],
+    },
+    {
+        "id": "TW-1006",
+        "title": "Integration API partenaire LogiTrans",
+        "description": "Mettre en place l'integration avec l'API REST du partenaire LogiTrans pour la synchronisation des donnees de livraison.",
+        "status": TicketStatus.open,
+        "priority": TicketPriority.medium,
+        "category": TicketCategory.feature,
+        "assignee": "Youssef Hamdi",
+        "reporter": "Marc Dupont",
+        "created_at": "2026-02-04T11:00:00Z",
+        "updated_at": "2026-02-04T11:00:00Z",
+        "resolution": None,
+        "tags": ["integration", "api", "partenaire"],
+        "comments": [],
+    },
+    {
+        "id": "TW-1007",
+        "title": "Probleme d'envoi de notifications email",
+        "description": "Les notifications par email ne sont plus envoyees depuis la mise a jour du serveur SMTP. Les utilisateurs ne recoivent plus les confirmations.",
+        "status": TicketStatus.closed,
+        "priority": TicketPriority.high,
+        "category": TicketCategory.bug,
+        "assignee": "Amina Rafi",
+        "reporter": "Sarah Martin",
+        "created_at": "2026-01-15T09:30:00Z",
+        "updated_at": "2026-01-18T14:00:00Z",
+        "resolution": "Configuration SMTP mise a jour avec les nouveaux certificats SSL. Tests valides en production.",
+        "tags": ["email", "smtp", "notifications"],
+        "comments": [
+            {"id": "c6", "author": "Amina Rafi", "content": "Configuration SMTP corrigee. Les emails partent correctement maintenant.", "created_at": "2026-01-18T14:00:00Z"},
+        ],
+    },
+    {
+        "id": "TW-1008",
+        "title": "Mise a jour du framework Angular vers v19",
+        "description": "Mettre a jour le framework front-end Angular de la version 17 vers la version 19 pour le projet ClientPortal.",
+        "status": TicketStatus.pending,
+        "priority": TicketPriority.medium,
+        "category": TicketCategory.infrastructure,
+        "assignee": "Nadia Boucher",
+        "reporter": "Jean-Pierre Laurent",
+        "created_at": "2026-01-28T10:00:00Z",
+        "updated_at": "2026-02-01T11:30:00Z",
+        "resolution": None,
+        "tags": ["angular", "framework", "upgrade"],
+        "comments": [
+            {"id": "c7", "author": "Nadia Boucher", "content": "Analyse d'impact terminee. 3 breaking changes identifiees.", "created_at": "2026-02-01T11:30:00Z"},
+        ],
+    },
+    {
+        "id": "TW-1009",
+        "title": "Support multi-langue pour l'application mobile",
+        "description": "Ajouter le support francais, anglais et arabe pour l'application mobile TeamWill Connect.",
+        "status": TicketStatus.in_progress,
+        "priority": TicketPriority.medium,
+        "category": TicketCategory.feature,
+        "assignee": "Karim Benali",
+        "reporter": "Thomas Bernard",
+        "created_at": "2026-01-22T09:00:00Z",
+        "updated_at": "2026-02-03T16:00:00Z",
+        "resolution": None,
+        "tags": ["i18n", "mobile", "localisation"],
+        "comments": [
+            {"id": "c8", "author": "Karim Benali", "content": "FR et EN termines, AR en cours (RTL support).", "created_at": "2026-02-03T16:00:00Z"},
+        ],
+    },
+    {
+        "id": "TW-1010",
+        "title": "Audit de securite trimestriel Q1 2026",
+        "description": "Realiser l'audit de securite complet des applications web et mobiles pour le premier trimestre 2026.",
+        "status": TicketStatus.open,
+        "priority": TicketPriority.high,
+        "category": TicketCategory.security,
+        "assignee": "Nadia Boucher",
+        "reporter": "Marc Dupont",
+        "created_at": "2026-02-05T08:00:00Z",
+        "updated_at": "2026-02-05T08:00:00Z",
+        "resolution": None,
+        "tags": ["audit", "securite", "compliance"],
+        "comments": [],
+    },
+    {
+        "id": "TW-1011",
+        "title": "Bug affichage sur Safari iOS",
+        "description": "Les tableaux de donnees ne s'affichent pas correctement sur Safari iOS 17. Les colonnes debordent et le scroll horizontal ne fonctionne pas.",
+        "status": TicketStatus.closed,
+        "priority": TicketPriority.low,
+        "category": TicketCategory.bug,
+        "assignee": "Amina Rafi",
+        "reporter": "Sophie Leclerc",
+        "created_at": "2026-01-10T14:00:00Z",
+        "updated_at": "2026-01-15T10:00:00Z",
+        "resolution": "Correction CSS avec overflow-x: auto et -webkit-overflow-scrolling: touch. Teste sur iPhone 15 et iPad Air.",
+        "tags": ["safari", "ios", "responsive"],
+        "comments": [],
+    },
+    {
+        "id": "TW-1012",
+        "title": "Configuration CI/CD pour le nouveau microservice",
+        "description": "Configurer le pipeline CI/CD avec GitHub Actions pour le nouveau microservice de facturation.",
+        "status": TicketStatus.resolved,
+        "priority": TicketPriority.medium,
+        "category": TicketCategory.infrastructure,
+        "assignee": "Youssef Hamdi",
+        "reporter": "Marc Dupont",
+        "created_at": "2026-01-18T11:00:00Z",
+        "updated_at": "2026-01-25T15:00:00Z",
+        "resolution": "Pipeline CI/CD configure avec tests automatises, build Docker, et deploiement automatique sur staging.",
+        "tags": ["cicd", "github-actions", "docker"],
+        "comments": [
+            {"id": "c9", "author": "Youssef Hamdi", "content": "Pipeline fonctionnel. Build + deploy en 4 minutes.", "created_at": "2026-01-25T15:00:00Z"},
+        ],
+    },
+    {
+        "id": "TW-1013",
+        "title": "Demande d'acces VPN pour consultant externe",
+        "description": "Configurer l'acces VPN pour le nouveau consultant externe M. Ahmed Fathi qui rejoint l'equipe infrastructure.",
+        "status": TicketStatus.closed,
+        "priority": TicketPriority.low,
+        "category": TicketCategory.support,
+        "assignee": "Karim Benali",
+        "reporter": "Sarah Martin",
+        "created_at": "2026-02-01T07:00:00Z",
+        "updated_at": "2026-02-01T12:00:00Z",
+        "resolution": "Acces VPN configure et credentials envoyes par email securise.",
+        "tags": ["vpn", "acces", "consultant"],
+        "comments": [],
+    },
+    {
+        "id": "TW-1014",
+        "title": "Erreur lors de l'export CSV des rapports",
+        "description": "L'export CSV genere des fichiers corrompus quand le rapport contient plus de 10 000 lignes. Les caracteres speciaux ne sont pas encodes correctement.",
+        "status": TicketStatus.open,
+        "priority": TicketPriority.medium,
+        "category": TicketCategory.bug,
+        "assignee": "Amina Rafi",
+        "reporter": "Jean-Pierre Laurent",
+        "created_at": "2026-02-05T14:00:00Z",
+        "updated_at": "2026-02-05T14:00:00Z",
+        "resolution": None,
+        "tags": ["export", "csv", "encoding"],
+        "comments": [],
+    },
+    {
+        "id": "TW-1015",
+        "title": "Implementation SSO avec Azure AD",
+        "description": "Configurer l'authentification unique (SSO) via Azure Active Directory pour tous les outils internes TeamWill.",
+        "status": TicketStatus.pending,
+        "priority": TicketPriority.high,
+        "category": TicketCategory.security,
+        "assignee": "Nadia Boucher",
+        "reporter": "Thomas Bernard",
+        "created_at": "2026-01-30T09:00:00Z",
+        "updated_at": "2026-02-04T10:00:00Z",
+        "resolution": None,
+        "tags": ["sso", "azure-ad", "authentification"],
+        "comments": [
+            {"id": "c10", "author": "Nadia Boucher", "content": "Configuration Azure AD terminee. Tests d'integration en cours.", "created_at": "2026-02-04T10:00:00Z"},
+        ],
+    },
+    {
+        "id": "TW-1016",
+        "title": "Incident: latence elevee sur l'API ticketing",
+        "description": "Les requetes de lecture sur l'API ticketing depassent 2s depuis hier soir. Les logs montrent des pics d'I/O sur la base.",
+        "status": TicketStatus.in_progress,
+        "priority": TicketPriority.critical,
+        "category": TicketCategory.infrastructure,
+        "assignee": "Youssef Hamdi",
+        "reporter": "Aicha Louati",
+        "created_at": "2026-02-05T19:30:00Z",
+        "updated_at": "2026-02-06T09:15:00Z",
+        "resolution": None,
+        "tags": ["api", "performance", "database"],
+        "comments": [
+            {"id": "c11", "author": "Youssef Hamdi", "content": "Analyse en cours: requetes lentes sur tickets + index manquant.", "created_at": "2026-02-05T20:10:00Z"},
+            {"id": "c12", "author": "Aicha Louati", "content": "Impact: agents bloquent sur le tableau de bord.", "created_at": "2026-02-05T21:05:00Z"},
+        ],
+    },
+    {
+        "id": "TW-1017",
+        "title": "Demande de creation d'un tableau de bord SLA",
+        "description": "Les managers souhaitent un tableau de bord SLA avec MTTR, taux d'escalade, et tickets en retard par equipe.",
+        "status": TicketStatus.open,
+        "priority": TicketPriority.medium,
+        "category": TicketCategory.feature,
+        "assignee": "Amina Rafi",
+        "reporter": "Yanis Karray",
+        "created_at": "2026-02-06T10:00:00Z",
+        "updated_at": "2026-02-06T10:00:00Z",
+        "resolution": None,
+        "tags": ["sla", "dashboard", "reporting"],
+        "comments": [],
+    },
+    {
+        "id": "TW-1018",
+        "title": "Incident: echec des webhooks JSM",
+        "description": "Les webhooks Jira Service Management ne declenchent plus les workflows n8n depuis 24h.",
+        "status": TicketStatus.pending,
+        "priority": TicketPriority.high,
+        "category": TicketCategory.support,
+        "assignee": "Karim Benali",
+        "reporter": "Imen Sassi",
+        "created_at": "2026-02-05T08:40:00Z",
+        "updated_at": "2026-02-06T12:20:00Z",
+        "resolution": None,
+        "tags": ["jsm", "webhook", "n8n"],
+        "comments": [
+            {"id": "c13", "author": "Karim Benali", "content": "Connexion JSM verifiee. Suspecte une rotation de secret.", "created_at": "2026-02-06T09:40:00Z"},
+        ],
+    },
+    {
+        "id": "TW-1019",
+        "title": "Mise en place d'un catalogue de services IT",
+        "description": "Creer un catalogue de services IT avec categories, formulaires et SLA par service.",
+        "status": TicketStatus.open,
+        "priority": TicketPriority.medium,
+        "category": TicketCategory.feature,
+        "assignee": "Nadia Boucher",
+        "reporter": "Leila Ben Amor",
+        "created_at": "2026-02-04T09:10:00Z",
+        "updated_at": "2026-02-04T09:10:00Z",
+        "resolution": None,
+        "tags": ["catalogue", "itil", "services"],
+        "comments": [],
+    },
+    {
+        "id": "TW-1020",
+        "title": "Demande: automatiser l'assignation par categorie",
+        "description": "Automatiser l'assignation des tickets selon la categorie et la charge des agents.",
+        "status": TicketStatus.open,
+        "priority": TicketPriority.high,
+        "category": TicketCategory.support,
+        "assignee": "Karim Benali",
+        "reporter": "Amine Dali",
+        "created_at": "2026-02-06T15:00:00Z",
+        "updated_at": "2026-02-06T15:00:00Z",
+        "resolution": None,
+        "tags": ["automation", "assignment", "workflows"],
+        "comments": [],
+    },
+    {
+        "id": "TW-1021",
+        "title": "Vulnerabilite dependance frontend",
+        "description": "Une alerte SCA signale une vulnerabilite critique sur une dependance frontend utilisee par le portail.",
+        "status": TicketStatus.in_progress,
+        "priority": TicketPriority.critical,
+        "category": TicketCategory.security,
+        "assignee": "Amina Rafi",
+        "reporter": "Security Bot",
+        "created_at": "2026-02-06T07:20:00Z",
+        "updated_at": "2026-02-06T13:05:00Z",
+        "resolution": None,
+        "tags": ["security", "sca", "dependencies"],
+        "comments": [
+            {"id": "c14", "author": "Amina Rafi", "content": "Mise a jour de la dependance en cours + tests de non regression.", "created_at": "2026-02-06T12:45:00Z"},
+        ],
+    },
+    {
+        "id": "TW-1022",
+        "title": "Incident: file de mails en attente",
+        "description": "Les emails de confirmation restent en file d'attente. Le serveur SMTP retourne des rejections temporaires.",
+        "status": TicketStatus.pending,
+        "priority": TicketPriority.medium,
+        "category": TicketCategory.infrastructure,
+        "assignee": "Youssef Hamdi",
+        "reporter": "NOC Team",
+        "created_at": "2026-02-06T04:10:00Z",
+        "updated_at": "2026-02-06T08:30:00Z",
+        "resolution": None,
+        "tags": ["smtp", "queue", "notifications"],
+        "comments": [
+            {"id": "c15", "author": "Youssef Hamdi", "content": "Verification SPF/DKIM en cours. Plan d'action avec l'admin email.", "created_at": "2026-02-06T08:00:00Z"},
+        ],
+    },
+]
+
+RECOMMENDATIONS = [
+    {
+        "id": "REC-1",
+        "type": RecommendationType.pattern,
+        "title": "Problemes recurrents d'authentification detectes",
+        "description": "3 tickets lies a des problemes d'authentification ont ete ouverts ce mois-ci. Le service d'authentification semble fragile lors de pics de charge. Recommandation: implementer un circuit breaker et augmenter les replicas du service auth.",
+        "related_tickets": ["TW-1001", "TW-1015"],
+        "confidence": 92,
+        "impact": RecommendationImpact.high,
+        "created_at": "2026-02-05T09:30:00Z",
+    },
+    {
+        "id": "REC-2",
+        "type": RecommendationType.solution,
+        "title": "Resolution automatisee pour les bugs d'affichage Safari",
+        "description": "Basee sur la resolution de TW-1011, les futurs bugs d'affichage Safari peuvent etre resolus en appliquant: overflow-x: auto, -webkit-overflow-scrolling: touch, et flex-shrink: 0 sur les conteneurs de tableaux.",
+        "related_tickets": ["TW-1011"],
+        "confidence": 85,
+        "impact": RecommendationImpact.medium,
+        "created_at": "2026-02-02T11:15:00Z",
+    },
+    {
+        "id": "REC-3",
+        "type": RecommendationType.priority,
+        "title": "Reattribuer la priorite de TW-1014 (export CSV)",
+        "description": "L'analyse des impacts montre que le bug d'export CSV affecte 15 managers qui generent des rapports hebdomadaires. Suggestion: passer de priorite Moyenne a Haute.",
+        "related_tickets": ["TW-1014"],
+        "confidence": 78,
+        "impact": RecommendationImpact.medium,
+        "created_at": "2026-02-05T14:15:00Z",
+    },
+    {
+        "id": "REC-4",
+        "type": RecommendationType.workflow,
+        "title": "Optimisation du flux de traitement des tickets securite",
+        "description": "Les tickets de securite prennent en moyenne 4.5 jours avant la premiere action. Recommandation: creer une file prioritaire avec notification immediate et SLA de 2h pour la premiere reponse.",
+        "related_tickets": ["TW-1004", "TW-1010", "TW-1015"],
+        "confidence": 88,
+        "impact": RecommendationImpact.high,
+        "created_at": "2026-02-03T10:45:00Z",
+    },
+    {
+        "id": "REC-5",
+        "type": RecommendationType.pattern,
+        "title": "Correlation entre les mises a jour framework et les bugs",
+        "description": "Les mises a jour de frameworks (Angular, React) generent en moyenne 3 tickets de regression dans les 2 semaines suivantes. Recommandation: renforcer les tests de regression automatises avant chaque mise a jour majeure.",
+        "related_tickets": ["TW-1008", "TW-1011"],
+        "confidence": 81,
+        "impact": RecommendationImpact.medium,
+        "created_at": "2026-02-01T16:00:00Z",
+    },
+    {
+        "id": "REC-6",
+        "type": RecommendationType.solution,
+        "title": "Template de resolution pour les problemes SMTP",
+        "description": "Base sur les resolutions precedentes, les problemes d'envoi d'email sont generalement lies a: 1) Expiration des certificats SSL, 2) Changement de configuration serveur, 3) Blocage par pare-feu. Appliquer cette checklist pour les futurs tickets similaires.",
+        "related_tickets": ["TW-1007"],
+        "confidence": 90,
+        "impact": RecommendationImpact.low,
+        "created_at": "2026-01-18T09:30:00Z",
+    },
+    {
+        "id": "REC-7",
+        "type": RecommendationType.workflow,
+        "title": "Declenchement automatique d'escalade SLA",
+        "description": "Les tickets critiques devraient declencher une escalade automatique apres 2h sans action. Recommandation: workflow n8n avec notification manager + creation tache.",
+        "related_tickets": ["TW-1016", "TW-1021"],
+        "confidence": 84,
+        "impact": RecommendationImpact.high,
+        "created_at": "2026-02-06T18:20:00Z",
+    },
+    {
+        "id": "REC-8",
+        "type": RecommendationType.solution,
+        "title": "Checklist d'analyse latence API",
+        "description": "Mettre en place une checklist standard: index DB, pool connexions, cache des endpoints frequents, monitoring des requetes lentes.",
+        "related_tickets": ["TW-1016"],
+        "confidence": 79,
+        "impact": RecommendationImpact.medium,
+        "created_at": "2026-02-06T19:00:00Z",
+    },
+]
+
+
+def seed() -> None:
+    db = SessionLocal()
+
+    for user in USERS:
+        if not db.query(User).filter(User.email == user["email"]).first():
+            db.add(
+                User(
+                    email=user["email"],
+                    name=user["name"],
+                    role=user["role"],
+                    password_hash=hash_password(user["password"]),
+                    is_verified=True,
+                )
+            )
+
+    for ticket in TICKETS:
+        if db.query(Ticket).filter(Ticket.id == ticket["id"]).first():
+            continue
+        ticket_record = Ticket(
+            id=ticket["id"],
+            title=ticket["title"],
+            description=ticket["description"],
+            status=ticket["status"],
+            priority=ticket["priority"],
+            category=ticket["category"],
+            assignee=ticket["assignee"],
+            reporter=ticket["reporter"],
+            created_at=parse_dt(ticket["created_at"]),
+            updated_at=parse_dt(ticket["updated_at"]),
+            resolution=ticket["resolution"],
+            tags=ticket["tags"],
+        )
+        for comment in ticket["comments"]:
+            ticket_record.comments.append(
+                TicketComment(
+                    id=comment["id"],
+                    author=comment["author"],
+                    content=comment["content"],
+                    created_at=parse_dt(comment["created_at"]),
+                )
+            )
+        db.add(ticket_record)
+
+    for rec in RECOMMENDATIONS:
+        if db.query(Recommendation).filter(Recommendation.id == rec["id"]).first():
+            continue
+        db.add(
+            Recommendation(
+                id=rec["id"],
+                type=rec["type"],
+                title=rec["title"],
+                description=rec["description"],
+                related_tickets=rec["related_tickets"],
+                confidence=rec["confidence"],
+                impact=rec["impact"],
+                created_at=parse_dt(rec["created_at"]),
+            )
+        )
+
+    db.commit()
+    db.close()
+
+
+if __name__ == "__main__":
+    seed()
