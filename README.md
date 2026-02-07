@@ -1,7 +1,5 @@
 #  ITSM AI Platform - Intelligent IT Service Management with AI & Automation
 
-##  Academic Project - Engineering Thesis (PFE)
-*Projet de Fin d'Études - Cycle Ingénieur | 5-Month Research & Development Project*
 
 ---
 
