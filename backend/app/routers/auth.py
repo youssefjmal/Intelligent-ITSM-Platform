@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.exceptions import AuthenticationException, BadRequestError, ConflictError, NotFoundError
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.models.enums import EmailKind
@@ -22,7 +23,7 @@ router = APIRouter()
 @router.post("/register", response_model=RegisterResponse)
 def register_user(payload: UserCreate, db: Session = Depends(get_db)) -> RegisterResponse:
     if db.query(User).filter(User.email == payload.email.lower()).first():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="email_exists")
+        raise ConflictError("email_exists", details={"email": payload.email.lower()})
 
     user = create_user(db, payload)
     token = create_verification_token(db, user)
@@ -38,9 +39,9 @@ def register_user(payload: UserCreate, db: Session = Depends(get_db)) -> Registe
 def login_user(payload: UserLogin, response: Response, db: Session = Depends(get_db)) -> UserOut:
     user = authenticate_user(db, payload.email, payload.password)
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_credentials")
+        raise AuthenticationException("invalid_credentials", error_code="INVALID_CREDENTIALS", status_code=401)
     if not user.is_verified:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="email_not_verified")
+        raise AuthenticationException("email_not_verified", error_code="EMAIL_NOT_VERIFIED", status_code=403)
 
     token = create_access_token({"sub": str(user.id), "role": user.role.value})
     response.set_cookie(
@@ -69,7 +70,7 @@ def me(current_user=Depends(get_current_user)) -> UserOut:
 def verify_email(payload: VerificationRequest, db: Session = Depends(get_db)) -> VerificationResponse:
     user = verify_email_token(db, payload.token)
     if not user:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_or_expired_token")
+        raise BadRequestError("invalid_or_expired_token")
 
     subject, body = build_welcome_email(user.name, user.role.value)
     log_email(db, user.email, subject, body, EmailKind.welcome)
@@ -81,9 +82,9 @@ def verify_email(payload: VerificationRequest, db: Session = Depends(get_db)) ->
 def resend_verification(payload: ResendVerificationRequest, db: Session = Depends(get_db)) -> RegisterResponse:
     user = db.query(User).filter(User.email == payload.email.lower()).first()
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user_not_found")
+        raise NotFoundError("user_not_found", details={"email": payload.email.lower()})
     if user.is_verified:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="already_verified")
+        raise ConflictError("already_verified", details={"email": payload.email.lower()})
 
     token = create_verification_token(db, user)
     subject, body = build_verification_email(user.name, token.token)

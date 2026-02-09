@@ -6,27 +6,45 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Badge } from "@/components/ui/badge"
 import { apiFetch } from "@/lib/api"
-import { Send, Bot, User, Sparkles, RotateCcw } from "lucide-react"
+import { Send, Bot, User, Sparkles, RotateCcw, Ticket, CheckCircle2 } from "lucide-react"
+import { useI18n } from "@/lib/i18n"
+import { useAuth } from "@/lib/auth"
+import { useRouter } from "next/navigation"
 
 type ChatMessage = {
   id: string
   role: "user" | "assistant"
   content: string
+  ticketDraft?: TicketDraft
 }
 
-const QUICK_PROMPTS = [
-  "Quels sont les tickets critiques en cours ?",
-  "Resume l'activite de la semaine",
-  "Quels tickets sont en attente depuis longtemps ?",
-  "Recommande des solutions pour les bugs recurrents",
-]
+type TicketDraft = {
+  title: string
+  description: string
+  priority: "critical" | "high" | "medium" | "low"
+  category: "bug" | "feature" | "support" | "infrastructure" | "security"
+  tags: string[]
+  assignee?: string | null
+}
 
 export function TicketChatbot() {
+  const { t, locale } = useI18n()
+  const { user } = useAuth()
+  const router = useRouter()
   const [input, setInput] = useState("")
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(false)
+  const [creatingId, setCreatingId] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  const quickPrompts = [
+    t("chat.prompt1"),
+    t("chat.prompt2"),
+    t("chat.prompt3"),
+    t("chat.prompt4"),
+  ]
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -36,25 +54,32 @@ export function TicketChatbot() {
 
   async function sendMessage(text: string) {
     if (!text.trim() || loading) return
-    const nextMessages = [...messages, { id: `m-${Date.now()}`, role: "user", content: text }]
+    const userMessage: ChatMessage = {
+      id: `m-${Date.now()}`,
+      role: "user",
+      content: text,
+    }
+    const nextMessages: ChatMessage[] = [...messages, userMessage]
     setMessages(nextMessages)
     setInput("")
     setLoading(true)
     try {
-      const result = await apiFetch<{ reply: string }>("/ai/chat", {
+      const result = await apiFetch<{ reply: string; action?: string; ticket?: TicketDraft }>("/ai/chat", {
         method: "POST",
         body: JSON.stringify({
           messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
+          locale,
         }),
       })
+      const ticketDraft = result.action === "create_ticket" ? result.ticket : undefined
       setMessages((prev) => [
         ...prev,
-        { id: `m-${Date.now()}-bot`, role: "assistant", content: result.reply },
+        { id: `m-${Date.now()}-bot`, role: "assistant", content: result.reply, ticketDraft },
       ])
     } catch {
       setMessages((prev) => [
         ...prev,
-        { id: `m-${Date.now()}-bot`, role: "assistant", content: "Une erreur est survenue." },
+        { id: `m-${Date.now()}-bot`, role: "assistant", content: t("chat.errorReply") },
       ])
     } finally {
       setLoading(false)
@@ -69,6 +94,42 @@ export function TicketChatbot() {
     sendMessage(prompt)
   }
 
+  async function handleCreateTicket(messageId: string, draft: TicketDraft) {
+    if (!user) return
+    setCreatingId(messageId)
+    try {
+      const created = await apiFetch<{ id: string }>("/tickets", {
+        method: "POST",
+        body: JSON.stringify({
+          title: draft.title,
+          description: draft.description,
+          priority: draft.priority,
+          category: draft.category,
+          assignee: draft.assignee || user.name,
+          reporter: user.name,
+          tags: draft.tags || [],
+        }),
+      })
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `m-${Date.now()}-created`,
+          role: "assistant",
+          content: `${t("chat.ticketCreated")} ${created.id}`,
+        },
+      ])
+      router.push(`/tickets/${created.id}`)
+      router.refresh()
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        { id: `m-${Date.now()}-error`, role: "assistant", content: t("chat.ticketCreateError") },
+      ])
+    } finally {
+      setCreatingId(null)
+    }
+  }
+
   return (
     <Card className="flex flex-col h-[calc(100vh-10rem)] border border-border">
       <CardHeader className="pb-3 border-b border-border shrink-0">
@@ -76,10 +137,10 @@ export function TicketChatbot() {
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
             <Bot className="h-4 w-4 text-primary" />
           </div>
-          Assistant IA - TeamWill
+          {t("chat.title")}
         </CardTitle>
         <p className="text-xs text-muted-foreground">
-          Posez vos questions sur les tickets, obtenez des recommandations et des analyses en temps reel.
+          {t("chat.subtitle")}
         </p>
       </CardHeader>
 
@@ -91,13 +152,13 @@ export function TicketChatbot() {
                 <Sparkles className="h-7 w-7 text-primary" />
               </div>
               <h3 className="text-base font-semibold text-foreground mb-1">
-                Comment puis-je vous aider ?
+                {t("chat.howHelp")}
               </h3>
               <p className="text-sm text-muted-foreground text-center max-w-sm mb-6">
-                Je peux analyser vos tickets, recommander des solutions et vous aider a prioriser votre travail.
+                {t("chat.helpDesc")}
               </p>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 max-w-lg w-full">
-                {QUICK_PROMPTS.map((prompt) => (
+                {quickPrompts.map((prompt) => (
                   <button
                     key={prompt}
                     type="button"
@@ -113,28 +174,85 @@ export function TicketChatbot() {
             <div className="space-y-4">
               {messages.map((message) => {
                 const isUser = message.role === "user"
+                const draft = message.ticketDraft
                 return (
-                  <div
-                    key={message.id}
-                    className={`flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}
-                  >
-                    {!isUser && (
-                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10">
-                        <Bot className="h-3.5 w-3.5 text-primary" />
-                      </div>
-                    )}
+                  <div key={message.id} className="space-y-3">
                     <div
-                      className={`max-w-[80%] rounded-xl px-3.5 py-2.5 text-sm leading-relaxed ${
-                        isUser
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-muted text-foreground"
-                      }`}
+                      className={`flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}
                     >
-                      <div className="whitespace-pre-wrap">{message.content}</div>
+                      {!isUser && (
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10">
+                          <Bot className="h-3.5 w-3.5 text-primary" />
+                        </div>
+                      )}
+                      <div
+                        className={`max-w-[80%] rounded-xl px-3.5 py-2.5 text-sm leading-relaxed ${
+                          isUser
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-muted text-foreground"
+                        }`}
+                      >
+                        <div className="whitespace-pre-wrap">{message.content}</div>
+                      </div>
+                      {isUser && (
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-foreground/10">
+                          <User className="h-3.5 w-3.5 text-foreground" />
+                        </div>
+                      )}
                     </div>
-                    {isUser && (
-                      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-foreground/10">
-                        <User className="h-3.5 w-3.5 text-foreground" />
+                    {draft && (
+                      <div className="ml-10 rounded-xl border border-border bg-card p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Ticket className="h-4 w-4 text-primary" />
+                      <span className="text-sm font-semibold text-foreground">{t("chat.ticketDraft")}</span>
+                    </div>
+                    <div className="space-y-2 text-xs text-muted-foreground">
+                      <div>
+                        <span className="font-medium text-foreground">{t("chat.ticketTitle")}:</span> {draft.title}
+                      </div>
+                      <div>
+                        <span className="font-medium text-foreground">{t("chat.ticketDescription")}:</span> {draft.description}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant="secondary" className="text-[10px]">
+                          {t(`priority.${draft.priority}` as "priority.medium")}
+                        </Badge>
+                        <Badge variant="outline" className="text-[10px]">
+                          {t(`category.${draft.category}` as "category.support")}
+                        </Badge>
+                        {draft.assignee && (
+                          <Badge variant="outline" className="text-[10px]">
+                            {t("chat.ticketAssignee")}: {draft.assignee}
+                          </Badge>
+                        )}
+                      </div>
+                      {draft.tags.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          <span className="font-medium text-foreground">{t("chat.ticketTags")}:</span>
+                          {draft.tags.map((tag) => (
+                            <Badge key={tag} variant="secondary" className="text-[10px]">
+                              {tag}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-3">
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="gap-2"
+                        disabled={creatingId === message.id}
+                        onClick={() => handleCreateTicket(message.id, draft)}
+                      >
+                        {creatingId === message.id ? (
+                          <RotateCcw className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                        )}
+                        {t("chat.createTicket")}
+                      </Button>
+                    </div>
                       </div>
                     )}
                   </div>
@@ -169,11 +287,11 @@ export function TicketChatbot() {
                 className="shrink-0 h-9 w-9 p-0"
               >
                 <RotateCcw className="h-4 w-4" />
-                <span className="sr-only">Reinitialiser</span>
+                <span className="sr-only">{t("chat.reset")}</span>
               </Button>
             )}
             <Input
-              placeholder="Posez une question sur vos tickets..."
+              placeholder={t("chat.placeholder")}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
@@ -193,7 +311,7 @@ export function TicketChatbot() {
               className="shrink-0 bg-primary text-primary-foreground hover:bg-primary/90 h-9 w-9 p-0"
             >
               <Send className="h-4 w-4" />
-              <span className="sr-only">Envoyer</span>
+              <span className="sr-only">{t("chat.send")}</span>
             </Button>
           </div>
         </div>

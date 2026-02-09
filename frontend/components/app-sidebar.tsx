@@ -51,8 +51,8 @@ export function AppSidebar() {
       )}
     >
       <div className="flex items-center gap-3 px-4 py-5 border-b border-sidebar-border">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground font-bold text-sm">
-          TW
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-sidebar-accent/40">
+          <img src="/logo.svg" alt="TeamWill logo" className="h-9 w-9 object-contain" />
         </div>
         {!collapsed && (
           <div className="flex flex-col">

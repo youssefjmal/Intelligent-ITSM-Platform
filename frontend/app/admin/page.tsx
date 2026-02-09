@@ -53,7 +53,7 @@ interface EmailRecord {
 
 export default function AdminPage() {
   const { user, hasPermission, getAllUsers, updateUserRole, deleteUser } = useAuth()
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [users, setUsers] = useState<User[]>([])
   const [emails, setEmails] = useState<EmailRecord[]>([])
 
@@ -147,7 +147,7 @@ export default function AdminPage() {
                           <div>
                             <p className="text-sm font-medium text-foreground">{u.name}</p>
                             {user?.id === u.id && (
-                              <span className="text-[10px] text-primary font-medium">(vous)</span>
+                              <span className="text-[10px] text-primary font-medium">({t("admin.you")})</span>
                             )}
                           </div>
                         </div>
@@ -172,7 +172,7 @@ export default function AdminPage() {
                         </Select>
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
-                        {new Date(u.createdAt).toLocaleDateString("fr-FR", {
+                        {new Date(u.createdAt).toLocaleDateString(locale === "fr" ? "fr-FR" : "en-US", {
                           day: "2-digit",
                           month: "short",
                           year: "numeric",
@@ -191,7 +191,7 @@ export default function AdminPage() {
                               <AlertDialogHeader>
                                 <AlertDialogTitle>{t("admin.deleteUser")} {u.name} ?</AlertDialogTitle>
                                 <AlertDialogDescription>
-                                  {"Cette action est irreversible. L'utilisateur sera supprime definitivement."}
+                                  {t("admin.deleteConfirm")}
                                 </AlertDialogDescription>
                               </AlertDialogHeader>
                               <AlertDialogFooter>
@@ -220,13 +220,13 @@ export default function AdminPage() {
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base font-semibold text-foreground">
               <Mail className="h-5 w-5 text-primary" />
-              Emails de bienvenue envoyes
+              {t("admin.emailLogTitle")}
             </CardTitle>
           </CardHeader>
           <CardContent>
             {emails.length === 0 ? (
               <p className="text-sm text-muted-foreground py-4 text-center">
-                Aucun email envoye pour le moment.
+                {t("admin.emailLogEmpty")}
               </p>
             ) : (
               <div className="space-y-3">
@@ -235,7 +235,7 @@ export default function AdminPage() {
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-sm font-medium text-foreground">{em.to}</span>
                       <span className="text-xs text-muted-foreground">
-                        {new Date(em.sent_at).toLocaleString("fr-FR")}
+                        {new Date(em.sent_at).toLocaleString(locale === "fr" ? "fr-FR" : "en-US")}
                       </span>
                     </div>
                     <p className="text-xs text-muted-foreground font-medium">{em.subject}</p>

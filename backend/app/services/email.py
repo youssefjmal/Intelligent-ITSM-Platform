@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from sqlalchemy.orm import Session
+import logging
 
 from app.core.config import settings
 from app.models.email_log import EmailLog
 from app.models.enums import EmailKind
+
+logger = logging.getLogger(__name__)
 
 
 def build_verification_email(name: str, token: str) -> tuple[str, str]:
@@ -37,4 +40,5 @@ def log_email(db: Session, to: str, subject: str, body: str, kind: EmailKind) ->
     db.add(record)
     db.commit()
     db.refresh(record)
+    logger.info("Email logged: %s (%s)", to, kind.value)
     return record

@@ -3,6 +3,7 @@
 import React from "react"
 import { AppSidebar } from "@/components/app-sidebar"
 import { LanguageSwitcher } from "@/components/language-switcher"
+import { ThemeToggle } from "@/components/theme-toggle"
 import { useAuth } from "@/lib/auth"
 import { useI18n } from "@/lib/i18n"
 import { Bell, LogOut } from "lucide-react"
@@ -41,6 +42,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
           <div className="flex items-center gap-3">
             <LanguageSwitcher />
+            <ThemeToggle />
 
             <Button variant="ghost" size="sm" className="relative h-8 w-8 p-0">
               <Bell className="h-4 w-4 text-muted-foreground" />

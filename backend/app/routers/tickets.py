@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
+from app.core.exceptions import NotFoundError
 from app.db.session import get_db
 from app.schemas.ticket import TicketCreate, TicketOut, TicketStats, TicketStatusUpdate
 from app.services.tickets import (
@@ -53,7 +54,7 @@ def create_new_ticket(payload: TicketCreate, db: Session = Depends(get_db)) -> T
 def get_ticket_by_id(ticket_id: str, db: Session = Depends(get_db)) -> TicketOut:
     ticket = get_ticket(db, ticket_id)
     if not ticket:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ticket_not_found")
+        raise NotFoundError("ticket_not_found", details={"ticket_id": ticket_id})
     return TicketOut.model_validate(ticket)
 
 
@@ -65,5 +66,5 @@ def update_ticket_status(
 ) -> TicketOut:
     ticket = update_status(db, ticket_id, payload.status)
     if not ticket:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ticket_not_found")
+        raise NotFoundError("ticket_not_found", details={"ticket_id": ticket_id})
     return TicketOut.model_validate(ticket)

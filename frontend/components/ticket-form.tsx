@@ -128,15 +128,15 @@ export function TicketForm() {
           <Card className="border border-border">
             <CardHeader className="pb-4">
               <CardTitle className="text-base font-semibold text-foreground">
-                Details du Ticket
+                {t("form.details")}
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="title" className="text-foreground">Titre</Label>
+                <Label htmlFor="title" className="text-foreground">{t("form.title")}</Label>
                 <Input
                   id="title"
-                  placeholder="Decrivez brievement le probleme ou la demande..."
+                  placeholder={t("form.titlePlaceholder")}
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
                   required
@@ -144,10 +144,10 @@ export function TicketForm() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="description" className="text-foreground">Description</Label>
+                <Label htmlFor="description" className="text-foreground">{t("form.description")}</Label>
                 <Textarea
                   id="description"
-                  placeholder="Fournissez une description detaillee incluant les etapes de reproduction, l'impact, et le comportement attendu..."
+                  placeholder={t("form.descPlaceholder")}
                   rows={6}
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
@@ -169,52 +169,52 @@ export function TicketForm() {
                   ) : (
                     <Sparkles className="h-4 w-4" />
                   )}
-                  Classification IA
+                  {t("form.aiClassify")}
                 </Button>
                 <span className="text-xs text-muted-foreground">
-                  L'IA analysera le contenu pour suggerer la priorite et la categorie
+                  {t("form.aiClassifyDesc")}
                 </span>
               </div>
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <Label className="text-foreground">Priorite</Label>
+                  <Label className="text-foreground">{t("form.priority")}</Label>
                   <Select value={priority} onValueChange={(v) => setPriority(v as TicketPriority)}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="critical">Critique</SelectItem>
-                      <SelectItem value="high">Haute</SelectItem>
-                      <SelectItem value="medium">Moyenne</SelectItem>
-                      <SelectItem value="low">Basse</SelectItem>
+                      <SelectItem value="critical">{t("priority.critical")}</SelectItem>
+                      <SelectItem value="high">{t("priority.high")}</SelectItem>
+                      <SelectItem value="medium">{t("priority.medium")}</SelectItem>
+                      <SelectItem value="low">{t("priority.low")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
                 <div className="space-y-2">
-                  <Label className="text-foreground">Categorie</Label>
+                  <Label className="text-foreground">{t("form.category")}</Label>
                   <Select value={category} onValueChange={(v) => setCategory(v as TicketCategory)}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="bug">Bug</SelectItem>
-                      <SelectItem value="feature">Fonctionnalite</SelectItem>
-                      <SelectItem value="support">Support</SelectItem>
-                      <SelectItem value="infrastructure">Infrastructure</SelectItem>
-                      <SelectItem value="security">Securite</SelectItem>
+                      <SelectItem value="bug">{t("category.bug")}</SelectItem>
+                      <SelectItem value="feature">{t("category.feature")}</SelectItem>
+                      <SelectItem value="support">{t("category.support")}</SelectItem>
+                      <SelectItem value="infrastructure">{t("category.infrastructure")}</SelectItem>
+                      <SelectItem value="security">{t("category.security")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <Label className="text-foreground">Assigner a</Label>
+                <Label className="text-foreground">{t("form.assignTo")}</Label>
                 {assignees.length > 0 ? (
                   <Select value={assignee} onValueChange={setAssignee}>
                     <SelectTrigger>
-                      <SelectValue placeholder="Selectionner un membre..." />
+                      <SelectValue placeholder={t("form.assignPlaceholder")} />
                     </SelectTrigger>
                     <SelectContent>
                       {assignees.map((member) => (
@@ -226,7 +226,7 @@ export function TicketForm() {
                   </Select>
                 ) : (
                   <Input
-                    placeholder="Saisir un assignee..."
+                    placeholder={t("form.assigneeManualPlaceholder")}
                     value={assignee}
                     onChange={(e) => setAssignee(e.target.value)}
                     required
@@ -235,10 +235,10 @@ export function TicketForm() {
               </div>
 
               <div className="space-y-2">
-                <Label className="text-foreground">Tags</Label>
+                <Label className="text-foreground">{t("form.tags")}</Label>
                 <div className="flex gap-2">
                   <Input
-                    placeholder="Ajouter un tag..."
+                    placeholder={t("form.addTag")}
                     value={tagInput}
                     onChange={(e) => setTagInput(e.target.value)}
                     onKeyDown={(e) => {
@@ -249,7 +249,7 @@ export function TicketForm() {
                     }}
                   />
                   <Button type="button" variant="outline" size="sm" onClick={addTag}>
-                    Ajouter
+                    {t("form.add")}
                   </Button>
                 </div>
                 {tags.length > 0 && (
@@ -270,7 +270,7 @@ export function TicketForm() {
 
           <div className="flex justify-end gap-3">
             <Button type="button" variant="outline" onClick={() => router.back()}>
-              Annuler
+              {t("form.cancel")}
             </Button>
             <Button
               type="submit"
@@ -278,7 +278,7 @@ export function TicketForm() {
               className="bg-primary text-primary-foreground hover:bg-primary/90 gap-2"
             >
               {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-              Creer le Ticket
+              {t("form.create")}
             </Button>
           </div>
         </div>
@@ -287,50 +287,50 @@ export function TicketForm() {
         <div className="space-y-4">
           {aiSuggestion && (
             <Card className="border-2 border-primary/20 bg-accent/30">
-              <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                  <BrainCircuit className="h-4 w-4 text-primary" />
-                  Suggestions IA
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                <BrainCircuit className="h-4 w-4 text-primary" />
+                {t("form.aiSuggestions")}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-1">
+                  {t("form.suggestedPriority")}
+                </p>
+                <Badge className="text-xs">
+                  {aiSuggestion.priority === "critical"
+                    ? t("priority.critical")
+                    : aiSuggestion.priority === "high"
+                      ? t("priority.high")
+                      : aiSuggestion.priority === "medium"
+                        ? t("priority.medium")
+                        : t("priority.low")}
+                </Badge>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-1">
+                  {t("form.suggestedCategory")}
+                </p>
+                <Badge variant="secondary" className="text-xs">
+                  {aiSuggestion.category === "bug"
+                    ? t("category.bug")
+                    : aiSuggestion.category === "feature"
+                      ? t("category.feature")
+                      : aiSuggestion.category === "support"
+                        ? t("category.support")
+                        : aiSuggestion.category === "infrastructure"
+                          ? t("category.infrastructure")
+                          : t("category.security")}
+                </Badge>
+              </div>
+              {aiSuggestion.recommendations.length > 0 && (
                 <div>
-                  <p className="text-xs font-medium text-muted-foreground mb-1">
-                    Priorite suggeree
+                  <p className="text-xs font-medium text-muted-foreground mb-2">
+                    {t("form.recommendedSolutions")}
                   </p>
-                  <Badge className="text-xs">
-                    {aiSuggestion.priority === "critical"
-                      ? "Critique"
-                      : aiSuggestion.priority === "high"
-                        ? "Haute"
-                        : aiSuggestion.priority === "medium"
-                          ? "Moyenne"
-                          : "Basse"}
-                  </Badge>
-                </div>
-                <div>
-                  <p className="text-xs font-medium text-muted-foreground mb-1">
-                    Categorie suggeree
-                  </p>
-                  <Badge variant="secondary" className="text-xs">
-                    {aiSuggestion.category === "bug"
-                      ? "Bug"
-                      : aiSuggestion.category === "feature"
-                        ? "Fonctionnalite"
-                        : aiSuggestion.category === "support"
-                          ? "Support"
-                          : aiSuggestion.category === "infrastructure"
-                            ? "Infrastructure"
-                            : "Securite"}
-                  </Badge>
-                </div>
-                {aiSuggestion.recommendations.length > 0 && (
-                  <div>
-                    <p className="text-xs font-medium text-muted-foreground mb-2">
-                      Solutions recommandees
-                    </p>
-                    <ul className="space-y-2">
-                      {aiSuggestion.recommendations.map((rec, i) => (
+                  <ul className="space-y-2">
+                    {aiSuggestion.recommendations.map((rec, i) => (
                         <li
                           key={`rec-${i}`}
                           className="text-xs text-foreground bg-background rounded-md p-2 border border-border"
@@ -349,15 +349,12 @@ export function TicketForm() {
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-sm font-semibold text-foreground">
                 <Sparkles className="h-4 w-4 text-primary" />
-                Aide IA
+                {t("form.aiHelp")}
               </CardTitle>
             </CardHeader>
             <CardContent>
               <p className="text-xs text-muted-foreground leading-relaxed">
-                Remplissez le titre et la description, puis cliquez sur
-                &quot;Classification IA&quot; pour obtenir des suggestions
-                automatiques de priorite, categorie, et des recommandations
-                basees sur les tickets precedents.
+                {t("form.aiHelpDesc")}
               </p>
             </CardContent>
           </Card>

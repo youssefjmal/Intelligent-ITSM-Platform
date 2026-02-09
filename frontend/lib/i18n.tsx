@@ -83,6 +83,7 @@ const translations = {
   "form.category": { fr: "Categorie", en: "Category" },
   "form.assignTo": { fr: "Assigner a", en: "Assign to" },
   "form.assignPlaceholder": { fr: "Selectionner un membre...", en: "Select a member..." },
+  "form.assigneeManualPlaceholder": { fr: "Saisir un assignee...", en: "Enter an assignee..." },
   "form.tags": { fr: "Tags", en: "Tags" },
   "form.addTag": { fr: "Ajouter un tag...", en: "Add a tag..." },
   "form.add": { fr: "Ajouter", en: "Add" },
@@ -124,7 +125,10 @@ const translations = {
   "detail.createdAt": { fr: "Cree le", en: "Created on" },
   "detail.updatedAt": { fr: "Mis a jour", en: "Updated" },
   "detail.notFound": { fr: "Ticket non trouve", en: "Ticket not found" },
-  "detail.notFoundDesc": { fr: "n'existe pas ou a ete supprime.", en: "does not exist or has been deleted." },
+  "detail.notFoundDesc": {
+    fr: "Le ticket {id} n'existe pas ou a ete supprime.",
+    en: "Ticket {id} does not exist or has been deleted.",
+  },
 
   // Chat
   "chat.title": { fr: "Assistant IA - TeamWill", en: "AI Assistant - TeamWill" },
@@ -138,6 +142,17 @@ const translations = {
   "chat.prompt2": { fr: "Resume l'activite de la semaine", en: "Summarize the week's activity" },
   "chat.prompt3": { fr: "Quels tickets sont en attente depuis longtemps ?", en: "Which tickets have been pending for a long time?" },
   "chat.prompt4": { fr: "Recommande des solutions pour les bugs recurrents", en: "Recommend solutions for recurring bugs" },
+  "chat.ticketDraft": { fr: "Brouillon de ticket", en: "Ticket draft" },
+  "chat.createTicket": { fr: "Creer le ticket", en: "Create ticket" },
+  "chat.ticketCreated": { fr: "Ticket cree:", en: "Ticket created:" },
+  "chat.ticketCreateError": { fr: "Impossible de creer le ticket.", en: "Could not create the ticket." },
+  "chat.ticketTitle": { fr: "Titre", en: "Title" },
+  "chat.ticketDescription": { fr: "Description", en: "Description" },
+  "chat.ticketPriority": { fr: "Priorite", en: "Priority" },
+  "chat.ticketCategory": { fr: "Categorie", en: "Category" },
+  "chat.ticketAssignee": { fr: "Assigne", en: "Assignee" },
+  "chat.ticketTags": { fr: "Tags", en: "Tags" },
+  "chat.errorReply": { fr: "Une erreur est survenue.", en: "Something went wrong." },
 
   // Recommendations
   "recs.title": { fr: "Recommandations IA", en: "AI Recommendations" },
@@ -173,6 +188,10 @@ const translations = {
   "auth.password": { fr: "Mot de passe", en: "Password" },
   "auth.confirmPassword": { fr: "Confirmer le mot de passe", en: "Confirm password" },
   "auth.fullName": { fr: "Nom complet", en: "Full name" },
+  "auth.namePlaceholder": { fr: "Jean Dupont", en: "John Doe" },
+  "auth.emailPlaceholder": { fr: "prenom.nom@exemple.com", en: "name@example.com" },
+  "auth.passwordPlaceholder": { fr: "******", en: "******" },
+  "auth.confirmPasswordPlaceholder": { fr: "******", en: "******" },
   "auth.role": { fr: "Role", en: "Role" },
   "auth.signInBtn": { fr: "Se connecter", en: "Sign in" },
   "auth.signUpBtn": { fr: "S'inscrire", en: "Sign up" },
@@ -217,6 +236,13 @@ const translations = {
   "admin.accessDenied": { fr: "Acces refuse", en: "Access denied" },
   "admin.accessDeniedDesc": { fr: "Vous n'avez pas les droits d'administration.", en: "You don't have administration rights." },
   "admin.backToDashboard": { fr: "Retour au tableau de bord", en: "Back to dashboard" },
+  "admin.you": { fr: "vous", en: "you" },
+  "admin.deleteConfirm": {
+    fr: "Cette action est irreversible. L'utilisateur sera supprime definitivement.",
+    en: "This action is irreversible. The user will be permanently deleted.",
+  },
+  "admin.emailLogTitle": { fr: "Emails de bienvenue envoyes", en: "Welcome emails sent" },
+  "admin.emailLogEmpty": { fr: "Aucun email envoye pour le moment.", en: "No emails sent yet." },
 
   // General
   "general.loading": { fr: "Chargement...", en: "Loading..." },
@@ -263,4 +289,4 @@ export function useI18n() {
   const ctx = useContext(I18nContext)
   if (!ctx) throw new Error("useI18n must be used within I18nProvider")
   return ctx
-}
+ }

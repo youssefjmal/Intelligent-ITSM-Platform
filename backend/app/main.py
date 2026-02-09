@@ -1,15 +1,18 @@
-"""FastAPI application entrypoint and router registration."""
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.core.config import settings
+from app.core.logging import setup_logging
+from app.core.exceptions import ITSMGatekeeperException
 from app.routers import ai, auth, emails, tickets, users, recommendations, assignees
 
 
 def create_app() -> FastAPI:
+    setup_logging(settings.LOG_LEVEL)
     app = FastAPI(title=settings.APP_NAME)
     app.add_middleware(
         CORSMiddleware,
@@ -26,6 +29,11 @@ def create_app() -> FastAPI:
     app.include_router(ai.router, prefix="/api/ai", tags=["ai"])
     app.include_router(recommendations.router, prefix="/api/recommendations", tags=["recommendations"])
     app.include_router(assignees.router, prefix="/api", tags=["assignees"])
+
+    @app.exception_handler(ITSMGatekeeperException)
+    async def handle_itsm_exception(_: Request, exc: ITSMGatekeeperException) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
+
     return app
 
 

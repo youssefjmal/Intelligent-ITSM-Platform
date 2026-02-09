@@ -1,61 +1,55 @@
-# ITSM AI Platform - Intelligent IT Service Management with AI & Automation
+﻿# ITSM AI Platform - Intelligent IT Service Management with AI & Automation
 
 ## Project Overview
-### The Challenge
 Modern IT Service Desks face escalating ticket volumes, complex technical issues, and increasing user expectations. Manual ticket triage, misrouting, and knowledge fragmentation lead to extended resolution times, agent burnout, and poor service quality.
 
-### Our Solution
-An intelligent ITSM platform that combines AI-driven classification, n8n workflow automation, and Jira Service Management integration to create a self-healing IT service ecosystem. The system automatically categorizes, prioritizes, and routes tickets while providing agents with AI-assisted resolution recommendations.
+This project delivers an intelligent ITSM platform that combines AI-driven classification, workflow orchestration, and Jira Service Management integration to create a self-healing IT service ecosystem. The system automatically categorizes, prioritizes, and routes tickets while providing agents with AI-assisted resolution recommendations.
 
 ## System Architecture
-### Core Components
-- JSM data ingestion and normalization
-- Workflow orchestration with n8n
-- AI modules for classification, summarization, and recommendations
-- PostgreSQL storage for operational data
-- Analytics and dashboards for ITSM KPIs
+```
+[Jira Service Management]
+          |
+          | REST API (planned)
+          v
+        [n8n]
+          |
+          | Triggers / Webhooks
+          v
+       [Backend API]
+  FastAPI + Postgres
+          |
+          v
+      [Frontend]
+ Next.js Dashboard
+```
 
 ## Tech Stack
 - Backend: FastAPI, SQLAlchemy, Alembic
 - Database: PostgreSQL
 - Frontend: Next.js (App Router), React, Tailwind CSS
-- Auth: JWT stored in httpOnly cookies
+- Auth: JWT in httpOnly cookies
+- Orchestration: n8n (planned)
+- Analytics: Power BI (planned)
 
 ## Key Features
 - User authentication with email verification
 - Ticket CRUD, analytics, and insights
-- AI assistance endpoints (rule-based for now)
+- AI assistance endpoints (rule-based fallback, optional Ollama)
 - Recommendations module (DB-backed)
 - Admin user management + email logs
+- Consistent API errors via custom exceptions
 
-## Project Structure
-```text
-jira-ticket-managementv2/
-  backend/
-    app/
-      main.py
-      routers/
-      services/
-      models/
-      schemas/
-    alembic/
-    scripts/seed.py
-  frontend/
-    app/
-    components/
-    lib/
-```
+## Detailed Docs
+- Backend: `backend/README.md`
+- Frontend: `frontend/README.md`
 
 ## Prerequisites
 - Python 3.11+
 - Node.js 18+
 - PostgreSQL 15+
 
-## Backend Setup (Windows PowerShell)
-1. Create a database named `jira_tickets` in PostgreSQL.
-2. Create the backend env file.
-3. Install dependencies and run migrations.
-
+## Quick Start (Windows PowerShell)
+Backend:
 ```powershell
 cd C:\Users\kahla\Downloads\jira-ticket-managementv2\backend
 copy .env.example .env
@@ -67,7 +61,7 @@ python scripts\seed.py
 python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-## Frontend Setup
+Frontend:
 ```powershell
 cd C:\Users\kahla\Downloads\jira-ticket-managementv2\frontend
 copy .env.local.example .env.local
@@ -89,13 +83,60 @@ Backend: `backend/.env`
 - `CORS_ORIGINS`
 - `OLLAMA_BASE_URL`
 - `OLLAMA_MODEL`
+- `JIRA_BASE_URL`
+- `JIRA_EMAIL`
+- `JIRA_API_TOKEN`
+- `JIRA_PROJECT_KEY`
+- `JIRA_SERVICE_DESK_ID`
 
 Frontend: `frontend/.env.local`
 - `NEXT_PUBLIC_API_URL`
 
+## Project Structure
+```
+jira-ticket-managementv2/
+  backend/
+    app/
+      core/
+      db/
+      models/
+      routers/
+      schemas/
+      services/
+      main.py
+    alembic/
+      versions/
+    scripts/
+      seed.py
+      init_db.sql
+    .env
+    .env.example
+    alembic.ini
+    requirements.txt
+  frontend/
+    app/
+      auth/
+      tickets/
+      recommendations/
+      chat/
+      admin/
+    components/
+      ui/
+    hooks/
+    lib/
+    public/
+    styles/
+    .env.local
+    .env.local.example
+    next.config.mjs
+    package.json
+    tailwind.config.ts
+  README.md
+```
+
 ## Notes
-- Ollama integration is intentionally not implemented yet.
 - Jira Service Management integration is not implemented yet.
+- n8n orchestration is planned (webhooks and escalation workflows).
 - Email sending is logged in the DB for local development.
 
 ## API Docs

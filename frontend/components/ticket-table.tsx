@@ -102,7 +102,7 @@ export function TicketTable({ tickets }: TicketTableProps) {
         </div>
         <Select value={statusFilter} onValueChange={setStatusFilter}>
           <SelectTrigger className="w-full sm:w-40">
-            <SelectValue placeholder="Statut" />
+            <SelectValue placeholder={t("tickets.status")} />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t("tickets.allStatuses")}</SelectItem>
@@ -115,7 +115,7 @@ export function TicketTable({ tickets }: TicketTableProps) {
         </Select>
         <Select value={priorityFilter} onValueChange={setPriorityFilter}>
           <SelectTrigger className="w-full sm:w-40">
-            <SelectValue placeholder="Priorite" />
+            <SelectValue placeholder={t("tickets.priority")} />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">{t("tickets.allPriorities")}</SelectItem>

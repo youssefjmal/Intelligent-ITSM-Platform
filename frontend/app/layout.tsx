@@ -16,6 +16,9 @@ export const metadata: Metadata = {
   title: "TeamWill Consulting - Ticket Management",
   description:
     "Plateforme intelligente de gestion des tickets avec IA pour TeamWill Consulting",
+  icons: {
+    icon: "/logo.svg",
+  },
 }
 
 export default function RootLayout({
@@ -24,8 +27,8 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="fr">
-      <body className="font-sans antialiased">
+    <html lang="fr" suppressHydrationWarning>
+      <body className={`${_inter.variable} ${_spaceMono.variable} font-sans antialiased`}>
         <Providers>{children}</Providers>
       </body>
     </html>

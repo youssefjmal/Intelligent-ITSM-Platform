@@ -14,10 +14,22 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
+    locale: str | None = None
+
+
+class TicketDraft(BaseModel):
+    title: str
+    description: str
+    priority: TicketPriority
+    category: TicketCategory
+    tags: list[str] = []
+    assignee: str | None = None
 
 
 class ChatResponse(BaseModel):
     reply: str
+    action: str | None = None
+    ticket: TicketDraft | None = None
 
 
 class ClassificationRequest(BaseModel):

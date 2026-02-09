@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label"
 import { useAuth } from "@/lib/auth"
 import { useI18n } from "@/lib/i18n"
 import { LanguageSwitcher } from "@/components/language-switcher"
+import { ThemeToggle } from "@/components/theme-toggle"
 import { Loader2, LogIn } from "lucide-react"
 
 export default function LoginPage() {
@@ -36,15 +37,16 @@ export default function LoginPage() {
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
-      <div className="absolute top-4 right-4">
+      <div className="absolute top-4 right-4 flex items-center gap-2">
         <LanguageSwitcher />
+        <ThemeToggle />
       </div>
 
       <div className="w-full max-w-md space-y-6">
         {/* Logo */}
         <div className="flex flex-col items-center gap-3">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground font-bold text-xl">
-            TW
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
+            <img src="/logo.svg" alt="TeamWill logo" className="h-12 w-12 object-contain" />
           </div>
           <div className="text-center">
             <h1 className="text-2xl font-bold text-foreground text-balance">{t("auth.welcome")}</h1>
@@ -71,7 +73,7 @@ export default function LoginPage() {
                 <Input
                   id="email"
                   type="email"
-                  placeholder="admin@teamwill.com"
+                  placeholder={t("auth.emailPlaceholder")}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
@@ -84,7 +86,7 @@ export default function LoginPage() {
                 <Input
                   id="password"
                   type="password"
-                  placeholder="••••••"
+                  placeholder={t("auth.passwordPlaceholder")}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required

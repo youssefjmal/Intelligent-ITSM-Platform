@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from sqlalchemy.orm import Session
 
 from app.models.ticket import Ticket
 from app.models.enums import TicketCategory, TicketPriority, TicketStatus
 from app.schemas.ticket import TicketCreate
+
+logger = logging.getLogger(__name__)
 
 
 def list_tickets(db: Session) -> list[Ticket]:
@@ -49,18 +52,21 @@ def create_ticket(db: Session, data: TicketCreate) -> Ticket:
     db.add(ticket)
     db.commit()
     db.refresh(ticket)
+    logger.info("Ticket created: %s", ticket.id)
     return ticket
 
 
 def update_status(db: Session, ticket_id: str, status: TicketStatus) -> Ticket | None:
     ticket = db.get(Ticket, ticket_id)
     if not ticket:
+        logger.warning("Ticket status update failed (not found): %s", ticket_id)
         return None
     ticket.status = status
     ticket.updated_at = dt.datetime.now(dt.timezone.utc)
     db.add(ticket)
     db.commit()
     db.refresh(ticket)
+    logger.info("Ticket status updated: %s -> %s", ticket.id, status.value)
     return ticket
 
 
