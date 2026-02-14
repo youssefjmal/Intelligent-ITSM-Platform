@@ -17,6 +17,7 @@ export default function VerifyEmailPage() {
   const params = useSearchParams()
   const token = params.get("token")
   const [status, setStatus] = useState<"loading" | "success" | "error">("loading")
+  const [redirecting, setRedirecting] = useState(false)
 
   useEffect(() => {
     const run = async () => {
@@ -25,11 +26,17 @@ export default function VerifyEmailPage() {
         return
       }
       try {
-        await apiFetch("/auth/verify", {
+        const result = await apiFetch<{ auto_logged_in?: boolean }>("/auth/verify", {
           method: "POST",
           body: JSON.stringify({ token }),
         })
         setStatus("success")
+        if (result.auto_logged_in) {
+          setRedirecting(true)
+          window.setTimeout(() => {
+            window.location.assign("/")
+          }, 1200)
+        }
       } catch {
         setStatus("error")
       }
@@ -38,20 +45,24 @@ export default function VerifyEmailPage() {
   }, [token])
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background p-4">
-      <div className="absolute top-4 right-4 flex items-center gap-2">
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden p-4 sm:p-6">
+      <div className="pointer-events-none absolute -top-28 -right-20 h-72 w-72 rounded-full bg-primary/20 blur-3xl" />
+      <div className="pointer-events-none absolute -left-16 bottom-10 h-64 w-64 rounded-full bg-amber-300/20 blur-3xl" />
+
+      <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
         <LanguageSwitcher />
         <ThemeToggle />
       </div>
 
-      <div className="w-full max-w-md space-y-6">
+      <div className="relative z-10 w-full max-w-md space-y-6 fade-slide-in">
         <div className="flex flex-col items-center gap-3">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
-            <img src="/logo.svg" alt="TeamWill logo" className="h-12 w-12 object-contain" />
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-white/80 shadow-sm ring-1 ring-border/80 backdrop-blur">
+            <img src="/logo.png" alt="Teamwil logo" className="logo-emphasis h-12 w-12 object-contain" />
           </div>
         </div>
 
-        <Card className="border border-border">
+        <Card className="surface-card overflow-hidden rounded-2xl">
+          <div className="h-1.5 bg-gradient-to-r from-primary via-emerald-500 to-amber-500" />
           <CardContent className="pt-8 pb-8">
             <div className="flex flex-col items-center text-center space-y-4">
               {status === "loading" && (
@@ -79,6 +90,9 @@ export default function VerifyEmailPage() {
                   {status === "success" && t("auth.verifySuccess")}
                   {status === "error" && t("auth.verifyError")}
                 </p>
+                {status === "success" && redirecting && (
+                  <p className="text-xs text-muted-foreground">{t("auth.verifyRedirecting")}</p>
+                )}
               </div>
 
               <Link href="/auth/login" className="w-full">

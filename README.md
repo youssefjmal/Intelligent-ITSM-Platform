@@ -79,8 +79,18 @@ npm run dev
 Backend: `backend/.env`
 - `DATABASE_URL`
 - `JWT_SECRET`
+- `ACCESS_TOKEN_EXPIRE_MINUTES`
+- `COOKIE_NAME`
+- `REFRESH_COOKIE_NAME`
+- `REFRESH_TOKEN_EXPIRE_DAYS`
 - `FRONTEND_BASE_URL`
 - `CORS_ORIGINS`
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_USER`
+- `SMTP_PASSWORD`
+- `SMTP_FROM`
+- `SMTP_TLS`
 - `OLLAMA_BASE_URL`
 - `OLLAMA_MODEL`
 - `JIRA_BASE_URL`
@@ -137,7 +147,7 @@ jira-ticket-managementv2/
 ## Notes
 - Jira Service Management integration is not implemented yet.
 - n8n orchestration is planned (webhooks and escalation workflows).
-- Email sending is logged in the DB for local development.
+- Email sending is logged in the DB; configure SMTP to send real emails.
 
 ## API Docs
 Once the backend is running:

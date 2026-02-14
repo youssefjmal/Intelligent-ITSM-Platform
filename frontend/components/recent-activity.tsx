@@ -7,13 +7,13 @@ import { type Ticket, STATUS_CONFIG, PRIORITY_CONFIG } from "@/lib/ticket-data"
 import { useI18n } from "@/lib/i18n"
 
 export function RecentActivity({ tickets }: { tickets: Ticket[] }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const recent = [...tickets]
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
     .slice(0, 6)
 
   return (
-    <Card className="border border-border">
+    <Card className="surface-card rounded-2xl">
       <CardHeader className="pb-3">
         <CardTitle className="text-sm font-semibold text-foreground">
           {t("activity.title")}
@@ -53,7 +53,7 @@ export function RecentActivity({ tickets }: { tickets: Ticket[] }) {
               </div>
             </div>
             <span className="text-[10px] text-muted-foreground whitespace-nowrap mt-0.5">
-              {formatTimeAgo(ticket.updatedAt)}
+              {formatTimeAgo(ticket.updatedAt, locale)}
             </span>
           </Link>
         ))}
@@ -62,17 +62,18 @@ export function RecentActivity({ tickets }: { tickets: Ticket[] }) {
   )
 }
 
-function formatTimeAgo(dateStr: string): string {
+function formatTimeAgo(dateStr: string, locale: "fr" | "en"): string {
   const now = new Date()
   const date = new Date(dateStr)
   const diffMs = now.getTime() - date.getTime()
   const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
   const diffDays = Math.floor(diffHours / 24)
+  const localeCode = locale === "fr" ? "fr-FR" : "en-US"
 
   if (diffDays > 7) {
-    return date.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" })
+    return date.toLocaleDateString(localeCode, { day: "2-digit", month: "short" })
   }
-  if (diffDays > 0) return `il y a ${diffDays}j`
-  if (diffHours > 0) return `il y a ${diffHours}h`
-  return "A l'instant"
+  if (diffDays > 0) return locale === "fr" ? `il y a ${diffDays}j` : `${diffDays}d ago`
+  if (diffHours > 0) return locale === "fr" ? `il y a ${diffHours}h` : `${diffHours}h ago`
+  return locale === "fr" ? "A l'instant" : "Just now"
 }

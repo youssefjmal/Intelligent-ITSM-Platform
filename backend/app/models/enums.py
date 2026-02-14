@@ -11,6 +11,13 @@ class UserRole(str, enum.Enum):
     viewer = "viewer"
 
 
+class SeniorityLevel(str, enum.Enum):
+    intern = "intern"
+    junior = "junior"
+    middle = "middle"
+    senior = "senior"
+
+
 class TicketStatus(str, enum.Enum):
     open = "open"
     in_progress = "in-progress"
@@ -27,11 +34,14 @@ class TicketPriority(str, enum.Enum):
 
 
 class TicketCategory(str, enum.Enum):
-    bug = "bug"
-    feature = "feature"
-    support = "support"
     infrastructure = "infrastructure"
+    network = "network"
     security = "security"
+    application = "application"
+    service_request = "service_request"
+    hardware = "hardware"
+    email = "email"
+    problem = "problem"
 
 
 class EmailKind(str, enum.Enum):

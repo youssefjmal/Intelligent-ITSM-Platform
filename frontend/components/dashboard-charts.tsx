@@ -20,7 +20,7 @@ import {
 } from "recharts"
 import { useI18n } from "@/lib/i18n"
 
-const COLORS_CATEGORY = ["#dc2626", "#2e9461", "#3b82f6", "#8b5cf6", "#f59e0b"]
+const COLORS_CATEGORY = ["#dc2626", "#2e9461", "#3b82f6", "#8b5cf6", "#f59e0b", "#0ea5e9", "#14b8a6"]
 
 export function DashboardCharts({
   weeklyData,
@@ -50,7 +50,7 @@ export function DashboardCharts({
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-3">
       {/* Ticket Trends */}
-      <Card className="xl:col-span-2 border border-border">
+      <Card className="surface-card xl:col-span-2 rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-semibold text-foreground">
             {t("chart.trends")}
@@ -93,7 +93,7 @@ export function DashboardCharts({
       </Card>
 
       {/* Priority Distribution */}
-      <Card className="border border-border">
+      <Card className="surface-card rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-semibold text-foreground">
             {t("chart.priorityDist")}
@@ -136,7 +136,7 @@ export function DashboardCharts({
       </Card>
 
       {/* Category Breakdown */}
-      <Card className="xl:col-span-3 border border-border">
+      <Card className="surface-card xl:col-span-3 rounded-2xl">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-semibold text-foreground">
             {t("chart.categoryBreak")}

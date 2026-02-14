@@ -46,23 +46,24 @@ export function AppSidebar() {
   return (
     <aside
       className={cn(
-        "flex flex-col bg-sidebar text-sidebar-foreground border-r border-sidebar-border transition-all duration-300",
+        "relative flex flex-col border-r border-sidebar-border/80 bg-sidebar text-sidebar-foreground shadow-2xl shadow-black/15 transition-all duration-300",
         collapsed ? "w-16" : "w-64"
       )}
     >
-      <div className="flex items-center gap-3 px-4 py-5 border-b border-sidebar-border">
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-sidebar-accent/40">
-          <img src="/logo.svg" alt="TeamWill logo" className="h-9 w-9 object-contain" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-white/10 to-transparent" />
+      <div className="relative flex items-center gap-3 border-b border-sidebar-border/70 px-4 py-5">
+        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-white/95 shadow-md ring-1 ring-black/10">
+          <img src="/logo.png" alt="Teamwil logo" className="logo-emphasis h-10 w-10 object-contain" />
         </div>
         {!collapsed && (
           <div className="flex flex-col">
-            <span className="font-bold text-sm leading-tight">TeamWill</span>
-            <span className="text-xs text-sidebar-foreground/70">Consulting</span>
+            <span className="text-sm font-bold leading-tight tracking-wide">Teamwil</span>
+            <span className="text-xs text-sidebar-foreground/75">Consulting Ops Suite</span>
           </div>
         )}
       </div>
 
-      <nav className="flex-1 px-2 py-4 space-y-1">
+      <nav className="relative flex-1 space-y-1 px-2 py-4">
         {visibleNav.map((item) => {
           const isActive =
             item.href === "/"
@@ -73,12 +74,18 @@ export function AppSidebar() {
               key={item.nameKey}
               href={item.href}
               className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                "group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all",
                 isActive
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                  : "text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground shadow-sm"
+                  : "text-sidebar-foreground/80 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
               )}
             >
+              <span
+                className={cn(
+                  "absolute left-0 top-1/2 h-7 w-1 -translate-y-1/2 rounded-r-full bg-sidebar-primary transition-opacity",
+                  isActive ? "opacity-100" : "opacity-0 group-hover:opacity-60"
+                )}
+              />
               <item.icon className="h-5 w-5 shrink-0" />
               {!collapsed && <span>{t(item.nameKey)}</span>}
             </Link>
@@ -86,11 +93,11 @@ export function AppSidebar() {
         })}
       </nav>
 
-      <div className="p-2 border-t border-sidebar-border">
+      <div className="border-t border-sidebar-border/70 p-2">
         <button
           type="button"
           onClick={() => setCollapsed(!collapsed)}
-          className="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground transition-colors"
+          className="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
         >
           {collapsed ? (
             <ChevronRight className="h-4 w-4" />

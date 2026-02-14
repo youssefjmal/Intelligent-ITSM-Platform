@@ -31,6 +31,7 @@ interface AISuggestion {
   priority: TicketPriority
   category: TicketCategory
   recommendations: string[]
+  assignee?: string | null
 }
 
 export function TicketForm() {
@@ -40,14 +41,19 @@ export function TicketForm() {
   const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")
   const [priority, setPriority] = useState<TicketPriority>("medium")
-  const [category, setCategory] = useState<TicketCategory>("bug")
-  const [assignee, setAssignee] = useState("")
+  const [category, setCategory] = useState<TicketCategory>("service_request")
+  const [assignee, setAssignee] = useState("auto")
   const [assignees, setAssignees] = useState<Assignee[]>([])
   const [tags, setTags] = useState<string[]>([])
   const [tagInput, setTagInput] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [aiLoading, setAiLoading] = useState(false)
   const [aiSuggestion, setAiSuggestion] = useState<AISuggestion | null>(null)
+  const trimmedTitle = title.trim()
+  const trimmedDescription = description.trim()
+  const aiTitle = trimmedTitle.length >= 3 ? trimmedTitle : trimmedDescription
+  const aiDescription = trimmedDescription || trimmedTitle
+  const canAIClassify = aiTitle.length >= 3 && aiDescription.length > 0
 
   useEffect(() => {
     let mounted = true
@@ -64,19 +70,25 @@ export function TicketForm() {
   }, [])
 
   async function handleAIClassify() {
-    if (!title && !description) return
+    if (!canAIClassify) return
     setAiLoading(true)
     try {
-      const data = await apiFetch<{ priority: TicketPriority; category: TicketCategory; recommendations: string[] }>(
+      const data = await apiFetch<{
+        priority: TicketPriority
+        category: TicketCategory
+        recommendations: string[]
+        assignee?: string | null
+      }>(
         "/ai/classify",
         {
           method: "POST",
-          body: JSON.stringify({ title, description }),
+          body: JSON.stringify({ title: aiTitle, description: aiDescription }),
         }
       )
       setAiSuggestion(data)
       if (data.priority) setPriority(data.priority)
       if (data.category) setCategory(data.category)
+      if (data.assignee) setAssignee(data.assignee)
     } catch {
       // fallback silent
     } finally {
@@ -98,6 +110,11 @@ export function TicketForm() {
           assignee,
           reporter: user?.name || "Unknown",
           tags,
+          auto_priority_applied: Boolean(aiSuggestion),
+          assignment_model_version: assignee === "auto" ? "smart-v1" : "manual",
+          priority_model_version: aiSuggestion ? "smart-v1" : "manual",
+          predicted_priority: aiSuggestion?.priority || null,
+          predicted_category: aiSuggestion?.category || null,
         }),
       })
       router.push("/tickets")
@@ -121,11 +138,12 @@ export function TicketForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6">
+    <form onSubmit={handleSubmit} className="space-y-6 fade-slide-in">
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* Main Form */}
         <div className="lg:col-span-2 space-y-6">
-          <Card className="border border-border">
+          <Card className="surface-card overflow-hidden rounded-2xl">
+            <div className="h-1.5 bg-gradient-to-r from-primary via-emerald-500 to-amber-500" />
             <CardHeader className="pb-4">
               <CardTitle className="text-base font-semibold text-foreground">
                 {t("form.details")}
@@ -161,8 +179,8 @@ export function TicketForm() {
                   variant="outline"
                   size="sm"
                   onClick={handleAIClassify}
-                  disabled={aiLoading || (!title && !description)}
-                  className="gap-2 bg-transparent"
+                  disabled={aiLoading || !canAIClassify}
+                  className="gap-2 bg-card/80"
                 >
                   {aiLoading ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -199,11 +217,14 @@ export function TicketForm() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="bug">{t("category.bug")}</SelectItem>
-                      <SelectItem value="feature">{t("category.feature")}</SelectItem>
-                      <SelectItem value="support">{t("category.support")}</SelectItem>
                       <SelectItem value="infrastructure">{t("category.infrastructure")}</SelectItem>
+                      <SelectItem value="network">{t("category.network")}</SelectItem>
                       <SelectItem value="security">{t("category.security")}</SelectItem>
+                      <SelectItem value="application">{t("category.application")}</SelectItem>
+                      <SelectItem value="service_request">{t("category.service_request")}</SelectItem>
+                      <SelectItem value="hardware">{t("category.hardware")}</SelectItem>
+                      <SelectItem value="email">{t("category.email")}</SelectItem>
+                      <SelectItem value="problem">{t("category.problem")}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -217,6 +238,7 @@ export function TicketForm() {
                       <SelectValue placeholder={t("form.assignPlaceholder")} />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="auto">{t("form.autoAssign")}</SelectItem>
                       {assignees.map((member) => (
                         <SelectItem key={member.id} value={member.name}>
                           {member.name}
@@ -286,7 +308,8 @@ export function TicketForm() {
         {/* AI Suggestions Sidebar */}
         <div className="space-y-4">
           {aiSuggestion && (
-            <Card className="border-2 border-primary/20 bg-accent/30">
+            <Card className="overflow-hidden rounded-2xl border-2 border-primary/20 bg-accent/30 shadow-sm">
+            <div className="h-1.5 bg-gradient-to-r from-primary via-emerald-500 to-amber-500" />
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-sm font-semibold text-foreground">
                 <BrainCircuit className="h-4 w-4 text-primary" />
@@ -313,17 +336,33 @@ export function TicketForm() {
                   {t("form.suggestedCategory")}
                 </p>
                 <Badge variant="secondary" className="text-xs">
-                  {aiSuggestion.category === "bug"
-                    ? t("category.bug")
-                    : aiSuggestion.category === "feature"
-                      ? t("category.feature")
-                      : aiSuggestion.category === "support"
-                        ? t("category.support")
-                        : aiSuggestion.category === "infrastructure"
-                          ? t("category.infrastructure")
-                          : t("category.security")}
+                  {aiSuggestion.category === "infrastructure"
+                    ? t("category.infrastructure")
+                    : aiSuggestion.category === "network"
+                      ? t("category.network")
+                      : aiSuggestion.category === "security"
+                        ? t("category.security")
+                        : aiSuggestion.category === "application"
+                          ? t("category.application")
+                          : aiSuggestion.category === "service_request"
+                            ? t("category.service_request")
+                            : aiSuggestion.category === "hardware"
+                              ? t("category.hardware")
+                              : aiSuggestion.category === "email"
+                                ? t("category.email")
+                                : t("category.problem")}
                 </Badge>
               </div>
+              {aiSuggestion.assignee && (
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-1">
+                    {t("form.suggestedAssignee")}
+                  </p>
+                  <Badge variant="outline" className="text-xs">
+                    {aiSuggestion.assignee}
+                  </Badge>
+                </div>
+              )}
               {aiSuggestion.recommendations.length > 0 && (
                 <div>
                   <p className="text-xs font-medium text-muted-foreground mb-2">
@@ -345,7 +384,7 @@ export function TicketForm() {
             </Card>
           )}
 
-          <Card className="border border-border">
+          <Card className="surface-card">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-sm font-semibold text-foreground">
                 <Sparkles className="h-4 w-4 text-primary" />

@@ -1,11 +1,12 @@
 import React from "react"
 import type { Metadata } from "next"
-import { Inter, Space_Mono } from "next/font/google"
+import { Manrope, Space_Grotesk, Space_Mono } from "next/font/google"
 import { Providers } from "@/components/providers"
 
 import "./globals.css"
 
-const _inter = Inter({ subsets: ["latin"], variable: "--font-inter" })
+const _manrope = Manrope({ subsets: ["latin"], variable: "--font-manrope" })
+const _display = Space_Grotesk({ subsets: ["latin"], variable: "--font-display" })
 const _spaceMono = Space_Mono({
   subsets: ["latin"],
   weight: ["400", "700"],
@@ -13,11 +14,11 @@ const _spaceMono = Space_Mono({
 })
 
 export const metadata: Metadata = {
-  title: "TeamWill Consulting - Ticket Management",
+  title: "Teamwil Consulting - Ticket Management",
   description:
-    "Plateforme intelligente de gestion des tickets avec IA pour TeamWill Consulting",
+    "Plateforme intelligente de gestion des tickets avec IA pour Teamwil Consulting",
   icons: {
-    icon: "/logo.svg",
+    icon: "/logo.png",
   },
 }
 
@@ -28,7 +29,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="fr" suppressHydrationWarning>
-      <body className={`${_inter.variable} ${_spaceMono.variable} font-sans antialiased`}>
+      <body className={`${_manrope.variable} ${_display.variable} ${_spaceMono.variable} font-sans antialiased`}>
         <Providers>{children}</Providers>
       </body>
     </html>

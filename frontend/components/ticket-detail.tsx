@@ -1,13 +1,12 @@
 "use client"
 
-import React from "react"
-
-import { useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Select,
   SelectContent,
@@ -23,46 +22,246 @@ import {
   MessageSquare,
   Clock,
   CheckCircle2,
+  Sparkles,
+  Loader2,
+  RefreshCw,
 } from "lucide-react"
 import {
   type Ticket,
+  type TicketCategory,
+  type TicketPriority,
   type TicketStatus,
   STATUS_CONFIG,
   PRIORITY_CONFIG,
   CATEGORY_CONFIG,
 } from "@/lib/ticket-data"
-import { apiFetch } from "@/lib/api"
+import { ApiError, apiFetch } from "@/lib/api"
+import {
+  fetchTicket,
+  fetchTicketAIRecommendations,
+  type TicketAIRecommendationsPayload,
+} from "@/lib/tickets-api"
+import { useI18n } from "@/lib/i18n"
 
 interface TicketDetailProps {
   ticket: Ticket
 }
 
+type Assignee = {
+  id: string
+  name: string
+  role: string
+}
+
 export function TicketDetail({ ticket }: TicketDetailProps) {
+  const { t, locale } = useI18n()
+  const [ticketData, setTicketData] = useState<Ticket>(ticket)
   const [status, setStatus] = useState<TicketStatus>(ticket.status)
+  const [selectedAssignee, setSelectedAssignee] = useState(ticket.assignee)
+  const [selectedPriority, setSelectedPriority] = useState<TicketPriority>(ticket.priority)
+  const [selectedCategory, setSelectedCategory] = useState<TicketCategory>(ticket.category)
+  const [assignees, setAssignees] = useState<Assignee[]>([])
   const [updating, setUpdating] = useState(false)
+  const [triageUpdating, setTriageUpdating] = useState(false)
+  const [statusError, setStatusError] = useState<string | null>(null)
+  const [triageError, setTriageError] = useState<string | null>(null)
+  const [statusComment, setStatusComment] = useState("")
+  const [aiSuggestions, setAiSuggestions] = useState<TicketAIRecommendationsPayload | null>(null)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState(false)
+  const localeCode = locale === "fr" ? "fr-FR" : "en-US"
+  const assigneeOptions = (() => {
+    if (!selectedAssignee) return assignees
+    if (assignees.some((member) => member.name === selectedAssignee)) return assignees
+    return [{ id: "current-assignee", name: selectedAssignee, role: "current" }, ...assignees]
+  })()
+  const triageLabels = {
+    assignee: locale === "fr" ? "Reaffecter a" : "Reassign to",
+    priority: locale === "fr" ? "Priorite" : "Priority",
+    category: locale === "fr" ? "Categorie" : "Category",
+    statusComment: locale === "fr" ? "Commentaire de statut" : "Status comment",
+    statusCommentHint:
+      locale === "fr"
+        ? "Obligatoire pour passer en Resolu (et a la cloture sans resolution)."
+        : "Required when setting Resolved (and when closing without a resolution).",
+    statusCommentPlaceholder:
+      locale === "fr"
+        ? "Saisissez le commentaire de resolution..."
+        : "Enter the resolution comment...",
+    reassignments: locale === "fr" ? "Reassignations" : "Reassignments",
+    firstAction: locale === "fr" ? "Premiere action" : "First action",
+    notAvailable: locale === "fr" ? "N/A" : "N/A",
+    resolutionCommentRequired:
+      locale === "fr"
+        ? "Un commentaire de resolution est obligatoire."
+        : "A resolution comment is required.",
+    closureCommentRequired:
+      locale === "fr"
+        ? "Un commentaire de resolution est obligatoire avant la cloture."
+        : "A resolution comment is required before closing.",
+    updateFailed: locale === "fr" ? "Mise a jour triage impossible." : "Could not update triage.",
+  }
+
+  useEffect(() => {
+    setTicketData(ticket)
+    setStatus(ticket.status)
+    setSelectedAssignee(ticket.assignee)
+    setSelectedPriority(ticket.priority)
+    setSelectedCategory(ticket.category)
+    setStatusError(null)
+    setTriageError(null)
+    setStatusComment("")
+  }, [ticket])
+
+  useEffect(() => {
+    let mounted = true
+    apiFetch<Assignee[]>("/users/assignees")
+      .then((data) => {
+        if (!mounted) return
+        setAssignees(data)
+      })
+      .catch(() => {})
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  const loadAiRecommendations = useCallback(async (force = false) => {
+    setAiLoading(true)
+    setAiError(false)
+    try {
+      const data = await fetchTicketAIRecommendations(
+        {
+          id: ticketData.id,
+          title: ticketData.title,
+          description: ticketData.description,
+        },
+        { force },
+      )
+      setAiSuggestions(data)
+    } catch {
+      setAiSuggestions(null)
+      setAiError(true)
+    } finally {
+      setAiLoading(false)
+    }
+  }, [ticketData.id, ticketData.title, ticketData.description])
+
+  useEffect(() => {
+    setAiSuggestions(null)
+    setAiError(false)
+    loadAiRecommendations().catch(() => {})
+  }, [loadAiRecommendations])
 
   async function handleStatusChange(newStatus: string) {
+    if (newStatus === status) return
+
+    const comment = statusComment.trim()
+    if (newStatus === "resolved" && !comment) {
+      setStatusError(triageLabels.resolutionCommentRequired)
+      return
+    }
+    if (newStatus === "closed" && !ticketData.resolution && !comment) {
+      setStatusError(triageLabels.closureCommentRequired)
+      return
+    }
+
     setUpdating(true)
     try {
+      const payload: { status: string; comment?: string } = { status: newStatus }
+      if (comment) {
+        payload.comment = comment
+      }
       await apiFetch(`/tickets/${ticket.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ status: newStatus }),
+        body: JSON.stringify(payload),
       })
-      setStatus(newStatus as TicketStatus)
-    } catch {
-      // silent
+      const refreshed = await fetchTicket(ticket.id)
+      setTicketData(refreshed)
+      setStatus(refreshed.status)
+      setStatusError(null)
+      setStatusComment("")
+    } catch (error) {
+      if (error instanceof ApiError) {
+        if (error.status === 400 && error.detail === "resolution_comment_required") {
+          setStatusError(triageLabels.resolutionCommentRequired)
+        } else if (error.status === 403) {
+          setStatusError(
+            locale === "fr"
+              ? "Vous n'avez pas les permissions pour changer le statut."
+              : "You do not have permission to change status."
+          )
+        } else {
+          setStatusError(
+            locale === "fr"
+              ? "Impossible de mettre a jour le statut."
+              : "Could not update status."
+          )
+        }
+      } else {
+        setStatusError(
+          locale === "fr"
+            ? "Impossible de mettre a jour le statut."
+            : "Could not update status."
+        )
+      }
     } finally {
       setUpdating(false)
     }
   }
 
+  async function updateTriage(payload: {
+    assignee?: string
+    priority?: TicketPriority
+    category?: TicketCategory
+  }) {
+    setTriageUpdating(true)
+    try {
+      await apiFetch(`/tickets/${ticket.id}/triage`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      })
+      const refreshed = await fetchTicket(ticket.id)
+      setTicketData(refreshed)
+      setSelectedAssignee(refreshed.assignee)
+      setSelectedPriority(refreshed.priority)
+      setSelectedCategory(refreshed.category)
+      setStatus(refreshed.status)
+      setTriageError(null)
+    } catch {
+      setTriageError(triageLabels.updateFailed)
+    } finally {
+      setTriageUpdating(false)
+    }
+  }
+
+  function handleAssigneeChange(newAssignee: string) {
+    if (!newAssignee || newAssignee === selectedAssignee) return
+    setSelectedAssignee(newAssignee)
+    updateTriage({ assignee: newAssignee }).catch(() => {})
+  }
+
+  function handlePriorityChange(newPriority: string) {
+    const casted = newPriority as TicketPriority
+    if (casted === selectedPriority) return
+    setSelectedPriority(casted)
+    updateTriage({ priority: casted }).catch(() => {})
+  }
+
+  function handleCategoryChange(newCategory: string) {
+    const casted = newCategory as TicketCategory
+    if (casted === selectedCategory) return
+    setSelectedCategory(casted)
+    updateTriage({ category: casted }).catch(() => {})
+  }
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 fade-slide-in">
       <div className="flex items-center gap-3">
         <Link href="/tickets">
           <Button variant="ghost" size="sm" className="gap-1.5">
             <ArrowLeft className="h-4 w-4" />
-            Retour
+            {t("detail.back")}
           </Button>
         </Link>
         <span className="text-sm font-mono text-muted-foreground">{ticket.id}</span>
@@ -71,16 +270,17 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* Main Content */}
         <div className="lg:col-span-2 space-y-6">
-          <Card className="border border-border">
+          <Card className="surface-card overflow-hidden rounded-2xl">
+            <div className="h-1.5 bg-gradient-to-r from-primary via-emerald-500 to-amber-500" />
             <CardHeader>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-1">
                   <CardTitle className="text-xl font-bold text-foreground">
-                    {ticket.title}
+                    {ticketData.title}
                   </CardTitle>
                   <p className="text-sm text-muted-foreground">
-                    Signale par {ticket.reporter} le{" "}
-                    {new Date(ticket.createdAt).toLocaleDateString("fr-FR", {
+                    {t("detail.reportedBy")} {ticketData.reporter} {t("detail.on")}{" "}
+                    {new Date(ticketData.createdAt).toLocaleDateString(localeCode, {
                       day: "2-digit",
                       month: "long",
                       year: "numeric",
@@ -88,8 +288,8 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Badge className={`${PRIORITY_CONFIG[ticket.priority].color} border-0`}>
-                    {PRIORITY_CONFIG[ticket.priority].label}
+                  <Badge className={`${PRIORITY_CONFIG[ticketData.priority].color} border-0`}>
+                    {PRIORITY_CONFIG[ticketData.priority].label}
                   </Badge>
                   <Badge className={`${STATUS_CONFIG[status].color} border-0`}>
                     {STATUS_CONFIG[status].label}
@@ -99,23 +299,106 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
             </CardHeader>
             <CardContent className="space-y-6">
               <div>
-                <h3 className="text-sm font-semibold text-foreground mb-2">Description</h3>
+                <h3 className="text-sm font-semibold text-foreground mb-2">{t("detail.description")}</h3>
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  {ticket.description}
+                  {ticketData.description}
                 </p>
               </div>
 
-              {ticket.resolution && (
+              {ticketData.resolution && (
                 <div className="rounded-lg bg-accent/50 p-4 border border-primary/20">
                   <div className="flex items-center gap-2 mb-2">
                     <CheckCircle2 className="h-4 w-4 text-primary" />
-                    <h3 className="text-sm font-semibold text-foreground">Resolution</h3>
+                    <h3 className="text-sm font-semibold text-foreground">{t("detail.resolution")}</h3>
                   </div>
                   <p className="text-sm text-foreground/80 leading-relaxed">
-                    {ticket.resolution}
+                    {ticketData.resolution}
                   </p>
                 </div>
               )}
+
+              <div className="rounded-lg border border-primary/25 bg-primary/5 p-4">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                    <Sparkles className="h-4 w-4 text-primary" />
+                    {t("detail.aiRecommendations")}
+                  </h3>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1.5 text-[11px]"
+                    onClick={() => loadAiRecommendations(true)}
+                    disabled={aiLoading}
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${aiLoading ? "animate-spin" : ""}`} />
+                    {t("detail.aiRefresh")}
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">{t("detail.aiRecommendationsDesc")}</p>
+
+                <div className="mt-3 space-y-3">
+                  {aiLoading && (
+                    <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      {t("detail.aiRecommendationsLoading")}
+                    </div>
+                  )}
+
+                  {!aiLoading && aiError && (
+                    <p className="text-xs text-destructive">{t("detail.aiRecommendationsError")}</p>
+                  )}
+
+                  {!aiLoading && !aiError && aiSuggestions && (
+                    <>
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                        <div className="rounded-md border border-border/70 bg-background/70 p-2">
+                          <p className="text-[11px] font-semibold text-muted-foreground">{t("detail.aiSuggestedPriority")}</p>
+                          <div className="mt-1">
+                            <Badge className={`${PRIORITY_CONFIG[aiSuggestions.priority].color} border-0 text-[10px]`}>
+                              {t(`priority.${aiSuggestions.priority}` as "priority.medium")}
+                            </Badge>
+                          </div>
+                        </div>
+
+                        <div className="rounded-md border border-border/70 bg-background/70 p-2">
+                          <p className="text-[11px] font-semibold text-muted-foreground">{t("detail.aiSuggestedCategory")}</p>
+                          <p className="mt-1 text-xs font-medium text-foreground">
+                            {t(`category.${aiSuggestions.category}` as "category.network")}
+                          </p>
+                        </div>
+
+                        <div className="rounded-md border border-border/70 bg-background/70 p-2">
+                          <p className="text-[11px] font-semibold text-muted-foreground">{t("detail.aiSuggestedAssignee")}</p>
+                          <p className="mt-1 text-xs font-medium text-foreground">
+                            {aiSuggestions.assignee || triageLabels.notAvailable}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="rounded-md border border-primary/30 bg-background/70 p-3">
+                        <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-primary">
+                          {t("form.recommendedSolutions")}
+                        </p>
+                        {aiSuggestions.recommendations.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">{t("detail.aiRecommendationsEmpty")}</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {aiSuggestions.recommendations.map((recommendation, index) => (
+                              <div
+                                key={`${ticketData.id}-ai-rec-main-${index}`}
+                                className="rounded-md border border-border/60 bg-muted/30 px-2.5 py-2 text-xs text-foreground"
+                              >
+                                {recommendation}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
 
               <Separator />
 
@@ -123,13 +406,13 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
               <div>
                 <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground mb-4">
                   <MessageSquare className="h-4 w-4" />
-                  Commentaires ({ticket.comments.length})
+                  {t("detail.comments")} ({ticketData.comments.length})
                 </h3>
-                {ticket.comments.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">Aucun commentaire</p>
+                {ticketData.comments.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">{t("detail.noComments")}</p>
                 ) : (
                   <div className="space-y-3">
-                    {ticket.comments.map((comment) => (
+                    {ticketData.comments.map((comment) => (
                       <div
                         key={comment.id}
                         className="rounded-lg border border-border p-3 bg-muted/30"
@@ -139,7 +422,7 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                             {comment.author}
                           </span>
                           <span className="text-xs text-muted-foreground">
-                            {new Date(comment.createdAt).toLocaleDateString("fr-FR", {
+                            {new Date(comment.createdAt).toLocaleDateString(localeCode, {
                               day: "2-digit",
                               month: "short",
                               hour: "2-digit",
@@ -159,19 +442,19 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
 
         {/* Sidebar Info */}
         <div className="space-y-4">
-          <Card className="border border-border">
+          <Card className="surface-card">
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-semibold text-foreground">
-                Informations
+                {t("detail.info")}
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="space-y-1">
-                <p className="text-xs font-medium text-muted-foreground">Statut</p>
-                <Select
-                  value={status}
-                  onValueChange={handleStatusChange}
-                  disabled={updating}
+	              <div className="space-y-1">
+	                <p className="text-xs font-medium text-muted-foreground">{t("tickets.status")}</p>
+	                <Select
+	                  value={status}
+	                  onValueChange={handleStatusChange}
+                  disabled={updating || triageUpdating}
                 >
                   <SelectTrigger className="h-8 text-sm">
                     <SelectValue />
@@ -182,35 +465,126 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                         {val.label}
                       </SelectItem>
                     ))}
+	                  </SelectContent>
+	                </Select>
+                <div className="mt-2 space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">{triageLabels.statusComment}</p>
+                  <Textarea
+                    value={statusComment}
+                    onChange={(event) => setStatusComment(event.target.value)}
+                    placeholder={triageLabels.statusCommentPlaceholder}
+                    className="min-h-[88px] text-sm"
+                    disabled={updating || triageUpdating}
+                  />
+                  <p className="text-[11px] text-muted-foreground">{triageLabels.statusCommentHint}</p>
+                </div>
+	                {statusError && (
+	                  <p className="mt-2 text-xs text-destructive">{statusError}</p>
+	                )}
+	              </div>
+
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-muted-foreground">{triageLabels.assignee}</p>
+                <Select
+                  value={selectedAssignee}
+                  onValueChange={handleAssigneeChange}
+                  disabled={updating || triageUpdating || assigneeOptions.length === 0}
+                >
+                  <SelectTrigger className="h-8 text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {assigneeOptions.map((member) => (
+                      <SelectItem key={member.id} value={member.name}>
+                        {member.name}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
 
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-muted-foreground">{triageLabels.priority}</p>
+                <Select
+                  value={selectedPriority}
+                  onValueChange={handlePriorityChange}
+                  disabled={updating || triageUpdating}
+                >
+                  <SelectTrigger className="h-8 text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="critical">{t("priority.critical")}</SelectItem>
+                    <SelectItem value="high">{t("priority.high")}</SelectItem>
+                    <SelectItem value="medium">{t("priority.medium")}</SelectItem>
+                    <SelectItem value="low">{t("priority.low")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-muted-foreground">{triageLabels.category}</p>
+                <Select
+                  value={selectedCategory}
+                  onValueChange={handleCategoryChange}
+                  disabled={updating || triageUpdating}
+                >
+                  <SelectTrigger className="h-8 text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="infrastructure">{t("category.infrastructure")}</SelectItem>
+                    <SelectItem value="network">{t("category.network")}</SelectItem>
+                    <SelectItem value="security">{t("category.security")}</SelectItem>
+                    <SelectItem value="application">{t("category.application")}</SelectItem>
+                    <SelectItem value="service_request">{t("category.service_request")}</SelectItem>
+                    <SelectItem value="hardware">{t("category.hardware")}</SelectItem>
+                    <SelectItem value="email">{t("category.email")}</SelectItem>
+                    <SelectItem value="problem">{t("category.problem")}</SelectItem>
+                  </SelectContent>
+                </Select>
+                {triageError && (
+                  <p className="mt-2 text-xs text-destructive">{triageError}</p>
+                )}
+              </div>
+
               <Separator />
 
-              <InfoRow icon={User} label="Assigne a" value={ticket.assignee} />
-              <InfoRow icon={User} label="Signale par" value={ticket.reporter} />
+              <InfoRow icon={User} label={t("detail.assignedTo")} value={ticketData.assignee} />
+              <InfoRow icon={User} label={t("detail.reportedBy")} value={ticketData.reporter} />
               <InfoRow
                 icon={Tag}
-                label="Categorie"
-                value={CATEGORY_CONFIG[ticket.category].label}
+                label={t("tickets.category")}
+                value={CATEGORY_CONFIG[ticketData.category].label}
               />
               <InfoRow
                 icon={Calendar}
-                label="Cree le"
-                value={new Date(ticket.createdAt).toLocaleDateString("fr-FR")}
+                label={t("detail.createdAt")}
+                value={new Date(ticketData.createdAt).toLocaleDateString(localeCode)}
               />
               <InfoRow
                 icon={Clock}
-                label="Mis a jour"
-                value={new Date(ticket.updatedAt).toLocaleDateString("fr-FR")}
+                label={t("detail.updatedAt")}
+                value={new Date(ticketData.updatedAt).toLocaleDateString(localeCode)}
+              />
+              <InfoRow
+                icon={Clock}
+                label={triageLabels.reassignments}
+                value={String(ticketData.assignmentChangeCount || 0)}
+              />
+              <InfoRow
+                icon={Clock}
+                label={triageLabels.firstAction}
+                value={ticketData.firstActionAt
+                  ? new Date(ticketData.firstActionAt).toLocaleDateString(localeCode)
+                  : triageLabels.notAvailable}
               />
 
-              {ticket.tags.length > 0 && (
+              {ticketData.tags.length > 0 && (
                 <div>
-                  <p className="text-xs font-medium text-muted-foreground mb-1.5">Tags</p>
+                  <p className="text-xs font-medium text-muted-foreground mb-1.5">{t("form.tags")}</p>
                   <div className="flex flex-wrap gap-1">
-                    {ticket.tags.map((tag) => (
+                    {ticketData.tags.map((tag) => (
                       <Badge key={tag} variant="secondary" className="text-[10px]">
                         {tag}
                       </Badge>
@@ -220,6 +594,7 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
               )}
             </CardContent>
           </Card>
+
         </div>
       </div>
     </div>

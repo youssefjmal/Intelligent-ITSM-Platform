@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.core.exceptions import ITSMGatekeeperException
-from app.routers import ai, auth, emails, tickets, users, recommendations, assignees
+from app.routers import ai, assignees, auth, emails, integrations_jira, recommendations, tickets, users
 
 
 def create_app() -> FastAPI:
@@ -29,10 +29,12 @@ def create_app() -> FastAPI:
     app.include_router(ai.router, prefix="/api/ai", tags=["ai"])
     app.include_router(recommendations.router, prefix="/api/recommendations", tags=["recommendations"])
     app.include_router(assignees.router, prefix="/api", tags=["assignees"])
+    app.include_router(integrations_jira.router, prefix="/api", tags=["integrations-jira"])
 
     @app.exception_handler(ITSMGatekeeperException)
     async def handle_itsm_exception(_: Request, exc: ITSMGatekeeperException) -> JSONResponse:
-        return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
+        headers = exc.headers if getattr(exc, "headers", None) else None
+        return JSONResponse(status_code=exc.status_code, content=exc.to_dict(), headers=headers)
 
     return app
 

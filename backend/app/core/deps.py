@@ -6,14 +6,25 @@ from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.exceptions import AuthenticationException, InsufficientPermissionsError
-from app.core.security import decode_token
+from app.core.exceptions import AuthenticationException, ExpiredTokenError, InsufficientPermissionsError
+from app.core.security import ACCESS_TOKEN_TYPE, decode_token
 from app.db.session import get_db
 from app.models.user import User
 
 
+def _extract_bearer_token(request: Request) -> str | None:
+    authorization = request.headers.get("Authorization", "")
+    if not authorization:
+        return None
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer":
+        return None
+    cleaned = token.strip()
+    return cleaned or None
+
+
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
-    token = request.cookies.get(settings.COOKIE_NAME)
+    token = _extract_bearer_token(request) or request.cookies.get(settings.COOKIE_NAME)
     if not token:
         raise AuthenticationException(
             "not_authenticated",
@@ -23,7 +34,16 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
 
     try:
         payload = decode_token(token)
-    except ValueError:
+    except ValueError as exc:
+        if str(exc) == "expired_token":
+            raise ExpiredTokenError("access_token_expired")
+        raise AuthenticationException(
+            "invalid_token",
+            error_code="INVALID_TOKEN",
+            status_code=401,
+        )
+    token_type = payload.get("type")
+    if token_type and token_type != ACCESS_TOKEN_TYPE:
         raise AuthenticationException(
             "invalid_token",
             error_code="INVALID_TOKEN",

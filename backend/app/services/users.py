@@ -8,7 +8,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.models.user import User
-from app.models.enums import UserRole
+from app.models.enums import SeniorityLevel, UserRole
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,23 @@ def update_role(db: Session, user_id: str, role: UserRole) -> User | None:
     return user
 
 
+def update_seniority(db: Session, user_id: str, seniority_level: SeniorityLevel) -> User | None:
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        return None
+    user = db.get(User, user_uuid)
+    if not user:
+        logger.warning("User seniority update failed (not found): %s", user_id)
+        return None
+    user.seniority_level = seniority_level
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    logger.info("User seniority updated: %s -> %s", user.email, seniority_level.value)
+    return user
+
+
 def delete_user(db: Session, user_id: str) -> bool:
     try:
         user_uuid = UUID(user_id)
@@ -47,6 +64,23 @@ def delete_user(db: Session, user_id: str) -> bool:
     db.commit()
     logger.info("User deleted: %s", user.email)
     return True
+
+
+def update_specializations(db: Session, user_id: str, specializations: list[str]) -> User | None:
+    try:
+        user_uuid = UUID(user_id)
+    except ValueError:
+        return None
+    user = db.get(User, user_uuid)
+    if not user:
+        logger.warning("User specializations update failed (not found): %s", user_id)
+        return None
+    user.specializations = [s for s in specializations if s]
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    logger.info("User specializations updated: %s", user.email)
+    return user
 
 
 def list_assignees(db: Session) -> list[User]:

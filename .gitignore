@@ -11,6 +11,7 @@ venv/
 # Node / Next
 node_modules/
 .next/
+*.tsbuildinfo
 
 # Env files
 backend/.env

@@ -16,21 +16,23 @@ import {
 } from "lucide-react"
 import Link from "next/link"
 import { fetchRecommendations, type Recommendation } from "@/lib/recommendations-api"
+import { useI18n } from "@/lib/i18n"
 
 const TYPE_CONFIG = {
-  pattern: { label: "Pattern", icon: TrendingUp, color: "bg-blue-100 text-blue-800" },
-  priority: { label: "Priorite", icon: AlertTriangle, color: "bg-amber-100 text-amber-800" },
-  solution: { label: "Solution", icon: Lightbulb, color: "bg-emerald-100 text-emerald-800" },
-  workflow: { label: "Workflow", icon: Zap, color: "bg-purple-100 text-purple-800" },
+  pattern: { icon: TrendingUp, color: "bg-sky-100 text-sky-800 border border-sky-200" },
+  priority: { icon: AlertTriangle, color: "bg-amber-100 text-amber-800 border border-amber-200" },
+  solution: { icon: Lightbulb, color: "bg-emerald-100 text-emerald-800 border border-emerald-200" },
+  workflow: { icon: Zap, color: "bg-teal-100 text-teal-800 border border-teal-200" },
 }
 
 const IMPACT_CONFIG = {
-  high: { label: "Impact Eleve", color: "bg-red-50 text-red-700 border-red-200" },
-  medium: { label: "Impact Moyen", color: "bg-amber-50 text-amber-700 border-amber-200" },
-  low: { label: "Impact Faible", color: "bg-slate-50 text-slate-600 border-slate-200" },
+  high: { color: "bg-red-50 text-red-700 border-red-200" },
+  medium: { color: "bg-amber-50 text-amber-700 border-amber-200" },
+  low: { color: "bg-slate-50 text-slate-600 border-slate-200" },
 }
 
 export function RecommendationsPanel() {
+  const { t } = useI18n()
   const [recommendations, setRecommendations] = useState<Recommendation[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -74,46 +76,46 @@ export function RecommendationsPanel() {
 
   if (loading) {
     return (
-      <div className="rounded-lg border border-border bg-card p-6 text-sm text-muted-foreground">
-        Chargement des recommandations...
+      <div className="surface-card rounded-xl p-6 text-sm text-muted-foreground">
+        {t("general.loading")}
       </div>
     )
   }
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 fade-slide-in">
         <StatCard
           icon={BrainCircuit}
-          title="Recommandations"
+          title={t("recs.recommendations")}
           value={stats.total.toString()}
-          description="Generees par l'IA"
+          description={t("recs.generated")}
           iconColor="text-primary"
         />
         <StatCard
           icon={Target}
-          title="Confiance Moyenne"
+          title={t("recs.avgConfidence")}
           value={`${stats.avgConfidence}%`}
-          description="Taux de precision"
+          description={t("recs.accuracy")}
           iconColor="text-blue-600"
         />
         <StatCard
           icon={AlertTriangle}
-          title="Impact Eleve"
+          title={t("recs.highImpact")}
           value={stats.highImpact.toString()}
-          description="A traiter en priorite"
+          description={t("recs.treatFirst")}
           iconColor="text-red-600"
         />
         <StatCard
           icon={TrendingUp}
-          title="Patterns Detectes"
+          title={t("recs.patternsDetected")}
           value={stats.patterns.toString()}
-          description="Ce mois-ci"
+          description={t("kpi.thisMonth")}
           iconColor="text-amber-600"
         />
       </div>
 
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex gap-2">
           {["all", "pattern", "priority", "solution", "workflow"].map((f) => (
             <Button
@@ -121,17 +123,17 @@ export function RecommendationsPanel() {
               variant={filter === f ? "default" : "outline"}
               size="sm"
               onClick={() => setFilter(f)}
-              className={filter === f ? "bg-primary text-primary-foreground" : ""}
+              className={filter === f ? "bg-primary text-primary-foreground" : "bg-card/80"}
             >
               {f === "all"
-                ? "Tout"
+                ? t("recs.all")
                 : f === "pattern"
-                  ? "Patterns"
+                  ? t("recs.patterns")
                   : f === "priority"
-                    ? "Priorites"
+                    ? t("recs.priorities")
                     : f === "solution"
-                      ? "Solutions"
-                      : "Workflows"}
+                      ? t("recs.solutions")
+                      : t("recs.workflows")}
             </Button>
           ))}
         </div>
@@ -143,13 +145,13 @@ export function RecommendationsPanel() {
           className="gap-2 bg-transparent"
         >
           <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
-          Actualiser
+          {t("recs.refresh")}
         </Button>
       </div>
 
       {filtered.length === 0 ? (
-        <div className="rounded-lg border border-border bg-card p-6 text-sm text-muted-foreground">
-          Aucune recommandation disponible pour le moment.
+        <div className="surface-card rounded-xl p-6 text-sm text-muted-foreground">
+          {t("dashboard.problemNoData")}
         </div>
       ) : (
         <div className="space-y-4">
@@ -159,7 +161,8 @@ export function RecommendationsPanel() {
             const TypeIcon = typeConfig.icon
 
             return (
-              <Card key={rec.id} className="border border-border hover:border-primary/30 transition-colors">
+              <Card key={rec.id} className="surface-card overflow-hidden transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md">
+                <div className="h-1.5 bg-gradient-to-r from-primary/80 via-emerald-500/80 to-amber-500/80" />
                 <CardContent className="p-5">
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex gap-3 flex-1">
@@ -171,14 +174,24 @@ export function RecommendationsPanel() {
                           <h3 className="text-sm font-semibold text-foreground">
                             {rec.title}
                           </h3>
-                          <Badge className={`${typeConfig.color} border-0 text-[10px]`}>
-                            {typeConfig.label}
+                          <Badge className={`${typeConfig.color} text-[10px]`}>
+                            {rec.type === "pattern"
+                              ? t("recs.pattern")
+                              : rec.type === "priority"
+                                ? t("recs.priority")
+                                : rec.type === "solution"
+                                  ? t("recs.solution")
+                                  : t("recs.workflow")}
                           </Badge>
                           <Badge
                             variant="outline"
                             className={`${impactConfig.color} text-[10px]`}
                           >
-                            {impactConfig.label}
+                            {rec.impact === "high"
+                              ? t("recs.impactHigh")
+                              : rec.impact === "medium"
+                                ? t("recs.impactMedium")
+                                : t("recs.impactLow")}
                           </Badge>
                         </div>
                         <p className="text-sm text-muted-foreground leading-relaxed">
@@ -186,7 +199,7 @@ export function RecommendationsPanel() {
                         </p>
                         <div className="flex flex-wrap items-center gap-3 pt-1">
                           <div className="flex items-center gap-1">
-                            <span className="text-xs text-muted-foreground">Tickets lies:</span>
+                            <span className="text-xs text-muted-foreground">{t("recs.relatedTickets")}:</span>
                             {rec.relatedTickets.map((tid) => (
                               <Link
                                 key={tid}
@@ -199,7 +212,7 @@ export function RecommendationsPanel() {
                           </div>
                           <Separator orientation="vertical" className="h-3" />
                           <span className="text-xs text-muted-foreground">
-                            Confiance: {rec.confidence}%
+                            {t("recs.confidence")}: {rec.confidence}%
                           </span>
                         </div>
                       </div>

@@ -5,6 +5,7 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 import { apiFetch, ApiError } from "@/lib/api"
 
 export type UserRole = "admin" | "agent" | "viewer"
+export type UserSeniority = "intern" | "junior" | "middle" | "senior"
 
 export interface User {
   id: string
@@ -13,16 +14,25 @@ export interface User {
   role: UserRole
   isVerified: boolean
   createdAt: string
+  specializations: string[]
+  seniorityLevel: UserSeniority
+  isAvailable: boolean
+  maxConcurrentTickets: number
 }
 
 interface AuthContextType {
   user: User | null
   loading: boolean
   signIn: (email: string, password: string) => Promise<{ error?: string }>
-  signUp: (data: { email: string; password: string; name: string; role: UserRole }) => Promise<{ error?: string; verificationToken?: string }>
+  continueWithEmail: (
+    email: string,
+    password: string
+  ) => Promise<{ error?: string; requiresVerification?: boolean; verificationToken?: string; verificationCode?: string }>
+  signUp: (data: { email: string; password: string; name: string; specializations: string[] }) => Promise<{ error?: string; verificationToken?: string; verificationCode?: string }>
   signOut: () => Promise<void>
   getAllUsers: () => Promise<User[]>
   updateUserRole: (userId: string, role: UserRole) => Promise<void>
+  updateUserSeniority: (userId: string, seniorityLevel: UserSeniority) => Promise<void>
   deleteUser: (userId: string) => Promise<void>
   hasPermission: (action: Permission) => boolean
 }
@@ -74,6 +84,10 @@ function mapUser(data: {
   role: UserRole
   is_verified: boolean
   created_at: string
+  specializations: string[]
+  seniority_level: UserSeniority
+  is_available: boolean
+  max_concurrent_tickets: number
 }): User {
   return {
     id: data.id,
@@ -82,6 +96,10 @@ function mapUser(data: {
     role: data.role,
     isVerified: data.is_verified,
     createdAt: data.created_at,
+    specializations: data.specializations ?? [],
+    seniorityLevel: data.seniority_level ?? "middle",
+    isAvailable: data.is_available ?? true,
+    maxConcurrentTickets: data.max_concurrent_tickets ?? 10,
   }
 }
 
@@ -93,6 +111,8 @@ function mapAuthError(detail: string): string {
       return "emailExists"
     case "email_not_verified":
       return "emailNotVerified"
+    case "password_too_short":
+      return "passwordTooShort"
     default:
       return "invalidCredentials"
   }
@@ -105,15 +125,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const loadUser = async () => {
       try {
-        const data = await apiFetch<{
-          id: string
-          email: string
-          name: string
-          role: UserRole
-          is_verified: boolean
-          created_at: string
-        }>("/auth/me")
-        setUser(mapUser(data))
+      const data = await apiFetch<{
+        id: string
+        email: string
+        name: string
+        role: UserRole
+        is_verified: boolean
+        created_at: string
+        specializations: string[]
+        seniority_level: UserSeniority
+        is_available: boolean
+        max_concurrent_tickets: number
+      }>("/auth/me")
+      setUser(mapUser(data))
       } catch {
         setUser(null)
       } finally {
@@ -132,6 +156,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         role: UserRole
         is_verified: boolean
         created_at: string
+        specializations: string[]
+        seniority_level: UserSeniority
+        is_available: boolean
+        max_concurrent_tickets: number
       }>("/auth/login", {
         method: "POST",
         body: JSON.stringify({ email, password }),
@@ -147,13 +175,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const signUp = useCallback(
-    async (data: { email: string; password: string; name: string; role: UserRole }) => {
+    async (data: { email: string; password: string; name: string; specializations: string[] }) => {
       try {
-        const result = await apiFetch<{ message: string; verification_token?: string }>("/auth/register", {
+        const result = await apiFetch<{ message: string; verification_token?: string; verification_code?: string }>("/auth/register", {
           method: "POST",
           body: JSON.stringify(data),
         })
-        return { verificationToken: result.verification_token }
+        return { verificationToken: result.verification_token, verificationCode: result.verification_code }
       } catch (err) {
         if (err instanceof ApiError) {
           return { error: mapAuthError(err.detail) }
@@ -174,17 +202,107 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const getAllUsers = useCallback(async () => {
     const users = await apiFetch<
-      Array<{ id: string; email: string; name: string; role: UserRole; is_verified: boolean; created_at: string }>
+      Array<{
+        id: string
+        email: string
+        name: string
+        role: UserRole
+        is_verified: boolean
+        created_at: string
+        specializations: string[]
+        seniority_level: UserSeniority
+        is_available: boolean
+        max_concurrent_tickets: number
+      }>
     >("/users")
     return users.map(mapUser)
   }, [])
 
   const updateUserRole = useCallback(async (userId: string, role: UserRole) => {
-    const updated = await apiFetch<{ id: string; email: string; name: string; role: UserRole; is_verified: boolean; created_at: string }>(
+    const updated = await apiFetch<{
+      id: string
+      email: string
+      name: string
+      role: UserRole
+      is_verified: boolean
+      created_at: string
+      specializations: string[]
+      seniority_level: UserSeniority
+      is_available: boolean
+      max_concurrent_tickets: number
+    }>(
       `/users/${userId}/role`,
       {
         method: "PATCH",
         body: JSON.stringify({ role }),
+      }
+    )
+    setUser((prev) => {
+      if (prev && prev.id === updated.id) {
+        return mapUser(updated)
+      }
+      return prev
+    })
+  }, [])
+
+  const continueWithEmail = useCallback(async (email: string, password: string) => {
+    try {
+      const result = await apiFetch<{
+        message: string
+        user?: {
+          id: string
+          email: string
+          name: string
+          role: UserRole
+          is_verified: boolean
+          created_at: string
+          specializations: string[]
+          seniority_level: UserSeniority
+          is_available: boolean
+          max_concurrent_tickets: number
+        }
+        requires_verification?: boolean
+        verification_token?: string
+        verification_code?: string
+      }>("/auth/email-login", {
+        method: "POST",
+        body: JSON.stringify({ email, password }),
+      })
+
+      if (result.user) {
+        setUser(mapUser(result.user))
+      }
+
+      return {
+        requiresVerification: result.requires_verification ?? false,
+        verificationToken: result.verification_token,
+        verificationCode: result.verification_code,
+      }
+    } catch (err) {
+      if (err instanceof ApiError) {
+        return { error: mapAuthError(err.detail) }
+      }
+      return { error: "invalidCredentials" }
+    }
+  }, [])
+
+  const updateUserSeniority = useCallback(async (userId: string, seniorityLevel: UserSeniority) => {
+    const updated = await apiFetch<{
+      id: string
+      email: string
+      name: string
+      role: UserRole
+      is_verified: boolean
+      created_at: string
+      specializations: string[]
+      seniority_level: UserSeniority
+      is_available: boolean
+      max_concurrent_tickets: number
+    }>(
+      `/users/${userId}/seniority`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ seniority_level: seniorityLevel }),
       }
     )
     setUser((prev) => {
@@ -210,7 +328,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, loading, signIn, signUp, signOut, getAllUsers, updateUserRole, deleteUser, hasPermission }}
+      value={{
+        user,
+        loading,
+        signIn,
+        continueWithEmail,
+        signUp,
+        signOut,
+        getAllUsers,
+        updateUserRole,
+        updateUserSeniority,
+        deleteUser,
+        hasPermission,
+      }}
     >
       {children}
     </AuthContext.Provider>

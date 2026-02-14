@@ -2,7 +2,15 @@
 
 export type TicketStatus = "open" | "in-progress" | "pending" | "resolved" | "closed"
 export type TicketPriority = "critical" | "high" | "medium" | "low"
-export type TicketCategory = "bug" | "feature" | "support" | "infrastructure" | "security"
+export type TicketCategory =
+  | "infrastructure"
+  | "network"
+  | "security"
+  | "application"
+  | "service_request"
+  | "hardware"
+  | "email"
+  | "problem"
 
 export interface TicketComment {
   id: string
@@ -20,6 +28,15 @@ export interface Ticket {
   category: TicketCategory
   assignee: string
   reporter: string
+  autoAssignmentApplied?: boolean
+  autoPriorityApplied?: boolean
+  assignmentModelVersion?: string
+  priorityModelVersion?: string
+  predictedPriority?: TicketPriority
+  predictedCategory?: TicketCategory
+  assignmentChangeCount?: number
+  firstActionAt?: string
+  resolvedAt?: string
   createdAt: string
   updatedAt: string
   resolution?: string
@@ -59,9 +76,12 @@ export const PRIORITY_CONFIG: Record<TicketPriority, { label: string; color: str
 }
 
 export const CATEGORY_CONFIG: Record<TicketCategory, { label: string }> = {
-  bug: { label: "Bug" },
-  feature: { label: "Fonctionnalite" },
-  support: { label: "Support" },
   infrastructure: { label: "Infrastructure" },
+  network: { label: "Reseau" },
   security: { label: "Securite" },
+  application: { label: "Application" },
+  service_request: { label: "Service Request" },
+  hardware: { label: "Materiel" },
+  email: { label: "Email" },
+  problem: { label: "Probleme" },
 }

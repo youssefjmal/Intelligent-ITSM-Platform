@@ -7,7 +7,14 @@ import { useRouter, usePathname } from "next/navigation"
 import { useAuth, type Permission } from "@/lib/auth"
 import { Loader2 } from "lucide-react"
 
-const PUBLIC_PATHS = ["/auth/login", "/auth/signup", "/auth/signup-success", "/auth/verify"]
+const PUBLIC_PATHS = [
+  "/auth/login",
+  "/auth/signup",
+  "/auth/signup-success",
+  "/auth/verify",
+  "/auth/forgot-password",
+  "/auth/reset-password",
+]
 
 // Map routes to required permissions
 const ROUTE_PERMISSIONS: Record<string, Permission> = {
@@ -44,8 +51,8 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
         <div className="flex flex-col items-center gap-3">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
-            <img src="/logo.svg" alt="TeamWill logo" className="h-10 w-10 object-contain" />
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/15 ring-1 ring-primary/25">
+            <img src="/logo.png" alt="Teamwil logo" className="logo-emphasis h-10 w-10 object-contain" />
           </div>
           <Loader2 className="h-5 w-5 animate-spin text-primary" />
         </div>

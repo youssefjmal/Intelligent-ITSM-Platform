@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
-import { apiFetch } from "@/lib/api"
+import { ApiError, apiFetch } from "@/lib/api"
 import { Send, Bot, User, Sparkles, RotateCcw, Ticket, CheckCircle2 } from "lucide-react"
 import { useI18n } from "@/lib/i18n"
 import { useAuth } from "@/lib/auth"
@@ -18,15 +18,81 @@ type ChatMessage = {
   role: "user" | "assistant"
   content: string
   ticketDraft?: TicketDraft
+  ticketAction?: string | null
 }
 
 type TicketDraft = {
   title: string
   description: string
   priority: "critical" | "high" | "medium" | "low"
-  category: "bug" | "feature" | "support" | "infrastructure" | "security"
+  category: "infrastructure" | "network" | "security" | "application" | "service_request" | "hardware" | "email" | "problem"
   tags: string[]
   assignee?: string | null
+}
+
+type TicketDigestRow = {
+  id: string
+  title: string
+  priority: string
+  status: string
+  assignee: string
+}
+
+const MAX_CHAT_MESSAGES = 40
+const MAX_CHAT_CONTENT_LEN = 4000
+
+function parseTicketDigest(content: string): { header: string; rows: TicketDigestRow[]; extra: string | null } | null {
+  const lines = content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (!lines.length) return null
+
+  const rows: TicketDigestRow[] = []
+  let extra: string | null = null
+  for (const line of lines.slice(1)) {
+    if (line.startsWith("...")) {
+      extra = line
+      continue
+    }
+    if (!line.startsWith("-")) continue
+    const clean = line.replace(/^-+\s*/, "")
+    const parts = clean.split("|").map((part) => part.trim())
+    if (parts.length < 5) continue
+    const [id, title, priority, status, ...assigneeParts] = parts
+    rows.push({
+      id,
+      title,
+      priority,
+      status,
+      assignee: assigneeParts.join(" | "),
+    })
+  }
+
+  if (!rows.length) return null
+  return {
+    header: lines[0],
+    rows,
+    extra,
+  }
+}
+
+function priorityBadgeClass(priority: string): string {
+  const p = priority.toLowerCase()
+  if (p.includes("critical") || p.includes("critique")) return "border-red-200 bg-red-500/10 text-red-700"
+  if (p.includes("high") || p.includes("haute")) return "border-orange-200 bg-orange-500/10 text-orange-700"
+  if (p.includes("medium") || p.includes("moyenne")) return "border-amber-200 bg-amber-500/10 text-amber-700"
+  return "border-slate-200 bg-slate-500/10 text-slate-700"
+}
+
+function statusBadgeClass(status: string): string {
+  const s = status.toLowerCase()
+  if (s.includes("open") || s.includes("ouvert")) return "border-blue-200 bg-blue-500/10 text-blue-700"
+  if (s.includes("progress") || s.includes("cours")) return "border-cyan-200 bg-cyan-500/10 text-cyan-700"
+  if (s.includes("pending") || s.includes("attente")) return "border-yellow-200 bg-yellow-500/10 text-yellow-700"
+  if (s.includes("resolved") || s.includes("resolu")) return "border-emerald-200 bg-emerald-500/10 text-emerald-700"
+  if (s.includes("closed") || s.includes("clos")) return "border-slate-200 bg-slate-500/10 text-slate-700"
+  return "border-muted bg-muted/60 text-foreground"
 }
 
 export function TicketChatbot() {
@@ -46,6 +112,57 @@ export function TicketChatbot() {
     t("chat.prompt4"),
   ]
 
+  function getChatErrorMessage(error: unknown): string {
+    if (error instanceof ApiError) {
+      if (error.status === 401) {
+        return locale === "fr" ? "Session expiree. Reconnectez-vous." : "Session expired. Please sign in again."
+      }
+      if (error.status === 422) {
+        return locale === "fr"
+          ? "Message invalide ou conversation trop longue. Reinitialisez le chat."
+          : "Invalid message or conversation too long. Reset the chat."
+      }
+    }
+    return t("chat.errorReply")
+  }
+
+  function renderAssistantMessage(message: ChatMessage) {
+    if (message.ticketAction === "show_ticket") {
+      const parsed = parseTicketDigest(message.content)
+      if (parsed) {
+        return (
+          <div className="space-y-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{parsed.header}</p>
+            <div className="space-y-2">
+              {parsed.rows.map((row) => (
+                <div key={`${row.id}-${row.title}`} className="rounded-lg border border-border bg-background/60 p-2.5">
+                  <div className="text-xs font-semibold text-foreground">
+                    {row.id}
+                    <span className="mx-1 text-muted-foreground">-</span>
+                    <span className="font-medium">{row.title}</span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <Badge variant="outline" className={`text-[10px] ${priorityBadgeClass(row.priority)}`}>
+                      {row.priority}
+                    </Badge>
+                    <Badge variant="outline" className={`text-[10px] ${statusBadgeClass(row.status)}`}>
+                      {row.status}
+                    </Badge>
+                    <Badge variant="outline" className="text-[10px] border-border bg-muted/60">
+                      {row.assignee}
+                    </Badge>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {parsed.extra && <p className="text-xs text-muted-foreground">{parsed.extra}</p>}
+          </div>
+        )
+      }
+    }
+    return <div className="whitespace-pre-wrap">{message.content}</div>
+  }
+
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
@@ -53,33 +170,43 @@ export function TicketChatbot() {
   }, [messages, loading])
 
   async function sendMessage(text: string) {
-    if (!text.trim() || loading) return
+    const normalized = text.trim()
+    if (!normalized || loading) return
     const userMessage: ChatMessage = {
       id: `m-${Date.now()}`,
       role: "user",
-      content: text,
+      content: normalized.slice(0, MAX_CHAT_CONTENT_LEN),
     }
     const nextMessages: ChatMessage[] = [...messages, userMessage]
     setMessages(nextMessages)
     setInput("")
     setLoading(true)
     try {
+      const payloadMessages = nextMessages
+        .slice(-MAX_CHAT_MESSAGES)
+        .map((m) => ({ role: m.role, content: m.content.slice(0, MAX_CHAT_CONTENT_LEN) }))
       const result = await apiFetch<{ reply: string; action?: string; ticket?: TicketDraft }>("/ai/chat", {
         method: "POST",
         body: JSON.stringify({
-          messages: nextMessages.map((m) => ({ role: m.role, content: m.content })),
+          messages: payloadMessages,
           locale,
         }),
       })
-      const ticketDraft = result.action === "create_ticket" ? result.ticket : undefined
+      const ticketDraft = result.ticket ? result.ticket : undefined
       setMessages((prev) => [
         ...prev,
-        { id: `m-${Date.now()}-bot`, role: "assistant", content: result.reply, ticketDraft },
+        {
+          id: `m-${Date.now()}-bot`,
+          role: "assistant",
+          content: result.reply,
+          ticketDraft,
+          ticketAction: result.action ?? null,
+        },
       ])
-    } catch {
+    } catch (error) {
       setMessages((prev) => [
         ...prev,
-        { id: `m-${Date.now()}-bot`, role: "assistant", content: t("chat.errorReply") },
+        { id: `m-${Date.now()}-bot`, role: "assistant", content: getChatErrorMessage(error) },
       ])
     } finally {
       setLoading(false)
@@ -131,10 +258,11 @@ export function TicketChatbot() {
   }
 
   return (
-    <Card className="flex flex-col h-[calc(100vh-10rem)] border border-border">
-      <CardHeader className="pb-3 border-b border-border shrink-0">
+    <Card className="surface-card flex h-[calc(100vh-13rem)] flex-col overflow-hidden rounded-2xl">
+      <div className="h-1.5 bg-gradient-to-r from-primary via-emerald-500 to-amber-500" />
+      <CardHeader className="shrink-0 border-b border-border/70 pb-3">
         <CardTitle className="flex items-center gap-2 text-base font-semibold text-foreground">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10">
             <Bot className="h-4 w-4 text-primary" />
           </div>
           {t("chat.title")}
@@ -144,10 +272,10 @@ export function TicketChatbot() {
         </p>
       </CardHeader>
 
-      <CardContent className="flex-1 overflow-hidden p-0 flex flex-col">
+      <CardContent className="flex flex-1 flex-col overflow-hidden p-0">
         <ScrollArea className="flex-1 p-4" ref={scrollRef}>
           {messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full py-12">
+            <div className="flex h-full flex-col items-center justify-center py-12">
               <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 mb-4">
                 <Sparkles className="h-7 w-7 text-primary" />
               </div>
@@ -163,7 +291,7 @@ export function TicketChatbot() {
                     key={prompt}
                     type="button"
                     onClick={() => handleQuickPrompt(prompt)}
-                    className="rounded-lg border border-border bg-card p-3 text-left text-xs text-foreground hover:bg-accent/50 hover:border-primary/30 transition-colors"
+                    className="rounded-xl border border-border bg-card/80 p-3 text-left text-xs text-foreground transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:bg-accent/60"
                   >
                     {prompt}
                   </button>
@@ -175,6 +303,7 @@ export function TicketChatbot() {
               {messages.map((message) => {
                 const isUser = message.role === "user"
                 const draft = message.ticketDraft
+                const canCreate = message.ticketAction === "create_ticket"
                 return (
                   <div key={message.id} className="space-y-3">
                     <div
@@ -188,11 +317,11 @@ export function TicketChatbot() {
                       <div
                         className={`max-w-[80%] rounded-xl px-3.5 py-2.5 text-sm leading-relaxed ${
                           isUser
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-muted text-foreground"
+                            ? "bg-gradient-to-br from-primary to-emerald-700 text-primary-foreground shadow-sm"
+                            : "bg-muted/90 text-foreground"
                         }`}
                       >
-                        <div className="whitespace-pre-wrap">{message.content}</div>
+                        {renderAssistantMessage(message)}
                       </div>
                       {isUser && (
                         <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-foreground/10">
@@ -201,58 +330,79 @@ export function TicketChatbot() {
                       )}
                     </div>
                     {draft && (
-                      <div className="ml-10 rounded-xl border border-border bg-card p-4">
-                    <div className="flex items-center gap-2 mb-3">
-                      <Ticket className="h-4 w-4 text-primary" />
-                      <span className="text-sm font-semibold text-foreground">{t("chat.ticketDraft")}</span>
-                    </div>
-                    <div className="space-y-2 text-xs text-muted-foreground">
-                      <div>
-                        <span className="font-medium text-foreground">{t("chat.ticketTitle")}:</span> {draft.title}
-                      </div>
-                      <div>
-                        <span className="font-medium text-foreground">{t("chat.ticketDescription")}:</span> {draft.description}
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <Badge variant="secondary" className="text-[10px]">
-                          {t(`priority.${draft.priority}` as "priority.medium")}
-                        </Badge>
-                        <Badge variant="outline" className="text-[10px]">
-                          {t(`category.${draft.category}` as "category.support")}
-                        </Badge>
-                        {draft.assignee && (
-                          <Badge variant="outline" className="text-[10px]">
-                            {t("chat.ticketAssignee")}: {draft.assignee}
-                          </Badge>
-                        )}
-                      </div>
-                      {draft.tags.length > 0 && (
-                        <div className="flex flex-wrap gap-1">
-                          <span className="font-medium text-foreground">{t("chat.ticketTags")}:</span>
-                          {draft.tags.map((tag) => (
-                            <Badge key={tag} variant="secondary" className="text-[10px]">
-                              {tag}
+                      <div className="ml-10 rounded-xl border border-border/80 bg-card/90 p-4 shadow-sm">
+                        <div className="mb-3 flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <Ticket className="h-4 w-4 text-primary" />
+                            <span className="text-sm font-semibold text-foreground">{t("chat.ticketDraft")}</span>
+                          </div>
+                          {!canCreate && (
+                            <Badge variant="outline" className="text-[10px] border-border bg-muted/60">
+                              Preview
                             </Badge>
-                          ))}
+                          )}
                         </div>
-                      )}
-                    </div>
-                    <div className="mt-3">
-                      <Button
-                        type="button"
-                        size="sm"
-                        className="gap-2"
-                        disabled={creatingId === message.id}
-                        onClick={() => handleCreateTicket(message.id, draft)}
-                      >
-                        {creatingId === message.id ? (
-                          <RotateCcw className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <CheckCircle2 className="h-3.5 w-3.5" />
+                        <div className="space-y-3">
+                          <div className="rounded-lg border border-border bg-background/60 p-2.5">
+                            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              {t("chat.ticketTitle")}
+                            </p>
+                            <p className="text-sm font-medium text-foreground">{draft.title}</p>
+                          </div>
+                          <div className="rounded-lg border border-border bg-background/60 p-2.5">
+                            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              {t("chat.ticketDescription")}
+                            </p>
+                            <p className="text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap">
+                              {draft.description}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Badge variant="outline" className={`text-[10px] ${priorityBadgeClass(t(`priority.${draft.priority}` as "priority.medium"))}`}>
+                              {t(`priority.${draft.priority}` as "priority.medium")}
+                            </Badge>
+                            <Badge variant="outline" className="text-[10px] border-border bg-muted/60">
+                              {t(`category.${draft.category}` as "category.service_request")}
+                            </Badge>
+                            {draft.assignee && (
+                              <Badge variant="outline" className="text-[10px] border-border bg-muted/60">
+                                {t("chat.ticketAssignee")}: {draft.assignee}
+                              </Badge>
+                            )}
+                          </div>
+                          {draft.tags.length > 0 && (
+                            <div>
+                              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                {t("chat.ticketTags")}
+                              </p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {draft.tags.map((tag) => (
+                                  <Badge key={tag} variant="secondary" className="text-[10px]">
+                                    {tag}
+                                  </Badge>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        {canCreate && (
+                          <div className="mt-3">
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="gap-2"
+                              disabled={creatingId === message.id}
+                              onClick={() => handleCreateTicket(message.id, draft)}
+                            >
+                              {creatingId === message.id ? (
+                                <RotateCcw className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                              )}
+                              {t("chat.createTicket")}
+                            </Button>
+                          </div>
                         )}
-                        {t("chat.createTicket")}
-                      </Button>
-                    </div>
                       </div>
                     )}
                   </div>

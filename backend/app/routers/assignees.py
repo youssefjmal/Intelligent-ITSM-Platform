@@ -6,11 +6,12 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
+from app.core.rate_limit import rate_limit
 from app.db.session import get_db
 from app.schemas.user import UserAssigneeOut
 from app.services.users import list_assignees
 
-router = APIRouter(dependencies=[Depends(get_current_user)])
+router = APIRouter(dependencies=[Depends(rate_limit()), Depends(get_current_user)])
 
 
 @router.get("/users/assignees", response_model=list[UserAssigneeOut])

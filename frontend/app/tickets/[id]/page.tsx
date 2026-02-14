@@ -25,7 +25,7 @@ export default function TicketDetailPage() {
   if (loading) {
     return (
       <AppShell>
-        <div className="flex flex-col items-center justify-center h-[60vh]">
+        <div className="flex h-[60vh] flex-col items-center justify-center">
           <p className="text-lg font-semibold text-foreground">{t("general.loading")}</p>
         </div>
       </AppShell>
@@ -35,7 +35,7 @@ export default function TicketDetailPage() {
   if (!ticket) {
     return (
       <AppShell>
-        <div className="flex flex-col items-center justify-center h-[60vh]">
+        <div className="flex h-[60vh] flex-col items-center justify-center">
           <p className="text-lg font-semibold text-foreground">{t("detail.notFound")}</p>
           <p className="text-sm text-muted-foreground mt-1">
             {t("detail.notFoundDesc", { id: ticketId })}
@@ -47,7 +47,16 @@ export default function TicketDetailPage() {
 
   return (
     <AppShell>
-      <TicketDetail ticket={ticket} />
+      <div className="page-shell fade-slide-in">
+        <div className="page-hero">
+          <p className="section-caption">{t("tickets.view")}</p>
+          <h2 className="mt-2 text-3xl font-bold text-foreground text-balance sm:text-4xl">
+            {ticket.id}
+          </h2>
+          <p className="mt-2 max-w-3xl text-sm text-muted-foreground sm:text-base">{ticket.title}</p>
+        </div>
+        <TicketDetail ticket={ticket} />
+      </div>
     </AppShell>
   )
 }

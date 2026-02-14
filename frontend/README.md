@@ -1,4 +1,4 @@
-﻿# Frontend (Next.js)
+# Frontend (Next.js)
 
 ## Overview
 The frontend is a Next.js App Router application providing the ITSM dashboard, ticket management UI, AI assistant chat, and recommendations view. It consumes the FastAPI backend through a single API base URL.
@@ -36,6 +36,11 @@ npm run dev
 - `/auth/signup` Signup
 - `/auth/signup-success` Signup success
 - `/auth/verify` Email verification
+- `/auth/forgot-password` Request password reset
+- `/auth/reset-password` Set new password from reset link
+
+Login flow note:
+- `/auth/login` now supports email auto-signup: if the email does not exist, the backend creates the account and sends verification.
 
 ## Data Flow
 - API calls use `frontend/lib/api.ts` and `NEXT_PUBLIC_API_URL`.

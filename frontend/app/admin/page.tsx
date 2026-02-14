@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { AppShell } from "@/components/app-shell"
-import { useAuth, type UserRole, type User } from "@/lib/auth"
+import { useAuth, type UserRole, type User, type UserSeniority } from "@/lib/auth"
 import { useI18n } from "@/lib/i18n"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -43,6 +43,8 @@ const ROLE_COLORS: Record<UserRole, string> = {
   viewer: "bg-slate-100 text-slate-700",
 }
 
+const SENIORITY_OPTIONS: UserSeniority[] = ["intern", "junior", "middle", "senior"]
+
 interface EmailRecord {
   to: string
   subject: string
@@ -52,7 +54,7 @@ interface EmailRecord {
 }
 
 export default function AdminPage() {
-  const { user, hasPermission, getAllUsers, updateUserRole, deleteUser } = useAuth()
+  const { user, hasPermission, getAllUsers, updateUserRole, updateUserSeniority, deleteUser } = useAuth()
   const { t, locale } = useI18n()
   const [users, setUsers] = useState<User[]>([])
   const [emails, setEmails] = useState<EmailRecord[]>([])
@@ -92,6 +94,12 @@ export default function AdminPage() {
     setUsers(updated)
   }
 
+  async function handleSeniorityChange(userId: string, seniorityLevel: UserSeniority) {
+    await updateUserSeniority(userId, seniorityLevel)
+    const updated = await getAllUsers()
+    setUsers(updated)
+  }
+
   async function handleDelete(userId: string) {
     await deleteUser(userId)
     const updated = await getAllUsers()
@@ -100,14 +108,15 @@ export default function AdminPage() {
 
   return (
     <AppShell>
-      <div className="space-y-6">
-        <div>
-          <h2 className="text-2xl font-bold text-foreground text-balance">{t("admin.title")}</h2>
-          <p className="text-sm text-muted-foreground mt-1">{t("admin.subtitle")}</p>
+      <div className="page-shell fade-slide-in">
+        <div className="page-hero">
+          <p className="section-caption">{t("nav.admin")}</p>
+          <h2 className="mt-2 text-3xl font-bold text-foreground text-balance sm:text-4xl">{t("admin.title")}</h2>
+          <p className="mt-2 max-w-3xl text-sm text-muted-foreground sm:text-base">{t("admin.subtitle")}</p>
         </div>
 
         {/* Users Table */}
-        <Card className="border border-border">
+        <Card className="surface-card">
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="flex items-center gap-2 text-base font-semibold text-foreground">
@@ -127,6 +136,8 @@ export default function AdminPage() {
                     <TableHead className="text-foreground font-semibold">{t("admin.name")}</TableHead>
                     <TableHead className="text-foreground font-semibold">{t("admin.email")}</TableHead>
                     <TableHead className="text-foreground font-semibold">{t("admin.role")}</TableHead>
+                    <TableHead className="text-foreground font-semibold">{t("admin.seniority")}</TableHead>
+                    <TableHead className="text-foreground font-semibold">{t("admin.specializations")}</TableHead>
                     <TableHead className="text-foreground font-semibold">{t("admin.created")}</TableHead>
                     <TableHead className="text-foreground font-semibold text-right">{t("admin.actions")}</TableHead>
                   </TableRow>
@@ -170,6 +181,36 @@ export default function AdminPage() {
                             <SelectItem value="viewer">{t("auth.viewer")}</SelectItem>
                           </SelectContent>
                         </Select>
+                      </TableCell>
+                      <TableCell>
+                        <Select
+                          value={u.seniorityLevel}
+                          onValueChange={(v) => handleSeniorityChange(u.id, v as UserSeniority)}
+                        >
+                          <SelectTrigger className="w-36 h-8 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {SENIORITY_OPTIONS.map((level) => (
+                              <SelectItem key={`${u.id}-${level}`} value={level}>
+                                {t(`seniority.${level}` as "seniority.intern")}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {u.role === "viewer" || u.specializations.length === 0 ? (
+                          "-"
+                        ) : (
+                          <div className="flex flex-wrap gap-1">
+                            {u.specializations.map((spec) => (
+                              <Badge key={`${u.id}-${spec}`} variant="secondary" className="text-[10px]">
+                                {spec.replace(/_/g, " ")}
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
                         {new Date(u.createdAt).toLocaleDateString(locale === "fr" ? "fr-FR" : "en-US", {
@@ -216,7 +257,7 @@ export default function AdminPage() {
         </Card>
 
         {/* Email Log */}
-        <Card className="border border-border">
+        <Card className="surface-card">
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base font-semibold text-foreground">
               <Mail className="h-5 w-5 text-primary" />

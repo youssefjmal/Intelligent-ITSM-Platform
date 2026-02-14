@@ -9,12 +9,13 @@ export default function RecommendationsPage() {
 
   return (
     <AppShell>
-      <div className="space-y-6">
-        <div>
-          <h2 className="text-2xl font-bold text-foreground text-balance">
+      <div className="page-shell fade-slide-in">
+        <div className="page-hero">
+          <p className="section-caption">{t("nav.recommendations")}</p>
+          <h2 className="mt-2 text-3xl font-bold text-foreground text-balance sm:text-4xl">
             {t("recs.title")}
           </h2>
-          <p className="text-sm text-muted-foreground mt-1">
+          <p className="mt-2 max-w-3xl text-sm text-muted-foreground sm:text-base">
             {t("recs.subtitle")}
           </p>
         </div>

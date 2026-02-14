@@ -15,11 +15,13 @@ class ITSMGatekeeperException(Exception):
         error_code: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None,
         status_code: int = 400,
+        headers: Optional[Dict[str, str]] = None,
     ):
         self.message = message
         self.error_code = error_code
         self.details = details or {}
         self.status_code = status_code
+        self.headers = headers
         super().__init__(self.message)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -51,6 +53,24 @@ class BadRequestError(ITSMGatekeeperException):
 
     def __init__(self, message: str = "bad_request", *, details: Optional[Dict[str, Any]] = None):
         super().__init__(message, error_code="BAD_REQUEST", details=details, status_code=400)
+
+
+class RateLimitExceeded(ITSMGatekeeperException):
+    """Raised when a client exceeds rate limits."""
+
+    def __init__(self, *, retry_after: int, limit: int, window_seconds: int):
+        headers = {
+            "Retry-After": str(retry_after),
+            "X-RateLimit-Limit": str(limit),
+            "X-RateLimit-Window": str(window_seconds),
+        }
+        super().__init__(
+            "rate_limit_exceeded",
+            error_code="RATE_LIMIT",
+            details={"retry_after": retry_after, "limit": limit, "window_seconds": window_seconds},
+            status_code=429,
+            headers=headers,
+        )
 
 
 # ===== JIRA EXCEPTIONS =====
