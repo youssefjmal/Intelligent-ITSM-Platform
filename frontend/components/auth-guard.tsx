@@ -16,22 +16,35 @@ const PUBLIC_PATHS = [
   "/auth/reset-password",
 ]
 
-// Map routes to required permissions
-const ROUTE_PERMISSIONS: Record<string, Permission> = {
-  "/": "view_dashboard",
-  "/tickets": "view_tickets",
-  "/tickets/new": "create_ticket",
-  "/chat": "use_chat",
-  "/recommendations": "view_recommendations",
-  "/admin": "view_admin",
+const ROUTE_PERMISSIONS: Array<{ prefix: string; permission: Permission }> = [
+  { prefix: "/admin", permission: "view_admin" },
+  { prefix: "/tickets/new", permission: "create_ticket" },
+  { prefix: "/tickets", permission: "view_tickets" },
+  { prefix: "/problems", permission: "view_tickets" },
+  { prefix: "/chat", permission: "use_chat" },
+  { prefix: "/recommendations", permission: "view_recommendations" },
+  { prefix: "/", permission: "view_dashboard" },
+]
+
+function getRequiredPermission(pathname: string): Permission | null {
+  for (const item of ROUTE_PERMISSIONS) {
+    if (item.prefix === "/" && pathname === "/") {
+      return item.permission
+    }
+    if (item.prefix !== "/" && pathname.startsWith(item.prefix)) {
+      return item.permission
+    }
+  }
+  return null
 }
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth()
+  const { user, loading, hasPermission } = useAuth()
   const router = useRouter()
   const pathname = usePathname()
 
   const isPublic = PUBLIC_PATHS.some((p) => pathname.startsWith(p))
+  const requiredPermission = getRequiredPermission(pathname)
 
   useEffect(() => {
     if (loading) return
@@ -45,7 +58,11 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
       router.replace("/")
       return
     }
-  }, [user, loading, isPublic, router, pathname])
+
+    if (user && requiredPermission && !hasPermission(requiredPermission)) {
+      router.replace("/403")
+    }
+  }, [user, loading, isPublic, router, pathname, requiredPermission, hasPermission])
 
   if (loading) {
     return (
@@ -65,6 +82,10 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   }
 
   if (user && isPublic) {
+    return null
+  }
+
+  if (user && requiredPermission && !hasPermission(requiredPermission)) {
     return null
   }
 

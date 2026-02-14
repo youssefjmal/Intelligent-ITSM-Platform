@@ -96,8 +96,14 @@ class ClassificationRequest(BaseModel):
         return clean_multiline(value)
 
 
+class AIRecommendationOut(BaseModel):
+    text: str
+    confidence: int = Field(ge=0, le=100)
+
+
 class ClassificationResponse(BaseModel):
     priority: TicketPriority
     category: TicketCategory
     recommendations: list[str]
+    recommendations_scored: list[AIRecommendationOut] = Field(default_factory=list)
     assignee: str | None = None

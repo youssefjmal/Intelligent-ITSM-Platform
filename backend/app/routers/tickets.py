@@ -9,10 +9,11 @@ from fastapi import APIRouter, Body, Depends, Path, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user
+from app.core.rbac import can_edit_ticket_triage, can_resolve_ticket
 from app.core.rate_limit import rate_limit
 from app.core.exceptions import BadRequestError, InsufficientPermissionsError, NotFoundError
 from app.db.session import get_db
-from app.models.enums import TicketCategory, UserRole
+from app.models.enums import TicketCategory
 from app.models.user import User
 from app.schemas.ticket import (
     TicketCreate,
@@ -32,33 +33,46 @@ from app.services.tickets import (
     compute_weekly_trends,
     create_ticket,
     get_ticket,
+    get_ticket_for_user,
     list_tickets,
+    list_tickets_for_user,
     update_ticket_triage,
     update_status,
 )
+from app.services.problems import problem_analytics_summary
 
 router = APIRouter(dependencies=[Depends(rate_limit()), Depends(get_current_user)])
 
 
 @router.get("/", response_model=list[TicketOut])
-def get_all_tickets(db: Session = Depends(get_db)) -> list[TicketOut]:
-    return [TicketOut.model_validate(t) for t in list_tickets(db)]
+def get_all_tickets(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[TicketOut]:
+    return [TicketOut.model_validate(t) for t in list_tickets_for_user(db, current_user)]
 
 
 @router.get("/stats", response_model=TicketStats)
-def get_stats(db: Session = Depends(get_db)) -> TicketStats:
-    tickets = list_tickets(db)
+def get_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TicketStats:
+    tickets = list_tickets_for_user(db, current_user)
     return TicketStats(**compute_stats(tickets))
 
 
 @router.get("/insights")
-def get_insights(db: Session = Depends(get_db)) -> dict:
-    tickets = list_tickets(db)
+def get_insights(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    tickets = list_tickets_for_user(db, current_user)
     return {
         "weekly": compute_weekly_trends(tickets),
         "category": compute_category_breakdown(tickets),
         "priority": compute_priority_breakdown(tickets),
         "problems": compute_problem_insights(tickets),
+        "problem_management": problem_analytics_summary(db),
         "operational": compute_operational_insights(tickets),
         "performance": compute_assignment_performance(tickets),
     }
@@ -72,10 +86,11 @@ def get_performance_metrics(
     assignee: str | None = Query(default=None, min_length=2, max_length=80),
     scope: Literal["all", "before", "after"] = Query(default="all"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> TicketPerformanceOut:
     if date_from and date_to and date_from > date_to:
         raise BadRequestError("invalid_date_range")
-    tickets = list_tickets(db)
+    tickets = list_tickets_for_user(db, current_user)
     metrics = compute_assignment_performance(
         tickets,
         date_from=date_from,
@@ -88,8 +103,13 @@ def get_performance_metrics(
 
 
 @router.post("/", response_model=TicketOut, status_code=status.HTTP_201_CREATED)
-def create_new_ticket(payload: TicketCreate, db: Session = Depends(get_db)) -> TicketOut:
-    ticket = create_ticket(db, payload)
+def create_new_ticket(
+    payload: TicketCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TicketOut:
+    payload.reporter = current_user.name
+    ticket = create_ticket(db, payload, reporter_id=str(current_user.id))
     return TicketOut.model_validate(ticket)
 
 
@@ -97,8 +117,9 @@ def create_new_ticket(payload: TicketCreate, db: Session = Depends(get_db)) -> T
 def get_ticket_by_id(
     ticket_id: str = Path(..., min_length=3, max_length=32),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> TicketOut:
-    ticket = get_ticket(db, ticket_id)
+    ticket = get_ticket_for_user(db, ticket_id, current_user)
     if not ticket:
         raise NotFoundError("ticket_not_found", details={"ticket_id": ticket_id})
     return TicketOut.model_validate(ticket)
@@ -111,7 +132,10 @@ def update_ticket_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TicketOut:
-    if current_user.role not in {UserRole.admin, UserRole.agent}:
+    ticket = get_ticket(db, ticket_id)
+    if not ticket:
+        raise NotFoundError("ticket_not_found", details={"ticket_id": ticket_id})
+    if not can_resolve_ticket(current_user, ticket):
         raise InsufficientPermissionsError("forbidden")
     try:
         ticket = update_status(
@@ -123,8 +147,6 @@ def update_ticket_status(
         )
     except ValueError as exc:
         raise BadRequestError(str(exc))
-    if not ticket:
-        raise NotFoundError("ticket_not_found", details={"ticket_id": ticket_id})
     return TicketOut.model_validate(ticket)
 
 
@@ -135,7 +157,10 @@ def update_ticket_triage_data(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> TicketOut:
-    if current_user.role not in {UserRole.admin, UserRole.agent}:
+    ticket = get_ticket(db, ticket_id)
+    if not ticket:
+        raise NotFoundError("ticket_not_found", details={"ticket_id": ticket_id})
+    if not can_edit_ticket_triage(current_user, ticket):
         raise InsufficientPermissionsError("forbidden")
     ticket = update_ticket_triage(
         db,
@@ -143,6 +168,4 @@ def update_ticket_triage_data(
         payload,
         actor=current_user.name,
     )
-    if not ticket:
-        raise NotFoundError("ticket_not_found", details={"ticket_id": ticket_id})
     return TicketOut.model_validate(ticket)

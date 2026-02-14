@@ -13,10 +13,10 @@ from app.core.deps import get_current_user
 from app.core.rate_limit import rate_limit
 from app.db.session import get_db
 from app.models.enums import TicketCategory, TicketPriority, TicketStatus, UserRole
-from app.schemas.ai import ChatRequest, ChatResponse, ClassificationRequest, ClassificationResponse, TicketDraft
-from app.services.ai import build_chat_reply, classify_ticket
+from app.schemas.ai import AIRecommendationOut, ChatRequest, ChatResponse, ClassificationRequest, ClassificationResponse, TicketDraft
+from app.services.ai import build_chat_reply, classify_ticket, score_recommendations
 from app.services.jira_kb import build_jira_knowledge_block
-from app.services.tickets import compute_problem_insights, compute_stats, list_tickets, select_best_assignee
+from app.services.tickets import compute_problem_insights, compute_stats, list_tickets_for_user, select_best_assignee
 from app.services.users import list_assignees
 
 router = APIRouter(dependencies=[Depends(rate_limit("ai")), Depends(get_current_user)])
@@ -1036,10 +1036,12 @@ def _build_forced_ai_ticket_draft(
 def classify(payload: ClassificationRequest, db: Session = Depends(get_db)) -> ClassificationResponse:
     priority, category, recommendations = classify_ticket(payload.title, payload.description)
     assignee = select_best_assignee(db, category=category, priority=priority)
+    scored = score_recommendations(recommendations)
     return ClassificationResponse(
         priority=priority,
         category=category,
         recommendations=recommendations,
+        recommendations_scored=[AIRecommendationOut(text=str(item["text"]), confidence=int(item["confidence"])) for item in scored],
         assignee=assignee,
     )
 
@@ -1050,7 +1052,7 @@ def chat(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> ChatResponse:
-    tickets = list_tickets(db)
+    tickets = list_tickets_for_user(db, current_user)
     stats = compute_stats(tickets)
     last_question = payload.messages[-1].content if payload.messages else ""
     lang = _normalize_locale(payload.locale)

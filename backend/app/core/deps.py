@@ -7,8 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.exceptions import AuthenticationException, ExpiredTokenError, InsufficientPermissionsError
+from app.core.rbac import has_permission
 from app.core.security import ACCESS_TOKEN_TYPE, decode_token
 from app.db.session import get_db
+from app.models.enums import UserRole
 from app.models.user import User
 
 
@@ -77,7 +79,27 @@ def require_role(required: str):
     return _checker
 
 
+def require_roles(*required: UserRole):
+    allowed = set(required)
+
+    def _checker(user: User = Depends(get_current_user)) -> User:
+        if user.role not in allowed:
+            raise InsufficientPermissionsError("forbidden")
+        return user
+
+    return _checker
+
+
+def require_permission(permission: str):
+    def _checker(user: User = Depends(get_current_user)) -> User:
+        if not has_permission(user, permission):
+            raise InsufficientPermissionsError("forbidden")
+        return user
+
+    return _checker
+
+
 def require_admin(user: User = Depends(get_current_user)) -> User:
-    if user.role.value != "admin":
+    if user.role != UserRole.admin:
         raise InsufficientPermissionsError("forbidden")
     return user

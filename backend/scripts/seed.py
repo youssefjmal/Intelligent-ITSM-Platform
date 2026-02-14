@@ -12,6 +12,7 @@ sys.path.append(str(BASE_DIR))
 from app.core.security import hash_password  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
 from app.models.enums import (
+    ProblemStatus,
     RecommendationImpact,
     RecommendationType,
     TicketCategory,
@@ -22,7 +23,9 @@ from app.models.enums import (
 )  # noqa: E402
 from app.models.ticket import Ticket, TicketComment  # noqa: E402
 from app.models.recommendation import Recommendation  # noqa: E402
+from app.models.problem import Problem  # noqa: E402
 from app.models.user import User  # noqa: E402
+from app.services.problems import detect_problems  # noqa: E402
 
 
 def parse_dt(value: str) -> dt.datetime:
@@ -64,7 +67,7 @@ USERS = [
         "email": "user@teamwill.com",
         "password": "user123",
         "name": "Maya Haddad",
-        "role": UserRole.viewer,
+        "role": UserRole.user,
         "specializations": [],
         "seniority": SeniorityLevel.junior,
         "is_available": True,
@@ -353,6 +356,7 @@ TICKETS = [
         "updated_at": "2026-02-01T12:00:00Z",
         "resolution": "Acces VPN configure et credentials envoyes par email securise.",
         "tags": ["vpn", "acces", "consultant"],
+        "problem_id": "PB-0001",
         "comments": [],
     },
     {
@@ -514,6 +518,7 @@ TICKETS = [
         "updated_at": "2026-02-07T09:20:00Z",
         "resolution": None,
         "tags": ["vpn", "reseau", "tunis"],
+        "problem_id": "PB-0001",
         "comments": [],
     },
     {
@@ -625,6 +630,100 @@ TICKETS = [
         "tags": ["mfa", "security", "audit"],
         "comments": [],
     },
+    {
+        "id": "TW-2001",
+        "title": "Incident VPN timeout agence Tunis",
+        "description": "Timeout d'authentification VPN pour plusieurs utilisateurs.",
+        "status": TicketStatus.open,
+        "priority": TicketPriority.high,
+        "category": TicketCategory.network,
+        "assignee": "Leila Ben Amor",
+        "reporter": "Support Desk",
+        "created_at": "2026-02-10T08:10:00Z",
+        "updated_at": "2026-02-10T08:10:00Z",
+        "resolution": None,
+        "tags": ["vpn", "timeout", "reseau"],
+        "comments": [],
+    },
+    {
+        "id": "TW-2002",
+        "title": "Incident VPN timeout agence Tunis",
+        "description": "Nouveau timeout VPN le matin sur le meme segment reseau.",
+        "status": TicketStatus.pending,
+        "priority": TicketPriority.high,
+        "category": TicketCategory.network,
+        "assignee": "Leila Ben Amor",
+        "reporter": "Support Desk",
+        "created_at": "2026-02-11T09:00:00Z",
+        "updated_at": "2026-02-11T09:00:00Z",
+        "resolution": None,
+        "tags": ["vpn", "timeout", "reseau"],
+        "comments": [],
+    },
+    {
+        "id": "TW-2003",
+        "title": "Incident VPN timeout agence Tunis",
+        "description": "Pertes intermittentes VPN et reconnexion obligatoire.",
+        "status": TicketStatus.in_progress,
+        "priority": TicketPriority.high,
+        "category": TicketCategory.network,
+        "assignee": "Leila Ben Amor",
+        "reporter": "Support Desk",
+        "created_at": "2026-02-12T10:20:00Z",
+        "updated_at": "2026-02-12T10:20:00Z",
+        "resolution": None,
+        "tags": ["vpn", "timeout", "reseau"],
+        "comments": [],
+    },
+    {
+        "id": "TW-2004",
+        "title": "Incident VPN timeout agence Tunis",
+        "description": "Le tunnel VPN coupe toutes les 30 minutes.",
+        "status": TicketStatus.resolved,
+        "priority": TicketPriority.high,
+        "category": TicketCategory.network,
+        "assignee": "Leila Ben Amor",
+        "reporter": "Support Desk",
+        "created_at": "2026-02-13T11:10:00Z",
+        "updated_at": "2026-02-13T12:00:00Z",
+        "resolution": "Redemarrage gateway temporaire.",
+        "tags": ["vpn", "timeout", "reseau"],
+        "comments": [],
+    },
+    {
+        "id": "TW-2005",
+        "title": "Incident VPN timeout agence Tunis",
+        "description": "Nouvelle recurrence de timeout VPN apres redemarrage.",
+        "status": TicketStatus.open,
+        "priority": TicketPriority.high,
+        "category": TicketCategory.network,
+        "assignee": "Leila Ben Amor",
+        "reporter": "Support Desk",
+        "created_at": "2026-02-14T08:40:00Z",
+        "updated_at": "2026-02-14T08:40:00Z",
+        "resolution": None,
+        "tags": ["vpn", "timeout", "reseau"],
+        "comments": [],
+    },
+]
+
+PROBLEMS = [
+    {
+        "id": "PB-0001",
+        "title": "Recurring network incidents - vpn outage",
+        "category": TicketCategory.network,
+        "status": ProblemStatus.investigating,
+        "occurrences_count": 2,
+        "active_count": 1,
+        "root_cause": None,
+        "workaround": "Restart VPN gateway and clear stale sessions.",
+        "permanent_fix": None,
+        "similarity_key": "network|vpn-outage-site|network-vpn",
+        "created_at": "2026-02-01T08:00:00Z",
+        "updated_at": "2026-02-07T09:30:00Z",
+        "last_seen_at": "2026-02-07T09:20:00Z",
+        "resolved_at": None,
+    },
 ]
 
 RECOMMENDATIONS = [
@@ -730,6 +829,28 @@ def seed() -> None:
                 )
             )
 
+    for problem in PROBLEMS:
+        if db.query(Problem).filter(Problem.id == problem["id"]).first():
+            continue
+        db.add(
+            Problem(
+                id=problem["id"],
+                title=problem["title"],
+                category=problem["category"],
+                status=problem["status"],
+                occurrences_count=problem["occurrences_count"],
+                active_count=problem["active_count"],
+                root_cause=problem["root_cause"],
+                workaround=problem["workaround"],
+                permanent_fix=problem["permanent_fix"],
+                similarity_key=problem["similarity_key"],
+                created_at=parse_dt(problem["created_at"]),
+                updated_at=parse_dt(problem["updated_at"]),
+                last_seen_at=parse_dt(problem["last_seen_at"]),
+                resolved_at=parse_dt(problem["resolved_at"]) if problem["resolved_at"] else None,
+            )
+        )
+
     for ticket in TICKETS:
         if db.query(Ticket).filter(Ticket.id == ticket["id"]).first():
             continue
@@ -742,6 +863,7 @@ def seed() -> None:
             category=ticket["category"],
             assignee=ticket["assignee"],
             reporter=ticket["reporter"],
+            problem_id=ticket.get("problem_id"),
             created_at=parse_dt(ticket["created_at"]),
             updated_at=parse_dt(ticket["updated_at"]),
             resolution=ticket["resolution"],
@@ -775,6 +897,7 @@ def seed() -> None:
         )
 
     db.commit()
+    detect_problems(db, window_days=30, min_count=5)
     db.close()
 
 

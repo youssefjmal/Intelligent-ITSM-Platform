@@ -22,6 +22,7 @@ type ProblemInsight = {
   same_day_peak: number
   same_day_peak_date: string | null
   ai_recommendation: string
+  ai_recommendation_confidence?: number
 }
 
 function priorityBadgeClass(priority: ProblemInsight["highest_priority"]): string {
@@ -98,7 +99,7 @@ export function ProblemInsights({ insights }: { insights: ProblemInsight[] }) {
             {insights.map((problem) => (
               <HoverCard key={`${problem.latest_ticket_id}-${problem.title}`} openDelay={100} closeDelay={80}>
                 <HoverCardTrigger asChild>
-                  <Link href={`/tickets/${problem.latest_ticket_id}`} className="group block">
+                  <Link href="/problems" className="group block">
                     <article className="rounded-xl border border-white/80 bg-white/90 p-4 shadow-sm backdrop-blur transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md dark:border-slate-600/70 dark:bg-slate-900/90 dark:hover:bg-slate-900">
 	                      <div className="flex items-start justify-between gap-3">
 	                        <div className="min-w-0">
@@ -170,9 +171,16 @@ export function ProblemInsights({ insights }: { insights: ProblemInsight[] }) {
 	                      </div>
 
                         <div className="mt-3 rounded-lg border border-violet-200/80 bg-violet-50/90 p-2.5 dark:border-violet-400/60 dark:bg-violet-950/75">
-                          <p className="text-[11px] font-bold uppercase tracking-wide text-violet-700 dark:text-violet-100">
-                            {t("dashboard.problemRecommendation")}
-                          </p>
+                          <div className="flex items-center gap-2">
+                            <p className="text-[11px] font-bold uppercase tracking-wide text-violet-700 dark:text-violet-100">
+                              {t("dashboard.problemRecommendation")}
+                            </p>
+                            {typeof problem.ai_recommendation_confidence === "number" && (
+                              <span className="rounded border border-violet-300 bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-800 dark:border-violet-300/60 dark:bg-violet-900/80 dark:text-violet-100">
+                                {Math.max(0, Math.min(100, Math.round(problem.ai_recommendation_confidence)))}%
+                              </span>
+                            )}
+                          </div>
                           <p className="mt-1 text-xs font-medium text-violet-900 dark:text-violet-100">{problem.ai_recommendation}</p>
                         </div>
 
@@ -225,7 +233,14 @@ export function ProblemInsights({ insights }: { insights: ProblemInsight[] }) {
                     )}
                   </div>
                   <div className="mt-2 rounded-md border border-border/60 bg-muted/40 px-2 py-2">
-                    <p className="text-[10px] text-muted-foreground">{t("dashboard.problemRecommendation")}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-[10px] text-muted-foreground">{t("dashboard.problemRecommendation")}</p>
+                      {typeof problem.ai_recommendation_confidence === "number" && (
+                        <span className="rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                          {Math.max(0, Math.min(100, Math.round(problem.ai_recommendation_confidence)))}%
+                        </span>
+                      )}
+                    </div>
                     <p className="mt-0.5 text-xs font-medium text-foreground">{problem.ai_recommendation}</p>
                   </div>
 	                  <div className="mt-3 flex flex-wrap gap-1.5">
@@ -235,7 +250,7 @@ export function ProblemInsights({ insights }: { insights: ProblemInsight[] }) {
                       </Badge>
                     ))}
                   </div>
-                  <Link href={`/tickets/${problem.latest_ticket_id}`} className="mt-3 inline-flex">
+                  <Link href="/problems" className="mt-3 inline-flex">
                     <Button size="sm" className="h-8 gap-1.5 bg-red-600 text-white hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600">
                       {t("dashboard.problemViewLatest")}
                       <ArrowRight className="h-3.5 w-3.5" />
@@ -247,7 +262,7 @@ export function ProblemInsights({ insights }: { insights: ProblemInsight[] }) {
           </div>
         )}
 
-        <Link href="/tickets?view=problem" className="inline-flex">
+        <Link href="/problems" className="inline-flex">
           <Button size="sm" variant="outline" className="gap-1.5 border-red-300 bg-white text-red-800 hover:bg-red-100 dark:border-red-500/40 dark:bg-red-950/30 dark:text-red-100 dark:hover:bg-red-900/40">
             {t("dashboard.viewProblemTickets")}
             <ArrowRight className="h-3.5 w-3.5" />

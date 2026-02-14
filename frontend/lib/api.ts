@@ -48,14 +48,19 @@ async function refreshSession(): Promise<boolean> {
 }
 
 async function apiFetchInternal<T>(path: string, options: RequestInit, canRetry: boolean): Promise<T> {
-  const res = await fetch(buildApiUrl(path), {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-    credentials: "include",
-  })
+  let res: Response
+  try {
+    res = await fetch(buildApiUrl(path), {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+      credentials: "include",
+    })
+  } catch {
+    throw new ApiError(0, "network_error")
+  }
 
   if (res.status === 401 && canRetry && shouldTryRefresh(path)) {
     const refreshed = await refreshSession()

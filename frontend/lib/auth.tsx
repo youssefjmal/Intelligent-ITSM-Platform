@@ -4,7 +4,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react"
 import { apiFetch, ApiError } from "@/lib/api"
 
-export type UserRole = "admin" | "agent" | "viewer"
+export type UserRole = "admin" | "agent" | "user" | "viewer"
 export type UserSeniority = "intern" | "junior" | "middle" | "senior"
 
 export interface User {
@@ -40,38 +40,63 @@ interface AuthContextType {
 export type Permission =
   | "view_dashboard"
   | "view_tickets"
+  | "view_ticket_analytics"
   | "create_ticket"
-  | "edit_ticket"
-  | "delete_ticket"
+  | "comment_ticket"
+  | "resolve_ticket"
+  | "reassign_ticket"
+  | "edit_ticket_triage"
   | "use_chat"
   | "view_recommendations"
   | "manage_users"
+  | "view_email_logs"
+  | "configure_integrations"
   | "view_admin"
 
 const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   admin: [
     "view_dashboard",
     "view_tickets",
+    "view_ticket_analytics",
     "create_ticket",
-    "edit_ticket",
-    "delete_ticket",
+    "comment_ticket",
+    "resolve_ticket",
+    "reassign_ticket",
+    "edit_ticket_triage",
     "use_chat",
     "view_recommendations",
     "manage_users",
+    "view_email_logs",
+    "configure_integrations",
     "view_admin",
   ],
   agent: [
     "view_dashboard",
     "view_tickets",
+    "view_ticket_analytics",
     "create_ticket",
-    "edit_ticket",
+    "comment_ticket",
+    "resolve_ticket",
+    "reassign_ticket",
+    "edit_ticket_triage",
+    "use_chat",
+    "view_recommendations",
+  ],
+  user: [
+    "view_dashboard",
+    "view_tickets",
+    "view_ticket_analytics",
+    "create_ticket",
+    "comment_ticket",
     "use_chat",
     "view_recommendations",
   ],
   viewer: [
     "view_dashboard",
     "view_tickets",
+    "view_ticket_analytics",
     "use_chat",
+    "view_recommendations",
   ],
 }
 

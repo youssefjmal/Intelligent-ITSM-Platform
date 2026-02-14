@@ -10,12 +10,12 @@ import {
   PlusCircle,
   MessageSquareText,
   BrainCircuit,
+  AlertOctagon,
   Shield,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useState } from "react"
 import { useAuth, type Permission } from "@/lib/auth"
 import { useI18n, type TranslationKey } from "@/lib/i18n"
 
@@ -32,12 +32,17 @@ const navigation: NavItem[] = [
   { nameKey: "nav.newTicket", href: "/tickets/new", icon: PlusCircle, permission: "create_ticket" },
   { nameKey: "nav.chat", href: "/chat", icon: MessageSquareText, permission: "use_chat" },
   { nameKey: "nav.recommendations", href: "/recommendations", icon: BrainCircuit, permission: "view_recommendations" },
+  { nameKey: "nav.problems", href: "/problems", icon: AlertOctagon, permission: "view_tickets" },
   { nameKey: "nav.admin", href: "/admin", icon: Shield, permission: "view_admin" },
 ]
 
-export function AppSidebar() {
+interface AppSidebarProps {
+  collapsed: boolean
+  onToggle: () => void
+}
+
+export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const pathname = usePathname()
-  const [collapsed, setCollapsed] = useState(false)
   const { hasPermission } = useAuth()
   const { t } = useI18n()
 
@@ -96,7 +101,7 @@ export function AppSidebar() {
       <div className="border-t border-sidebar-border/70 p-2">
         <button
           type="button"
-          onClick={() => setCollapsed(!collapsed)}
+          onClick={onToggle}
           className="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
         >
           {collapsed ? (

@@ -31,6 +31,7 @@ type Insights = {
     same_day_peak: number
     same_day_peak_date: string | null
     ai_recommendation: string
+    ai_recommendation_confidence?: number
   }>
   operational: {
     critical_recent: Array<{
@@ -79,6 +80,35 @@ type Insights = {
     auto_assignment_accuracy_rate: number | null
     auto_assignment_samples: number
   }
+  problem_management?: {
+    total: number
+    open: number
+    investigating: number
+    known_error: number
+    resolved: number
+    closed: number
+    active_total: number
+    top: Array<{
+      id: string
+      title: string
+      status: string
+      occurrences_count: number
+      active_count: number
+      category: string
+      latest_ticket_id: string
+      latest_updated_at: string
+      ticket_ids: string[]
+      highest_priority: "critical" | "high" | "medium" | "low"
+      problem_count: number
+      problem_triggered: boolean
+      trigger_reasons: string[]
+      recent_occurrences_7d: number
+      same_day_peak: number
+      same_day_peak_date: string | null
+      ai_recommendation: string
+      ai_recommendation_confidence?: number
+    }>
+  }
 }
 
 export default function DashboardPage() {
@@ -125,6 +155,16 @@ export default function DashboardPage() {
       auto_assignment_accuracy_rate: null,
       auto_assignment_samples: 0,
     },
+    problem_management: {
+      total: 0,
+      open: 0,
+      investigating: 0,
+      known_error: 0,
+      resolved: 0,
+      closed: 0,
+      active_total: 0,
+      top: [],
+    },
   })
 
   useEffect(() => {
@@ -143,7 +183,27 @@ export default function DashboardPage() {
     load().catch(() => {})
   }, [])
 
-  const problemHighlights = insights.problems.slice(0, 3)
+  const problemHighlights =
+    (insights.problem_management?.top?.length
+      ? insights.problem_management.top.map((problem) => ({
+          title: problem.title,
+          occurrences: problem.occurrences_count,
+          active_count: problem.active_count,
+          problem_count: problem.problem_count,
+          highest_priority: problem.highest_priority,
+          latest_ticket_id: problem.latest_ticket_id,
+          latest_updated_at: problem.latest_updated_at,
+          ticket_ids: problem.ticket_ids,
+          problem_triggered: problem.problem_triggered,
+          trigger_reasons: problem.trigger_reasons,
+          recent_occurrences_7d: problem.recent_occurrences_7d,
+          same_day_peak: problem.same_day_peak,
+          same_day_peak_date: problem.same_day_peak_date,
+          ai_recommendation: problem.ai_recommendation,
+          ai_recommendation_confidence: problem.ai_recommendation_confidence,
+        }))
+      : insights.problems
+    ).slice(0, 3)
   const assigneeOptions = Array.from(new Set(tickets.map((ticket) => ticket.assignee).filter(Boolean))).sort()
 
   return (

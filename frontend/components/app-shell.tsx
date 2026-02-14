@@ -6,19 +6,35 @@ import { LanguageSwitcher } from "@/components/language-switcher"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { useAuth } from "@/lib/auth"
 import { useI18n } from "@/lib/i18n"
-import { Bell, LogOut } from "lucide-react"
+import { Bell, LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 
 const ROLE_BADGE: Record<string, string> = {
   admin: "bg-red-100 text-red-800 border border-red-200",
   agent: "bg-sky-100 text-sky-800 border border-sky-200",
+  user: "bg-emerald-100 text-emerald-800 border border-emerald-200",
   viewer: "bg-slate-100 text-slate-700 border border-slate-200",
 }
+const SIDEBAR_COLLAPSE_STORAGE_KEY = "teamwil.sidebar.collapsed"
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { user, signOut } = useAuth()
   const { t } = useI18n()
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false)
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") return
+    const stored = window.localStorage.getItem(SIDEBAR_COLLAPSE_STORAGE_KEY)
+    if (stored === "1") {
+      setSidebarCollapsed(true)
+    }
+  }, [])
+
+  React.useEffect(() => {
+    if (typeof window === "undefined") return
+    window.localStorage.setItem(SIDEBAR_COLLAPSE_STORAGE_KEY, sidebarCollapsed ? "1" : "0")
+  }, [sidebarCollapsed])
 
   const initials = user
     ? user.name
@@ -31,12 +47,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen overflow-hidden bg-transparent">
-      <AppSidebar />
+      <AppSidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((prev) => !prev)} />
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top Bar */}
         <header className="relative z-20 flex h-16 items-center justify-between border-b border-border/70 bg-card/80 px-4 backdrop-blur md:px-6 shrink-0">
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-primary/25 to-transparent" />
           <div className="flex items-center gap-4 flex-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setSidebarCollapsed((prev) => !prev)}
+              className="h-9 w-9 rounded-full p-0 hover:bg-primary/10"
+            >
+              {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+              <span className="sr-only">{t("nav.collapse")}</span>
+            </Button>
             <h1 className="hidden text-sm font-semibold tracking-wide text-foreground sm:block">
               {t("app.title")}
             </h1>

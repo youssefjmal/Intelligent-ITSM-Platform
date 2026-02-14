@@ -40,6 +40,7 @@ import { apiFetch } from "@/lib/api"
 const ROLE_COLORS: Record<UserRole, string> = {
   admin: "bg-red-100 text-red-800",
   agent: "bg-blue-100 text-blue-800",
+  user: "bg-emerald-100 text-emerald-800",
   viewer: "bg-slate-100 text-slate-700",
 }
 
@@ -58,6 +59,7 @@ export default function AdminPage() {
   const { t, locale } = useI18n()
   const [users, setUsers] = useState<User[]>([])
   const [emails, setEmails] = useState<EmailRecord[]>([])
+  const [actionError, setActionError] = useState<string | null>(null)
 
   useEffect(() => {
     getAllUsers().then(setUsers).catch(() => {})
@@ -89,21 +91,48 @@ export default function AdminPage() {
   }
 
   async function handleRoleChange(userId: string, newRole: UserRole) {
-    await updateUserRole(userId, newRole)
-    const updated = await getAllUsers()
-    setUsers(updated)
+    try {
+      setActionError(null)
+      await updateUserRole(userId, newRole)
+      const updated = await getAllUsers()
+      setUsers(updated)
+    } catch {
+      setActionError(
+        locale === "fr"
+          ? "Echec de mise a jour du role. Verifiez que le backend est accessible."
+          : "Failed to update role. Check backend connectivity."
+      )
+    }
   }
 
   async function handleSeniorityChange(userId: string, seniorityLevel: UserSeniority) {
-    await updateUserSeniority(userId, seniorityLevel)
-    const updated = await getAllUsers()
-    setUsers(updated)
+    try {
+      setActionError(null)
+      await updateUserSeniority(userId, seniorityLevel)
+      const updated = await getAllUsers()
+      setUsers(updated)
+    } catch {
+      setActionError(
+        locale === "fr"
+          ? "Echec de mise a jour de la seniorite."
+          : "Failed to update seniority."
+      )
+    }
   }
 
   async function handleDelete(userId: string) {
-    await deleteUser(userId)
-    const updated = await getAllUsers()
-    setUsers(updated)
+    try {
+      setActionError(null)
+      await deleteUser(userId)
+      const updated = await getAllUsers()
+      setUsers(updated)
+    } catch {
+      setActionError(
+        locale === "fr"
+          ? "Echec de suppression de l'utilisateur."
+          : "Failed to delete user."
+      )
+    }
   }
 
   return (
@@ -113,6 +142,7 @@ export default function AdminPage() {
           <p className="section-caption">{t("nav.admin")}</p>
           <h2 className="mt-2 text-3xl font-bold text-foreground text-balance sm:text-4xl">{t("admin.title")}</h2>
           <p className="mt-2 max-w-3xl text-sm text-muted-foreground sm:text-base">{t("admin.subtitle")}</p>
+          {actionError && <p className="mt-2 text-sm text-destructive">{actionError}</p>}
         </div>
 
         {/* Users Table */}
@@ -178,6 +208,7 @@ export default function AdminPage() {
                           <SelectContent>
                             <SelectItem value="admin">{t("auth.admin")}</SelectItem>
                             <SelectItem value="agent">{t("auth.agent")}</SelectItem>
+                            <SelectItem value="user">{t("auth.user")}</SelectItem>
                             <SelectItem value="viewer">{t("auth.viewer")}</SelectItem>
                           </SelectContent>
                         </Select>

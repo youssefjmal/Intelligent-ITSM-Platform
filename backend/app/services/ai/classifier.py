@@ -12,6 +12,45 @@ from app.services.jira_kb import build_jira_knowledge_block
 logger = logging.getLogger(__name__)
 
 
+def _normalize_recommendation_text(value: str | None) -> str:
+    return " ".join((value or "").strip().split())
+
+
+def score_recommendations(
+    recommendations: list[str],
+    *,
+    start_confidence: int = 86,
+    rank_decay: int = 7,
+    floor: int = 55,
+    ceiling: int = 95,
+) -> list[dict[str, object]]:
+    """Build short confidence scores for recommendation strings."""
+    scored: list[dict[str, object]] = []
+    seen: set[str] = set()
+    action_tokens = {"verify", "check", "collect", "apply", "rollback", "document", "monitor", "logs", "review"}
+
+    for index, raw in enumerate(recommendations):
+        text = _normalize_recommendation_text(raw)
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        text_len = len(text)
+        confidence = start_confidence - (index * rank_decay)
+        if 45 <= text_len <= 210:
+            confidence += 2
+        lowered = text.casefold()
+        if any(token in lowered for token in action_tokens):
+            confidence += 2
+        confidence = max(floor, min(ceiling, confidence))
+        scored.append({"text": text, "confidence": int(confidence)})
+
+    return scored
+
+
 def _rule_based_classify(title: str, description: str) -> tuple[TicketPriority, TicketCategory, list[str]]:
     text = f"{title} {description}".lower()
     if any(k in text for k in ["xss", "vulnerabil", "secur", "auth", "sso"]):

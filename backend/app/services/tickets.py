@@ -10,6 +10,7 @@ from typing import Literal
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.rbac import can_view_ticket, filter_tickets_for_user
 from app.models.ticket import Ticket, TicketComment
 from app.models.user import User
 from app.models.enums import SeniorityLevel, TicketCategory, TicketPriority, TicketStatus, UserRole
@@ -208,8 +209,21 @@ def list_tickets(db: Session) -> list[Ticket]:
     return db.query(Ticket).order_by(Ticket.created_at.desc()).all()
 
 
+def list_tickets_for_user(db: Session, user: User) -> list[Ticket]:
+    return filter_tickets_for_user(user, list_tickets(db))
+
+
 def get_ticket(db: Session, ticket_id: str) -> Ticket | None:
     return db.get(Ticket, ticket_id)
+
+
+def get_ticket_for_user(db: Session, ticket_id: str, user: User) -> Ticket | None:
+    ticket = get_ticket(db, ticket_id)
+    if not ticket:
+        return None
+    if not can_view_ticket(user, ticket):
+        return None
+    return ticket
 
 
 def _next_ticket_id(db: Session) -> str:
@@ -320,7 +334,7 @@ def _resolution_recommendation_snippet(resolution: str | None) -> str | None:
     return head
 
 
-def _build_problem_ai_recommendation(cluster: list[Ticket]) -> str:
+def _build_problem_ai_recommendation(cluster: list[Ticket]) -> tuple[str, int]:
     snippets: list[str] = []
     for item in cluster:
         if item.status not in {TicketStatus.resolved, TicketStatus.closed}:
@@ -332,10 +346,10 @@ def _build_problem_ai_recommendation(cluster: list[Ticket]) -> str:
     if snippets:
         counts = Counter(snippets)
         chosen = counts.most_common(1)[0][0]
-        return f"Recommendation IA: reproduire en priorite cette action qui a deja fonctionne: {chosen}"
+        return f"Recommendation IA: reproduire en priorite cette action qui a deja fonctionne: {chosen}", 84
 
     dominant_category = Counter(t.category for t in cluster).most_common(1)[0][0]
-    return f"Recommendation IA: {_fallback_problem_recommendation(dominant_category)}"
+    return f"Recommendation IA: {_fallback_problem_recommendation(dominant_category)}", 68
 
 
 def _should_promote_to_problem(db: Session, ticket: Ticket, resolution_comment: str) -> bool:
@@ -379,7 +393,7 @@ def _should_promote_to_problem(db: Session, ticket: Ticket, resolution_comment: 
     )
 
 
-def create_ticket(db: Session, data: TicketCreate) -> Ticket:
+def create_ticket(db: Session, data: TicketCreate, *, reporter_id: str | None = None) -> Ticket:
     now = dt.datetime.now(dt.timezone.utc)
     auto_assignment_applied = False
     assignee = (data.assignee or "").strip()
@@ -407,6 +421,7 @@ def create_ticket(db: Session, data: TicketCreate) -> Ticket:
         category=data.category,
         assignee=assignee,
         reporter=data.reporter,
+        reporter_id=reporter_id,
         auto_assignment_applied=auto_assignment_applied,
         auto_priority_applied=auto_priority_applied,
         assignment_model_version=assignment_model_version,
@@ -914,7 +929,7 @@ def compute_problem_insights(tickets: list[Ticket], *, min_repetitions: int = 2,
         recent_occurrences_7d, same_day_peak, same_day_peak_date = _cluster_temporal_counts(cluster_sorted, now=now)
         trigger_reasons = _problem_trigger_reasons(recent_occurrences_7d, same_day_peak)
         problem_triggered = bool(trigger_reasons)
-        ai_recommendation = _build_problem_ai_recommendation(cluster_sorted)
+        ai_recommendation, ai_recommendation_confidence = _build_problem_ai_recommendation(cluster_sorted)
 
         insights.append(
             {
@@ -932,6 +947,7 @@ def compute_problem_insights(tickets: list[Ticket], *, min_repetitions: int = 2,
                 "same_day_peak": same_day_peak,
                 "same_day_peak_date": same_day_peak_date,
                 "ai_recommendation": ai_recommendation,
+                "ai_recommendation_confidence": ai_recommendation_confidence,
             }
         )
 

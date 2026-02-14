@@ -8,6 +8,7 @@ import enum
 class UserRole(str, enum.Enum):
     admin = "admin"
     agent = "agent"
+    user = "user"
     viewer = "viewer"
 
 
@@ -42,6 +43,14 @@ class TicketCategory(str, enum.Enum):
     hardware = "hardware"
     email = "email"
     problem = "problem"
+
+
+class ProblemStatus(str, enum.Enum):
+    open = "open"
+    investigating = "investigating"
+    known_error = "known_error"
+    resolved = "resolved"
+    closed = "closed"
 
 
 class EmailKind(str, enum.Enum):

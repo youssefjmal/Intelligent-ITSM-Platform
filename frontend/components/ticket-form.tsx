@@ -30,7 +30,7 @@ type Assignee = {
 interface AISuggestion {
   priority: TicketPriority
   category: TicketCategory
-  recommendations: string[]
+  recommendations: Array<{ text: string; confidence: number }>
   assignee?: string | null
 }
 
@@ -77,6 +77,7 @@ export function TicketForm() {
         priority: TicketPriority
         category: TicketCategory
         recommendations: string[]
+        recommendations_scored?: Array<{ text: string; confidence: number }>
         assignee?: string | null
       }>(
         "/ai/classify",
@@ -85,10 +86,31 @@ export function TicketForm() {
           body: JSON.stringify({ title: aiTitle, description: aiDescription }),
         }
       )
-      setAiSuggestion(data)
+      const mapped: AISuggestion = {
+        priority: data.priority,
+        category: data.category,
+        recommendations:
+          Array.isArray(data.recommendations_scored) && data.recommendations_scored.length > 0
+            ? data.recommendations_scored
+                .map((item) => ({
+                  text: String(item.text || "").trim(),
+                  confidence: Number.isFinite(item.confidence)
+                    ? Math.max(0, Math.min(100, Number(item.confidence)))
+                    : 0,
+                }))
+                .filter((item) => item.text.length > 0)
+            : (Array.isArray(data.recommendations) ? data.recommendations : [])
+                .map((text, index) => ({
+                  text: String(text || "").trim(),
+                  confidence: Math.max(55, 86 - index * 7),
+                }))
+                .filter((item) => item.text.length > 0),
+        assignee: data.assignee ?? null,
+      }
+      setAiSuggestion(mapped)
       if (data.priority) setPriority(data.priority)
       if (data.category) setCategory(data.category)
-      if (data.assignee) setAssignee(data.assignee)
+      if (data.assignee && (assignee === "auto" || !assignee.trim())) setAssignee(data.assignee)
     } catch {
       // fallback silent
     } finally {
@@ -374,7 +396,12 @@ export function TicketForm() {
                           key={`rec-${i}`}
                           className="text-xs text-foreground bg-background rounded-md p-2 border border-border"
                         >
-                          {rec}
+                          <div className="flex items-start justify-between gap-2">
+                            <span>{rec.text}</span>
+                            <span className="rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                              {rec.confidence}%
+                            </span>
+                          </div>
                         </li>
                       ))}
                     </ul>

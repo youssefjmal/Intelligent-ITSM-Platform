@@ -8,3 +8,4 @@ from app.models.recommendation import Recommendation
 from app.models.refresh_token import RefreshToken
 from app.models.password_reset_token import PasswordResetToken
 from app.models.jira_sync_state import JiraSyncState
+from app.models.problem import Problem

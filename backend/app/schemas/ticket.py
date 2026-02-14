@@ -107,6 +107,7 @@ class TicketTriageUpdate(BaseModel):
 
 class TicketOut(TicketBase):
     id: str
+    problem_id: str | None = None
     status: TicketStatus
     auto_assignment_applied: bool
     auto_priority_applied: bool

@@ -39,6 +39,8 @@ class Ticket(Base):
     )
     assignee: Mapped[str] = mapped_column(String(255), nullable=False)
     reporter: Mapped[str] = mapped_column(String(255), nullable=False)
+    reporter_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    problem_id: Mapped[str | None] = mapped_column(ForeignKey("problems.id", ondelete="SET NULL"), nullable=True, index=True)
     auto_assignment_applied: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     auto_priority_applied: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     assignment_model_version: Mapped[str] = mapped_column(String(40), default="legacy", nullable=False)
@@ -70,6 +72,7 @@ class Ticket(Base):
         cascade="all, delete-orphan",
         order_by="TicketComment.created_at",
     )
+    problem = relationship("Problem", back_populates="tickets")
 
 
 class TicketComment(Base):

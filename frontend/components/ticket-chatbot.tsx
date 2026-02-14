@@ -97,7 +97,7 @@ function statusBadgeClass(status: string): string {
 
 export function TicketChatbot() {
   const { t, locale } = useI18n()
-  const { user } = useAuth()
+  const { user, hasPermission } = useAuth()
   const router = useRouter()
   const [input, setInput] = useState("")
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -303,7 +303,7 @@ export function TicketChatbot() {
               {messages.map((message) => {
                 const isUser = message.role === "user"
                 const draft = message.ticketDraft
-                const canCreate = message.ticketAction === "create_ticket"
+                const canCreate = message.ticketAction === "create_ticket" && hasPermission("create_ticket")
                 return (
                   <div key={message.id} className="space-y-3">
                     <div
@@ -385,6 +385,13 @@ export function TicketChatbot() {
                             </div>
                           )}
                         </div>
+                        {message.ticketAction === "create_ticket" && !hasPermission("create_ticket") && (
+                          <p className="mt-3 text-xs text-muted-foreground">
+                            {locale === "fr"
+                              ? "Vous pouvez previsualiser le brouillon, mais votre role ne peut pas creer de ticket."
+                              : "You can preview this draft, but your role cannot create tickets."}
+                          </p>
+                        )}
                         {canCreate && (
                           <div className="mt-3">
                             <Button

@@ -12,6 +12,7 @@ type ApiComment = {
 
 type ApiTicket = {
   id: string
+  problem_id?: string | null
   title: string
   description: string
   status: TicketStatus
@@ -54,6 +55,7 @@ export type TicketPerformancePayload = {
 function mapTicket(ticket: ApiTicket): Ticket {
   return {
     id: ticket.id,
+    problemId: ticket.problem_id || undefined,
     title: ticket.title,
     description: ticket.description,
     status: ticket.status,
@@ -147,6 +149,7 @@ export async function fetchTicketInsights(): Promise<{
     same_day_peak: number
     same_day_peak_date: string | null
     ai_recommendation: string
+    ai_recommendation_confidence?: number
   }>
   operational: {
     critical_recent: Array<{
@@ -180,6 +183,35 @@ export async function fetchTicketInsights(): Promise<{
       stale_active: number
     }
   }
+  problem_management?: {
+    total: number
+    open: number
+    investigating: number
+    known_error: number
+    resolved: number
+    closed: number
+    active_total: number
+    top: Array<{
+      id: string
+      title: string
+      status: string
+      occurrences_count: number
+      active_count: number
+      category: string
+      latest_ticket_id: string
+      latest_updated_at: string
+      ticket_ids: string[]
+      highest_priority: "critical" | "high" | "medium" | "low"
+      problem_count: number
+      problem_triggered: boolean
+      trigger_reasons: string[]
+      recent_occurrences_7d: number
+      same_day_peak: number
+      same_day_peak_date: string | null
+      ai_recommendation: string
+      ai_recommendation_confidence?: number
+    }>
+  }
   performance: TicketPerformancePayload
 }> {
   return apiFetch("/tickets/insights")
@@ -208,7 +240,7 @@ export async function fetchTicketPerformance(filters: PerformanceFilters = {}): 
 export type TicketAIRecommendationsPayload = {
   priority: TicketPriority
   category: TicketCategory
-  recommendations: string[]
+  recommendations: Array<{ text: string; confidence: number }>
   assignee: string | null
 }
 
@@ -228,6 +260,7 @@ export async function fetchTicketAIRecommendations(
     priority: TicketPriority
     category: TicketCategory
     recommendations: string[]
+    recommendations_scored?: Array<{ text: string; confidence: number }>
     assignee?: string | null
   }>("/ai/classify", {
     method: "POST",
@@ -240,7 +273,22 @@ export async function fetchTicketAIRecommendations(
   const payload: TicketAIRecommendationsPayload = {
     priority: data.priority,
     category: data.category,
-    recommendations: Array.isArray(data.recommendations) ? data.recommendations : [],
+    recommendations:
+      Array.isArray(data.recommendations_scored) && data.recommendations_scored.length > 0
+        ? data.recommendations_scored
+            .map((item) => ({
+              text: String(item.text || "").trim(),
+              confidence: Number.isFinite(item.confidence)
+                ? Math.max(0, Math.min(100, Number(item.confidence)))
+                : 0,
+            }))
+            .filter((item) => item.text.length > 0)
+        : (Array.isArray(data.recommendations) ? data.recommendations : [])
+            .map((text, index) => ({
+              text: String(text || "").trim(),
+              confidence: Math.max(55, 86 - index * 7),
+            }))
+            .filter((item) => item.text.length > 0),
     assignee: data.assignee ?? null,
   }
   ticketAIRecommendationsCache.set(ticket.id, payload)

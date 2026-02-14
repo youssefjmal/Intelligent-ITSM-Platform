@@ -21,6 +21,7 @@ export interface TicketComment {
 
 export interface Ticket {
   id: string
+  problemId?: string
   title: string
   description: string
   status: TicketStatus

@@ -42,6 +42,7 @@ import {
   type TicketAIRecommendationsPayload,
 } from "@/lib/tickets-api"
 import { useI18n } from "@/lib/i18n"
+import { useAuth } from "@/lib/auth"
 
 interface TicketDetailProps {
   ticket: Ticket
@@ -54,6 +55,7 @@ type Assignee = {
 }
 
 export function TicketDetail({ ticket }: TicketDetailProps) {
+  const { hasPermission } = useAuth()
   const { t, locale } = useI18n()
   const [ticketData, setTicketData] = useState<Ticket>(ticket)
   const [status, setStatus] = useState<TicketStatus>(ticket.status)
@@ -101,6 +103,8 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
         : "A resolution comment is required before closing.",
     updateFailed: locale === "fr" ? "Mise a jour triage impossible." : "Could not update triage.",
   }
+  const canResolve = hasPermission("resolve_ticket")
+  const canEditTriage = hasPermission("edit_ticket_triage")
 
   useEffect(() => {
     setTicketData(ticket)
@@ -389,7 +393,12 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                                 key={`${ticketData.id}-ai-rec-main-${index}`}
                                 className="rounded-md border border-border/60 bg-muted/30 px-2.5 py-2 text-xs text-foreground"
                               >
-                                {recommendation}
+                                <div className="flex items-start justify-between gap-2">
+                                  <span>{recommendation.text}</span>
+                                  <span className="rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                                    {recommendation.confidence}%
+                                  </span>
+                                </div>
                               </div>
                             ))}
                           </div>
@@ -449,12 +458,19 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              {!canResolve && !canEditTriage && (
+                <p className="text-xs text-muted-foreground">
+                  {locale === "fr"
+                    ? "Mode lecture seule: seuls les agents et administrateurs peuvent modifier ce ticket."
+                    : "Read-only mode: only agents and administrators can update this ticket."}
+                </p>
+              )}
 	              <div className="space-y-1">
 	                <p className="text-xs font-medium text-muted-foreground">{t("tickets.status")}</p>
 	                <Select
 	                  value={status}
 	                  onValueChange={handleStatusChange}
-                  disabled={updating || triageUpdating}
+                  disabled={!canResolve || updating || triageUpdating}
                 >
                   <SelectTrigger className="h-8 text-sm">
                     <SelectValue />
@@ -474,7 +490,7 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                     onChange={(event) => setStatusComment(event.target.value)}
                     placeholder={triageLabels.statusCommentPlaceholder}
                     className="min-h-[88px] text-sm"
-                    disabled={updating || triageUpdating}
+                    disabled={!canResolve || updating || triageUpdating}
                   />
                   <p className="text-[11px] text-muted-foreground">{triageLabels.statusCommentHint}</p>
                 </div>
@@ -488,7 +504,7 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                 <Select
                   value={selectedAssignee}
                   onValueChange={handleAssigneeChange}
-                  disabled={updating || triageUpdating || assigneeOptions.length === 0}
+                  disabled={!canEditTriage || updating || triageUpdating || assigneeOptions.length === 0}
                 >
                   <SelectTrigger className="h-8 text-sm">
                     <SelectValue />
@@ -508,7 +524,7 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                 <Select
                   value={selectedPriority}
                   onValueChange={handlePriorityChange}
-                  disabled={updating || triageUpdating}
+                  disabled={!canEditTriage || updating || triageUpdating}
                 >
                   <SelectTrigger className="h-8 text-sm">
                     <SelectValue />
@@ -527,7 +543,7 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                 <Select
                   value={selectedCategory}
                   onValueChange={handleCategoryChange}
-                  disabled={updating || triageUpdating}
+                  disabled={!canEditTriage || updating || triageUpdating}
                 >
                   <SelectTrigger className="h-8 text-sm">
                     <SelectValue />

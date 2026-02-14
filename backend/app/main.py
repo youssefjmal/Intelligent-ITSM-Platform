@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.core.exceptions import ITSMGatekeeperException
-from app.routers import ai, assignees, auth, emails, integrations_jira, recommendations, tickets, users
+from app.routers import ai, assignees, auth, emails, integrations_jira, problems, recommendations, tickets, users
 
 
 def create_app() -> FastAPI:
@@ -28,6 +28,7 @@ def create_app() -> FastAPI:
     app.include_router(emails.router, prefix="/api/emails", tags=["emails"])
     app.include_router(ai.router, prefix="/api/ai", tags=["ai"])
     app.include_router(recommendations.router, prefix="/api/recommendations", tags=["recommendations"])
+    app.include_router(problems.router, prefix="/api", tags=["problems"])
     app.include_router(assignees.router, prefix="/api", tags=["assignees"])
     app.include_router(integrations_jira.router, prefix="/api", tags=["integrations-jira"])
 
