@@ -3,6 +3,26 @@
 ## Overview
 This backend provides authentication, ticket management, analytics, AI-assisted classification/chat, and recommendations. It exposes a REST API used by the Next.js frontend and stores data in PostgreSQL.
 
+## Architecture (Current)
+```
+app/routers/* (HTTP layer)
+   |
+   +--> routers/ai.py (thin)
+   |      -> services/ai/orchestrator.py
+   |      -> services/ai/intents.py
+   |      -> services/ai/analytics_queries.py
+   |      -> services/ai/formatters.py
+   |
+   +--> routers/tickets.py
+   |      -> services/tickets.py
+   |      -> integrations/jira/outbound.py (best-effort Jira push)
+   |
+   +--> routers/integrations_jira.py
+          -> integrations/jira/service.py (upsert/reconcile)
+
+services/jira_kb.py provides JSM comment knowledge blocks for AI prompts.
+```
+
 ## Requirements
 - Python 3.11+
 - PostgreSQL 15+
@@ -43,11 +63,11 @@ File: `backend/.env`
 - `GOOGLE_REDIRECT_URI` (default: `http://localhost:8000/api/auth/google/callback`)
 - `OLLAMA_BASE_URL` (optional local LLM)
 - `OLLAMA_MODEL` (optional local LLM)
-- `JIRA_BASE_URL` (planned Jira integration)
-- `JIRA_EMAIL` (planned Jira integration)
-- `JIRA_API_TOKEN` (planned Jira integration)
-- `JIRA_PROJECT_KEY` (planned Jira integration)
-- `JIRA_SERVICE_DESK_ID` (planned Jira integration)
+- `JIRA_BASE_URL` (Jira base URL used by sync/import/outbound)
+- `JIRA_EMAIL` (Jira technical user email)
+- `JIRA_API_TOKEN` (Jira API token)
+- `JIRA_PROJECT_KEY` (preferred Jira project key)
+- `JIRA_SERVICE_DESK_ID` (service desk id used by import flows)
 - `JIRA_KB_ENABLED` (enable JSM comment knowledge for AI prompts)
 - `JIRA_KB_MAX_ISSUES` (number of Jira issues scanned for comments)
 - `JIRA_KB_MAX_COMMENTS_PER_ISSUE` (latest comments kept per issue)
@@ -188,6 +208,11 @@ Examples:
 ## AI Features
 - `POST /api/ai/classify` returns priority, category, and recommendations.
 - `POST /api/ai/chat` returns a reply and optionally a ticket draft.
+- AI router is thin: core logic is in `app/services/ai/orchestrator.py`.
+- Intent detection, analytics query logic, and formatting are split into:
+  - `app/services/ai/intents.py`
+  - `app/services/ai/analytics_queries.py`
+  - `app/services/ai/formatters.py`
 - When Jira credentials are configured, AI context is enriched from existing Jira issue comments.
 - If Ollama is unavailable, the system falls back to rule-based logic.
 
@@ -202,7 +227,9 @@ Examples:
 - `app/models` ORM models.
 - `app/schemas` Pydantic request/response models.
 - `app/services` business logic.
+- `app/services/ai` chat/classification orchestration and helpers.
 - `app/routers` API endpoints.
+- `app/integrations/jira` inbound/outbound Jira integration logic.
 - `alembic` migrations.
 - `scripts` local utilities and seed data.
 

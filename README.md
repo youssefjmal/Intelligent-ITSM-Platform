@@ -7,20 +7,33 @@ This project delivers an intelligent ITSM platform that combines AI-driven class
 
 ## System Architecture
 ```
-[Jira Service Management]
-          |
-          | REST API (planned)
-          v
-        [n8n]
-          |
-          | Triggers / Webhooks
-          v
-       [Backend API]
-  FastAPI + Postgres
-          |
-          v
-      [Frontend]
- Next.js Dashboard
+[Frontend]
+Next.js Dashboard
+      |
+      | HTTP /api
+      v
+[Backend API - FastAPI]
+  Thin Routers + Service Layer
+      |
+      +--> app/routers/ai.py
+      |       -> app/services/ai/orchestrator.py
+      |       -> intents.py, analytics_queries.py, formatters.py
+      |       -> classifier.py, llm.py, quickfix.py, prompts.py
+      |
+      +--> app/services/tickets.py
+      |       -> best-effort outbound push to Jira
+      |
+      +--> app/integrations/jira/*
+      |       -> inbound upsert/reconcile from Jira or n8n
+      |
+      +--> app/services/jira_kb.py
+              -> JSM comment knowledge for AI (RAG)
+      |
+      v
+[PostgreSQL]
+
+[Jira Service Management] <------> [Backend Integrations API]
+                 (direct or via n8n webhooks/cron)
 ```
 
 ## Tech Stack
@@ -28,13 +41,16 @@ This project delivers an intelligent ITSM platform that combines AI-driven class
 - Database: PostgreSQL
 - Frontend: Next.js (App Router), React, Tailwind CSS
 - Auth: JWT in httpOnly cookies
-- Orchestration: n8n (planned)
+- Orchestration: n8n (optional for webhook/cron flows)
 - Analytics: Power BI (planned)
 
 ## Key Features
 - User authentication with email verification
 - Ticket CRUD, analytics, and insights
-- AI assistance endpoints (rule-based fallback, optional Ollama)
+- AI assistance endpoints with thin router + modular service architecture
+- Jira inbound sync (`/api/integrations/jira/upsert`, `/api/integrations/jira/reconcile`)
+- Best-effort Jira outbound push on local ticket creation
+- JSM comment-aware AI context (RAG-style knowledge block)
 - Recommendations module (DB-backed)
 - Admin user management + email logs
 - Consistent API errors via custom exceptions
@@ -113,6 +129,17 @@ jira-ticket-managementv2/
       routers/
       schemas/
       services/
+        ai/
+          orchestrator.py
+          intents.py
+          analytics_queries.py
+          formatters.py
+          classifier.py
+          llm.py
+          prompts.py
+          quickfix.py
+      integrations/
+        jira/
       main.py
     alembic/
       versions/
@@ -141,12 +168,18 @@ jira-ticket-managementv2/
     next.config.mjs
     package.json
     tailwind.config.ts
+  docs/
+    scrum/
+      user-stories.md
+      product-backlog.md
+      sprint-backlog.md
+      definition-of-done.md
   README.md
 ```
 
 ## Notes
-- Jira Service Management integration is not implemented yet.
-- n8n orchestration is planned (webhooks and escalation workflows).
+- Jira Service Management integration is available for inbound sync and outbound best-effort ticket push.
+- n8n orchestration is optional (webhooks and scheduled reconciliation).
 - Email sending is logged in the DB; configure SMTP to send real emails.
 
 ## API Docs
