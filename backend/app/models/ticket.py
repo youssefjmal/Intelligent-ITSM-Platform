@@ -20,6 +20,8 @@ class Ticket(Base):
     __tablename__ = "tickets"
     __table_args__ = (
         UniqueConstraint("external_source", "external_id", name="uq_tickets_external_source_external_id"),
+        UniqueConstraint("jira_key", name="uq_tickets_jira_key"),
+        UniqueConstraint("jira_issue_id", name="uq_tickets_jira_issue_id"),
     )
 
     id: Mapped[str] = mapped_column(String(20), primary_key=True)
@@ -58,6 +60,11 @@ class Ticket(Base):
     resolved_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    source: Mapped[str] = mapped_column(String(32), default="local", nullable=False, index=True)
+    jira_key: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    jira_issue_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    jira_created_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    jira_updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     external_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     external_source: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     external_updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -79,6 +86,7 @@ class TicketComment(Base):
     __tablename__ = "ticket_comments"
     __table_args__ = (
         UniqueConstraint("ticket_id", "external_comment_id", name="uq_ticket_comments_ticket_external_comment"),
+        UniqueConstraint("jira_comment_id", name="uq_ticket_comments_jira_comment_id"),
     )
 
     id: Mapped[str] = mapped_column(String(20), primary_key=True)
@@ -87,6 +95,9 @@ class TicketComment(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    jira_comment_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    jira_created_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    jira_updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     external_comment_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     external_source: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     external_updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -24,7 +24,7 @@ Next.js Dashboard
       |       -> best-effort outbound push to Jira
       |
       +--> app/integrations/jira/*
-      |       -> inbound upsert/reconcile from Jira or n8n
+      |       -> inbound webhook/reconcile from Jira or n8n
       |
       +--> app/services/jira_kb.py
               -> JSM comment knowledge for AI (RAG)
@@ -48,7 +48,7 @@ Next.js Dashboard
 - User authentication with email verification
 - Ticket CRUD, analytics, and insights
 - AI assistance endpoints with thin router + modular service architecture
-- Jira inbound sync (`/api/integrations/jira/upsert`, `/api/integrations/jira/reconcile`)
+- Jira inbound sync (`/api/integrations/jira/webhook`, `/api/integrations/jira/reconcile`; `/upsert` kept as legacy alias)
 - Best-effort Jira outbound push on local ticket creation
 - JSM comment-aware AI context (RAG-style knowledge block)
 - Recommendations module (DB-backed)
@@ -114,6 +114,10 @@ Backend: `backend/.env`
 - `JIRA_API_TOKEN`
 - `JIRA_PROJECT_KEY`
 - `JIRA_SERVICE_DESK_ID`
+- `JIRA_AUTO_RECONCILE_ENABLED`
+- `JIRA_AUTO_RECONCILE_INTERVAL_SECONDS`
+- `JIRA_AUTO_RECONCILE_LOOKBACK_DAYS`
+- `JIRA_AUTO_RECONCILE_STARTUP_DELAY_SECONDS`
 
 Frontend: `frontend/.env.local`
 - `NEXT_PUBLIC_API_URL`

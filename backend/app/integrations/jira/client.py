@@ -1,4 +1,4 @@
-"""Jira REST client wrapper with retries."""
+"""Jira REST v3 client wrapper with retries."""
 
 from __future__ import annotations
 
@@ -43,8 +43,12 @@ class JiraClient:
                     backoff *= 2
         return {}
 
-    def get_issue(self, issue_key: str, *, expand: str = "changelog") -> dict[str, Any]:
-        return self._request("GET", f"/rest/api/3/issue/{issue_key}", params={"expand": expand})
+    def get_issue(self, issue_key: str, *, fields: str) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/rest/api/3/issue/{issue_key}",
+            params={"fields": fields},
+        )
 
     def get_issue_comments(self, issue_key: str, *, start_at: int = 0, max_results: int = 100) -> dict[str, Any]:
         return self._request(
@@ -53,6 +57,27 @@ class JiraClient:
             params={"startAt": start_at, "maxResults": max_results},
         )
 
+    def search_jql(
+        self,
+        *,
+        jql: str,
+        start_at: int = 0,
+        max_results: int | None = None,
+        fields: str,
+    ) -> dict[str, Any]:
+        limit = max_results or settings.JIRA_SYNC_PAGE_SIZE
+        return self._request(
+            "GET",
+            "/rest/api/3/search/jql",
+            params={
+                "jql": jql,
+                "startAt": start_at,
+                "maxResults": limit,
+                "fields": fields,
+            },
+        )
+
+    # Backward-compatible helper used by outbound sync code paths.
     def search_updated_issues(
         self,
         *,
@@ -61,16 +86,11 @@ class JiraClient:
         max_results: int | None = None,
         project_key: str | None = None,
     ) -> dict[str, Any]:
-        limit = max_results or settings.JIRA_SYNC_PAGE_SIZE
         project_clause = f'project = "{project_key}" AND ' if project_key else ""
         jql = f'{project_clause}updated >= "{since_iso}" ORDER BY updated ASC'
-        return self._request(
-            "GET",
-            "/rest/api/3/search",
-            params={
-                "jql": jql,
-                "startAt": start_at,
-                "maxResults": limit,
-                "fields": "summary,description,status,priority,issuetype,labels,assignee,reporter,created,updated,comment",
-            },
+        return self.search_jql(
+            jql=jql,
+            start_at=start_at,
+            max_results=max_results,
+            fields="summary,description,status,priority,issuetype,labels,assignee,reporter,created,updated,comment",
         )

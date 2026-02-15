@@ -1,0 +1,200 @@
+@startuml
+hide circle
+hide methods
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+left to right direction
+
+entity "alembic_version" as alembic_version {
+  *version_num : varchar(32)
+}
+
+entity "users" as users {
+  *id : uuid
+  --
+  email : varchar(255) <<UQ>>
+  name : varchar(255)
+  role : varchar(6)
+  password_hash : varchar(255)?
+  google_id : varchar(255)? <<UQ>>
+  is_verified : boolean
+  created_at : timestamp
+  specializations : jsonb
+  seniority_level : varchar(6)
+  is_available : boolean
+  max_concurrent_tickets : integer
+}
+
+entity "verification_tokens" as verification_tokens {
+  *token : varchar(64)
+  --
+  code : varchar(6)
+  user_id : uuid <<FK>>
+  created_at : timestamp
+  expires_at : timestamp
+  used_at : timestamp?
+}
+
+entity "password_reset_tokens" as password_reset_tokens {
+  *token : varchar(64)
+  --
+  user_id : uuid <<FK>>
+  created_at : timestamp
+  expires_at : timestamp
+  used_at : timestamp?
+}
+
+entity "refresh_tokens" as refresh_tokens {
+  *jti : varchar(36)
+  --
+  user_id : uuid <<FK>>
+  created_at : timestamp
+  expires_at : timestamp
+  revoked_at : timestamp?
+  replaced_by_jti : varchar(36)?
+}
+
+entity "email_logs" as email_logs {
+  *id : uuid
+  --
+  to : varchar(255)
+  subject : varchar(255)
+  body : text
+  kind : varchar(12)
+  sent_at : timestamp
+}
+
+entity "recommendations" as recommendations {
+  *id : varchar(20)
+  --
+  type : varchar(8)
+  title : varchar(255)
+  description : text
+  related_tickets : jsonb
+  confidence : integer
+  impact : varchar(6)
+  created_at : timestamp
+}
+
+entity "problems" as problems {
+  *id : varchar(20)
+  --
+  title : varchar(255)
+  category : varchar(15)
+  status : varchar(13)
+  created_at : timestamp
+  updated_at : timestamp
+  last_seen_at : timestamp?
+  resolved_at : timestamp?
+  occurrences_count : integer
+  active_count : integer
+  root_cause : text?
+  workaround : text?
+  permanent_fix : text?
+  similarity_key : varchar(255) <<UQ>>
+}
+
+entity "tickets" as tickets {
+  *id : varchar(20)
+  --
+  title : varchar(255)
+  description : text
+  status : varchar(11)
+  priority : varchar(8)
+  category : varchar(15)
+  assignee : varchar(255)
+  reporter : varchar(255)
+  reporter_id : varchar(64)?
+  problem_id : varchar(20)? <<FK>>
+  resolution : text?
+  tags : jsonb
+  auto_assignment_applied : boolean
+  auto_priority_applied : boolean
+  assignment_model_version : varchar(40)
+  priority_model_version : varchar(40)
+  predicted_priority : varchar(8)?
+  predicted_category : varchar(15)?
+  assignment_change_count : integer
+  first_action_at : timestamp?
+  resolved_at : timestamp?
+  created_at : timestamp
+  updated_at : timestamp
+  source : varchar(32)
+  jira_key : varchar(64)? <<UQ>>
+  jira_issue_id : varchar(64)? <<UQ>>
+  jira_created_at : timestamp?
+  jira_updated_at : timestamp?
+  external_id : varchar(128)?
+  external_source : varchar(32)?
+  external_updated_at : timestamp?
+  last_synced_at : timestamp?
+  raw_payload : jsonb?
+  --
+  UQ uq_tickets_external_source_external_id (external_source, external_id)
+}
+
+entity "ticket_comments" as ticket_comments {
+  *id : varchar(20)
+  --
+  ticket_id : varchar(20) <<FK>>
+  author : varchar(255)
+  content : text
+  created_at : timestamp
+  updated_at : timestamp?
+  jira_comment_id : varchar(64)? <<UQ>>
+  jira_created_at : timestamp?
+  jira_updated_at : timestamp?
+  external_comment_id : varchar(128)?
+  external_source : varchar(32)?
+  external_updated_at : timestamp?
+  raw_payload : jsonb?
+  --
+  UQ uq_ticket_comments_ticket_external_comment (ticket_id, external_comment_id)
+}
+
+entity "jira_sync_state" as jira_sync_state {
+  *id : integer
+  --
+  project_key : varchar(32) <<UQ>>
+  last_synced_at : timestamp?
+  last_cursor : varchar(255)?
+  last_error : text?
+  updated_at : timestamp
+}
+
+users ||--o{ verification_tokens : user_id
+users ||--o{ password_reset_tokens : user_id
+users ||--o{ refresh_tokens : user_id
+problems ||--o{ tickets : problem_id
+tickets ||--o{ ticket_comments : ticket_id
+
+note right of tickets
+  reporter_id is indexed but not a foreign key.
+end note
+
+note bottom of users
+  role: admin, agent, user, viewer
+  seniority_level: intern, junior, middle, senior
+end note
+
+note bottom of tickets
+  status: open, in-progress, pending, resolved, closed
+  priority: critical, high, medium, low
+  category: infrastructure, network, security, application,
+            service_request, hardware, email, problem
+end note
+
+note bottom of problems
+  status: open, investigating, known_error, resolved, closed
+end note
+
+note bottom of email_logs
+  kind: verification, welcome
+end note
+
+note bottom of recommendations
+  type: pattern, priority, solution, workflow
+  impact: high, medium, low
+end note
+
+@enduml

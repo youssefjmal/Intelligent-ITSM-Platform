@@ -18,7 +18,7 @@ router = APIRouter(dependencies=[Depends(rate_limit("ai")), Depends(get_current_
 def classify(payload: ClassificationRequest, db: Session = Depends(get_db)) -> ClassificationResponse:
     return handle_classify(payload, db)
 
-
+ 
 @router.post("/chat", response_model=ChatResponse)
 def chat(
     payload: ChatRequest,

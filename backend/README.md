@@ -75,6 +75,10 @@ File: `backend/.env`
 - `JIRA_KB_CACHE_SECONDS` (cache TTL for fetched Jira comments)
 - `JIRA_SYNC_PAGE_SIZE` (reconcile page size for Jira reverse sync)
 - `JIRA_WEBHOOK_SECRET` (optional HMAC secret for Jira/n8n webhook signature)
+- `JIRA_AUTO_RECONCILE_ENABLED` (run background Jira pull loop at API startup)
+- `JIRA_AUTO_RECONCILE_INTERVAL_SECONDS` (seconds between background reconcile runs)
+- `JIRA_AUTO_RECONCILE_LOOKBACK_DAYS` (fallback lookback if no sync state exists yet)
+- `JIRA_AUTO_RECONCILE_STARTUP_DELAY_SECONDS` (initial delay before first background reconcile)
 
 ## Database and Migrations
 - Migrations are managed by Alembic.
@@ -139,9 +143,10 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 1. Jira Webhook Trigger in n8n (issue created/updated).
 2. HTTP Request node:
    - Method: `POST`
-   - URL: `http://127.0.0.1:8000/api/integrations/jira/upsert`
+   - URL: `http://127.0.0.1:8000/api/integrations/jira/webhook` (`/upsert` is kept as a legacy alias)
    - Headers:
      - `Content-Type: application/json`
+     - `X-Jira-Webhook-Secret: <raw shared secret>` or
      - `X-Signature: <sha256 hex or sha256=<hex>>` (if `JIRA_WEBHOOK_SECRET` set)
      - `X-Sync-Origin: n8n`
    - Body: raw Jira webhook JSON, or simplified:

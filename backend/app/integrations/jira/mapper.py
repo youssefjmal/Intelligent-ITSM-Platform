@@ -1,4 +1,4 @@
-"""Mapping utilities from Jira issue payloads to internal normalized data."""
+"""Mapping utilities from Jira issue payloads to normalized ticket/comment data."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from app.models.enums import TicketCategory, TicketPriority, TicketStatus
 
 logger = logging.getLogger(__name__)
 
-JIRA_SOURCE = "jsm"
+JIRA_SOURCE = "jira"
 
 STATUS_MAP = {
     "to do": TicketStatus.open,
@@ -45,32 +45,64 @@ CATEGORY_MAP = {
     "problem": TicketCategory.problem,
 }
 
-
 def _parse_datetime(value: str | None) -> dt.datetime | None:
     if not value:
         return None
-    try:
-        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        logger.warning("Could not parse Jira datetime: %s", value)
+    normalized = value.strip()
+    if not normalized:
         return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=dt.timezone.utc)
-    return parsed.astimezone(dt.timezone.utc)
+    candidates = [
+        normalized.replace("Z", "+00:00"),
+        normalized,
+    ]
+    for candidate in candidates:
+        try:
+            parsed = dt.datetime.fromisoformat(candidate)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=dt.timezone.utc)
+            return parsed.astimezone(dt.timezone.utc)
+        except ValueError:
+            continue
+    formats = ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z")
+    for fmt in formats:
+        try:
+            parsed = dt.datetime.strptime(normalized, fmt)
+            return parsed.astimezone(dt.timezone.utc)
+        except ValueError:
+            continue
+    logger.warning("Could not parse Jira datetime: %s", value)
+    return None
 
 
-def _adf_to_text(node: Any) -> str:
+def _text_from_adf(node: Any) -> str:
     if node is None:
         return ""
     if isinstance(node, str):
         return node
     if isinstance(node, list):
-        return " ".join(part for part in (_adf_to_text(item) for item in node) if part)
+        return " ".join(part for part in (_text_from_adf(item) for item in node) if part)
     if not isinstance(node, dict):
         return str(node)
-    text = str(node.get("text") or "").strip()
-    content = _adf_to_text(node.get("content"))
-    return " ".join(piece for piece in [text, content] if piece).strip()
+
+    parts: list[str] = []
+    text = node.get("text")
+    if isinstance(text, str):
+        parts.append(text)
+    content = node.get("content")
+    if isinstance(content, list):
+        for child in content:
+            child_text = _text_from_adf(child)
+            if child_text:
+                parts.append(child_text)
+    return " ".join(part.strip() for part in parts if part and part.strip())
+
+
+def _normalize_text(raw_body: Any) -> str:
+    if isinstance(raw_body, str):
+        text = raw_body
+    else:
+        text = _text_from_adf(raw_body)
+    return " ".join(text.split()).strip()
 
 
 def _safe_title(issue_key: str, title: str | None) -> str:
@@ -114,8 +146,9 @@ def map_category(fields: dict[str, Any]) -> TicketCategory:
 
 @dataclass(frozen=True)
 class NormalizedTicket:
-    external_id: str
-    external_source: str
+    jira_key: str
+    jira_issue_id: str
+    source: str
     title: str
     description: str
     status: TicketStatus
@@ -124,37 +157,44 @@ class NormalizedTicket:
     assignee: str
     reporter: str
     tags: list[str]
-    created_at: dt.datetime | None
-    external_updated_at: dt.datetime | None
+    jira_created_at: dt.datetime | None
+    jira_updated_at: dt.datetime | None
     raw_payload: dict[str, Any]
 
 
 @dataclass(frozen=True)
 class NormalizedComment:
-    external_comment_id: str
-    external_source: str
+    jira_comment_id: str
     author: str
     content: str
-    created_at: dt.datetime | None
-    external_updated_at: dt.datetime | None
+    jira_created_at: dt.datetime | None
+    jira_updated_at: dt.datetime | None
     raw_payload: dict[str, Any]
 
 
 def map_issue(issue: dict[str, Any]) -> NormalizedTicket:
     fields = issue.get("fields") or {}
     issue_key = str(issue.get("key") or "").strip()
+    issue_id = str(issue.get("id") or "").strip()
     if not issue_key:
         raise ValueError("missing_issue_key")
 
     summary = _safe_title(issue_key, fields.get("summary"))
-    description = _adf_to_text(fields.get("description")) or summary
+    description = _normalize_text(fields.get("description")) or summary
     assignee = str(((fields.get("assignee") or {}).get("displayName") or "Unassigned")).strip()
     reporter = str(((fields.get("reporter") or {}).get("displayName") or "Jira")).strip()
     tags = [str(label).strip() for label in (fields.get("labels") or []) if str(label).strip()]
+    component_names = [
+        str(component.get("name") or "").strip()
+        for component in list(fields.get("components") or [])
+        if isinstance(component, dict) and str(component.get("name") or "").strip()
+    ]
+    tags.extend(component_names)
 
     return NormalizedTicket(
-        external_id=issue_key,
-        external_source=JIRA_SOURCE,
+        jira_key=issue_key,
+        jira_issue_id=issue_id or issue_key,
+        source=JIRA_SOURCE,
         title=summary,
         description=description[:4000],
         status=map_status(fields),
@@ -163,8 +203,8 @@ def map_issue(issue: dict[str, Any]) -> NormalizedTicket:
         assignee=assignee[:255] or "Unassigned",
         reporter=reporter[:255] or "Jira",
         tags=tags[:20],
-        created_at=_parse_datetime(str(fields.get("created") or "")),
-        external_updated_at=_parse_datetime(str(fields.get("updated") or "")),
+        jira_created_at=_parse_datetime(str(fields.get("created") or "")),
+        jira_updated_at=_parse_datetime(str(fields.get("updated") or "")),
         raw_payload=issue,
     )
 
@@ -174,13 +214,12 @@ def map_issue_comment(comment: dict[str, Any]) -> NormalizedComment:
     if not comment_id:
         raise ValueError("missing_comment_id")
     author = str(((comment.get("author") or {}).get("displayName") or "Unknown")).strip()
-    body = _adf_to_text(comment.get("body")) or "-"
+    body = _normalize_text(comment.get("body")) or "-"
     return NormalizedComment(
-        external_comment_id=comment_id,
-        external_source=JIRA_SOURCE,
+        jira_comment_id=comment_id,
         author=author[:255] or "Unknown",
         content=body[:8000],
-        created_at=_parse_datetime(str(comment.get("created") or "")),
-        external_updated_at=_parse_datetime(str(comment.get("updated") or "")),
+        jira_created_at=_parse_datetime(str(comment.get("created") or "")),
+        jira_updated_at=_parse_datetime(str(comment.get("updated") or "")),
         raw_payload=comment,
     )

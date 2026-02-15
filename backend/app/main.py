@@ -1,6 +1,8 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -8,12 +10,22 @@ from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.core.exceptions import ITSMGatekeeperException
+from app.integrations.jira.auto_reconcile import start_jira_auto_reconcile, stop_jira_auto_reconcile
 from app.routers import ai, assignees, auth, emails, integrations_jira, problems, recommendations, tickets, users
 
 
 def create_app() -> FastAPI:
     setup_logging(settings.LOG_LEVEL)
-    app = FastAPI(title=settings.APP_NAME)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        await start_jira_auto_reconcile()
+        try:
+            yield
+        finally:
+            await stop_jira_auto_reconcile()
+
+    app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -30,6 +42,7 @@ def create_app() -> FastAPI:
     app.include_router(recommendations.router, prefix="/api/recommendations", tags=["recommendations"])
     app.include_router(problems.router, prefix="/api", tags=["problems"])
     app.include_router(assignees.router, prefix="/api", tags=["assignees"])
+    # Jira reverse-sync endpoints (webhook + reconcile).
     app.include_router(integrations_jira.router, prefix="/api", tags=["integrations-jira"])
 
     @app.exception_handler(ITSMGatekeeperException)

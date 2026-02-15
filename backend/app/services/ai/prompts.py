@@ -101,6 +101,8 @@ def build_chat_prompt(
         "Schema:\n"
         "{\n"
         '  "reply": "string",\n'
+        '  "confidence": "low" | "medium" | "high",\n'
+        '  "sources": ["Jira keys like ABC-123"],\n'
         '  "action": "create_ticket" | "none",\n'
         '  "solution": "string | null",\n'
         '  "ticket": {\n'
@@ -114,7 +116,12 @@ def build_chat_prompt(
         "}\n\n"
         f"{knowledge_section}"
         "Rules:\n"
-        "- Use JSM historical comments knowledge when relevant.\n"
+        "- Ground all historical claims strictly in the provided Knowledge Section.\n"
+        "- If Knowledge Section is empty, explicitly say no similar historical ticket/fix was found.\n"
+        "- If Knowledge Section is empty, do NOT claim prior/historical fixes and set confidence=low, sources=[].\n"
+        "- If Knowledge Section is empty, provide 3-6 safe generic troubleshooting steps and 2-4 clarifying questions.\n"
+        "- If Knowledge Section is non-empty, only claim a historical fix that appears explicitly there.\n"
+        "- If Knowledge Section is non-empty, set sources to the Jira keys used (from [KEY] patterns).\n"
         "- If the user asks to create/open a ticket, set action=create_ticket and fill ticket.\n"
         "- Otherwise action=none and ticket=null.\n"
         "- If the issue is simple and safe to solve without a ticket, include a short solution.\n"
