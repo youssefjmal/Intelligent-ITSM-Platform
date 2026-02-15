@@ -115,7 +115,7 @@ def get_problems(
 ) -> list[ProblemOut]:
     records = list_problems(db, status=status, category=category, active_only=active_only)
     if not records and current_user.role in {UserRole.admin, UserRole.agent}:
-        detect_problems(db, window_days=30, min_count=5)
+        detect_problems(db, window_days=3, min_count=5)
         records = list_problems(db, status=status, category=category, active_only=active_only)
 
     scoped: list[ProblemOut] = []

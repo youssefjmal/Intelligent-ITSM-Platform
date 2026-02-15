@@ -7,6 +7,7 @@ import datetime as dt
 from app.models.enums import TicketCategory, TicketPriority, TicketStatus
 from app.schemas.ai import TicketDraft
 from app.services.ai.formatters import _format_scope_summary, _format_ticket_detail, _format_ticket_digest, _ticket_to_summary
+from app.services.tickets import analytics_created_at, analytics_first_action_at, analytics_resolved_at
 from app.services.ai.intents import (
     ACTIVE_STATUSES,
     TICKET_ID_PATTERN,
@@ -88,7 +89,7 @@ def _filter_tickets_for_query(text: str, tickets: list, assignee_names: list[str
     if window_days:
         now = dt.datetime.now(dt.timezone.utc)
         cutoff = now - dt.timedelta(days=window_days)
-        filtered = [ticket for ticket in filtered if ticket.created_at >= cutoff]
+        filtered = [ticket for ticket in filtered if analytics_created_at(ticket) >= cutoff]
 
     meta = {
         "statuses": statuses,
@@ -104,25 +105,25 @@ def _compute_data_metrics(tickets: list) -> dict:
     resolved = [
         ticket
         for ticket in tickets
-        if ticket.resolved_at and ticket.created_at
+        if analytics_resolved_at(ticket) is not None
     ]
     first_actions = [
         ticket
         for ticket in tickets
-        if ticket.first_action_at and ticket.created_at
+        if analytics_first_action_at(ticket) is not None
     ]
 
     mttr_hours = None
     if resolved:
         mttr_hours = sum(
-            (ticket.resolved_at - ticket.created_at).total_seconds()
+            (analytics_resolved_at(ticket) - analytics_created_at(ticket)).total_seconds()
             for ticket in resolved
         ) / len(resolved) / 3600
 
     avg_first_action_hours = None
     if first_actions:
         avg_first_action_hours = sum(
-            (ticket.first_action_at - ticket.created_at).total_seconds()
+            (analytics_first_action_at(ticket) - analytics_created_at(ticket)).total_seconds()
             for ticket in first_actions
         ) / len(first_actions) / 3600
 
@@ -228,7 +229,7 @@ def _answer_data_query(question: str, tickets: list, lang: str, assignee_names: 
             if scope:
                 reply = f"{reply}\n{scope}"
             return reply, None, None
-        filtered_sorted = sorted(filtered, key=lambda item: item.created_at, reverse=True)
+        filtered_sorted = sorted(filtered, key=analytics_created_at, reverse=True)
         header = "Matching tickets:" if lang == "en" else "Tickets correspondants :"
         if scope:
             header = f"{header}\n{scope}"
@@ -236,4 +237,3 @@ def _answer_data_query(question: str, tickets: list, lang: str, assignee_names: 
         return digest, "show_ticket", _ticket_to_summary(filtered_sorted[0], lang)
 
     return None
-

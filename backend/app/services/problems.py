@@ -6,6 +6,7 @@ import datetime as dt
 import logging
 import re
 from collections import Counter, defaultdict
+import unicodedata
 from uuid import uuid4
 
 from sqlalchemy.orm import Session, joinedload
@@ -22,6 +23,18 @@ from app.services.users import list_assignees
 logger = logging.getLogger(__name__)
 
 ACTIVE_TICKET_STATUSES = {TicketStatus.open, TicketStatus.in_progress, TicketStatus.pending}
+PROBLEM_TRIGGER_WINDOW_DAYS = 3
+PROBLEM_TRIGGER_MIN_COUNT = 5
+PROBLEM_MATCH_SCORE_THRESHOLD = 0.45
+SIMILARITY_TICKET_ID_RE = re.compile(r"\b[a-z]{1,12}-\d+\b", re.IGNORECASE)
+SIMILARITY_NOISE_TAG_PREFIXES = (
+    "local_",
+    "priority_",
+    "category_",
+    "source_",
+    "twseed_",
+    "jsm_",
+)
 SIMILARITY_STOPWORDS = {
     "the",
     "and",
@@ -106,8 +119,21 @@ def _utcnow() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
 
+def normalize_text(value: str | None) -> str:
+    text = (value or "").strip().lower()
+    if not text:
+        return ""
+
+    # Ignore tool-injected ticket IDs (e.g. [TW-123], HP-4) for stable matching.
+    text = SIMILARITY_TICKET_ID_RE.sub(" ", text)
+    decomposed = unicodedata.normalize("NFKD", text)
+    stripped = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    stripped = re.sub(r"[^a-z0-9\s]", " ", stripped)
+    return re.sub(r"\s+", " ", stripped).strip()
+
+
 def _normalize_tokens(value: str | None) -> list[str]:
-    text = re.sub(r"[^a-z0-9\s]", " ", (value or "").lower())
+    text = normalize_text(value)
     tokens = [token for token in text.split() if len(token) > 2 and token not in SIMILARITY_STOPWORDS]
     return tokens
 
@@ -133,10 +159,9 @@ def _next_recommendation_id(db: Session) -> str:
 
 
 def compute_similarity_key(
-    *,
     title: str,
-    description: str,
     category: TicketCategory,
+    description: str | None = None,
     tags: list[str] | None = None,
 ) -> str:
     primary_tag = _select_primary_similarity_tag(tags=tags, title=title, description=description)
@@ -160,7 +185,7 @@ def compute_similarity_key(
 
 
 def _normalize_tag(tag: str | None) -> str:
-    cleaned = re.sub(r"[^a-z0-9]+", "_", (tag or "").lower()).strip("_")
+    cleaned = re.sub(r"[^a-z0-9]+", "_", normalize_text(tag)).strip("_")
     return cleaned[:24]
 
 
@@ -169,11 +194,143 @@ def _normalize_tags(tags: list[str] | None) -> list[str]:
     seen: set[str] = set()
     for raw in tags or []:
         tag = _normalize_tag(raw)
-        if not tag or tag in seen:
+        if (
+            not tag
+            or tag in seen
+            or any(tag.startswith(prefix) for prefix in SIMILARITY_NOISE_TAG_PREFIXES)
+        ):
             continue
         seen.add(tag)
         normalized.append(tag)
     return normalized
+
+
+def _problem_title_from_ticket(*, title: str, category: TicketCategory) -> str:
+    cleaned = normalize_text(title)
+    if not cleaned:
+        return f"Recurring {category.value} incidents"
+    return f"Recurring {category.value} incidents - {' '.join(cleaned.split()[:8])}"[:255]
+
+
+def _ticket_created_at_for_problem_stats(ticket: Ticket) -> dt.datetime:
+    value = getattr(ticket, "jira_created_at", None) or ticket.created_at
+    if value.tzinfo is None:
+        return value.replace(tzinfo=dt.timezone.utc)
+    return value.astimezone(dt.timezone.utc)
+
+
+def _ticket_event_time(ticket: Ticket) -> dt.datetime:
+    value = getattr(ticket, "jira_created_at", None) or ticket.created_at
+    if value.tzinfo is None:
+        return value.replace(tzinfo=dt.timezone.utc)
+    return value.astimezone(dt.timezone.utc)
+
+
+def _ticket_similarity_tokens(ticket: Ticket) -> set[str]:
+    return set(_normalize_tokens(f"{ticket.title} {ticket.description}"))
+
+
+def _problem_similarity_tokens(problem: Problem, linked_tickets: list[Ticket]) -> set[str]:
+    tokens = _extract_similarity_tokens(problem.similarity_key)
+    tokens.update(_normalize_tokens(problem.title))
+    for linked in linked_tickets[:8]:
+        tokens.update(_ticket_similarity_tokens(linked))
+    return tokens
+
+
+def _jaccard_overlap(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    common = len(left.intersection(right))
+    return common / max(1, len(left.union(right)))
+
+
+def _problem_match_score(*, ticket: Ticket, similarity_key: str, problem: Problem, linked_tickets: list[Ticket]) -> float:
+    if ticket.category != problem.category:
+        return 0.0
+    if similarity_key == problem.similarity_key:
+        return 1.0
+    left = _ticket_similarity_tokens(ticket)
+    right = _problem_similarity_tokens(problem, linked_tickets)
+    return _jaccard_overlap(left, right)
+
+
+def _ticket_pair_similarity_score(ticket: Ticket, other: Ticket) -> float:
+    if ticket.category != other.category:
+        return 0.0
+    left_key = compute_similarity_key(
+        ticket.title,
+        ticket.category,
+        description=ticket.description,
+        tags=ticket.tags,
+    )
+    right_key = compute_similarity_key(
+        other.title,
+        other.category,
+        description=other.description,
+        tags=other.tags,
+    )
+    if left_key == right_key:
+        return 1.0
+    return _jaccard_overlap(_ticket_similarity_tokens(ticket), _ticket_similarity_tokens(other))
+
+
+def _find_similar_problem(
+    db: Session,
+    *,
+    ticket: Ticket,
+    similarity_key: str,
+    min_score: float = PROBLEM_MATCH_SCORE_THRESHOLD,
+) -> Problem | None:
+    candidates = (
+        db.query(Problem)
+        .filter(Problem.category == ticket.category)
+        .order_by(Problem.updated_at.desc())
+        .all()
+    )
+    if not candidates:
+        return None
+
+    scored: list[tuple[float, Problem]] = []
+    for problem in candidates:
+        linked = (
+            db.query(Ticket)
+            .filter(Ticket.problem_id == problem.id)
+            .order_by(Ticket.updated_at.desc())
+            .all()
+        )
+        score = _problem_match_score(ticket=ticket, similarity_key=similarity_key, problem=problem, linked_tickets=linked)
+        if score >= min_score:
+            scored.append((score, problem))
+
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (item[0], item[1].updated_at), reverse=True)
+    return scored[0][1]
+
+
+def _recent_similar_tickets(
+    db: Session,
+    *,
+    ticket: Ticket,
+    window_days: int = PROBLEM_TRIGGER_WINDOW_DAYS,
+    min_score: float = PROBLEM_MATCH_SCORE_THRESHOLD,
+) -> list[Ticket]:
+    now = _utcnow()
+    cutoff = now - dt.timedelta(days=max(1, window_days))
+    candidates = (
+        db.query(Ticket)
+        .filter(Ticket.category == ticket.category)
+        .all()
+    )
+    rows: list[Ticket] = []
+    for candidate in candidates:
+        if _ticket_event_time(candidate) < cutoff:
+            continue
+        if _ticket_pair_similarity_score(ticket, candidate) < min_score:
+            continue
+        rows.append(candidate)
+    return rows
 
 
 def _similarity_tag_score(tag: str, *, title_tokens: set[str], description_tokens: set[str]) -> int:
@@ -189,7 +346,7 @@ def _similarity_tag_score(tag: str, *, title_tokens: set[str], description_token
     return score
 
 
-def _select_primary_similarity_tag(*, tags: list[str] | None, title: str, description: str) -> str | None:
+def _select_primary_similarity_tag(*, tags: list[str] | None, title: str, description: str | None) -> str | None:
     normalized = _normalize_tags(tags)
     if not normalized:
         return None
@@ -268,13 +425,134 @@ def _derive_problem_title(tickets: list[Ticket], category: TicketCategory) -> st
     return f"Recurring {category.value} incidents - {suffix}"[:255]
 
 
-def _recompute_problem_counters(db: Session, problem: Problem) -> None:
+def get_or_create_problem(
+    db: Session,
+    *,
+    similarity_key: str,
+    title: str,
+    category: TicketCategory,
+) -> Problem:
+    existing = db.query(Problem).filter(Problem.similarity_key == similarity_key).first()
+    if existing:
+        return existing
+
+    now = _utcnow()
+    problem = Problem(
+        id=_next_problem_id(db),
+        title=_problem_title_from_ticket(title=title, category=category),
+        category=category,
+        status=ProblemStatus.investigating,
+        similarity_key=similarity_key,
+        created_at=now,
+        updated_at=now,
+        last_seen_at=now,
+        occurrences_count=0,
+        active_count=0,
+    )
+    db.add(problem)
+    db.flush()
+    return problem
+
+
+def recompute_problem_stats(db: Session, problem_id: str) -> Problem | None:
+    problem = db.query(Problem).filter(Problem.id == problem_id).first()
+    if not problem:
+        return None
+
     linked = db.query(Ticket).filter(Ticket.problem_id == problem.id).all()
     problem.occurrences_count = len(linked)
     problem.active_count = sum(1 for ticket in linked if ticket.status in ACTIVE_TICKET_STATUSES)
-    problem.last_seen_at = max((ticket.created_at for ticket in linked), default=problem.last_seen_at)
+    problem.last_seen_at = max(
+        (_ticket_created_at_for_problem_stats(ticket) for ticket in linked),
+        default=problem.last_seen_at,
+    )
     problem.updated_at = _utcnow()
     db.add(problem)
+    db.flush()
+    return problem
+
+
+def _detach_if_problem_mismatch(
+    db: Session,
+    *,
+    ticket: Ticket,
+    similarity_key: str,
+    min_score: float = PROBLEM_MATCH_SCORE_THRESHOLD,
+) -> None:
+    if not ticket.problem_id:
+        return
+    current = db.query(Problem).filter(Problem.id == ticket.problem_id).first()
+    if not current:
+        ticket.problem_id = None
+        db.add(ticket)
+        db.flush()
+        return
+    linked = (
+        db.query(Ticket)
+        .filter(Ticket.problem_id == current.id)
+        .order_by(Ticket.updated_at.desc())
+        .all()
+    )
+    score = _problem_match_score(ticket=ticket, similarity_key=similarity_key, problem=current, linked_tickets=linked)
+    if score >= min_score:
+        return
+    old_problem_id = current.id
+    ticket.problem_id = None
+    db.add(ticket)
+    db.flush()
+    recompute_problem_stats(db, old_problem_id)
+
+
+def link_ticket_to_problem(db: Session, ticket: Ticket) -> Problem | None:
+    if not ticket.title or not ticket.category:
+        return None
+
+    similarity_key = compute_similarity_key(
+        ticket.title,
+        ticket.category,
+        description=ticket.description,
+        tags=ticket.tags,
+    )
+    _detach_if_problem_mismatch(db, ticket=ticket, similarity_key=similarity_key)
+
+    existing = _find_similar_problem(db, ticket=ticket, similarity_key=similarity_key)
+    if existing:
+        if ticket.problem_id != existing.id:
+            ticket.problem_id = existing.id
+            db.add(ticket)
+            db.flush()
+        recompute_problem_stats(db, existing.id)
+        return existing
+
+    candidates = _recent_similar_tickets(db, ticket=ticket)
+    if all(item.id != ticket.id for item in candidates):
+        candidates.append(ticket)
+    # Only launch a new Problem if enough similar incidents occurred recently.
+    if len(candidates) < PROBLEM_TRIGGER_MIN_COUNT:
+        return None
+
+    current = db.query(Problem).filter(Problem.similarity_key == similarity_key).first()
+    created = current is None
+    problem = current or get_or_create_problem(
+        db,
+        similarity_key=similarity_key,
+        title=ticket.title,
+        category=ticket.category,
+    )
+
+    for item in candidates:
+        if item.problem_id == problem.id:
+            continue
+        item.problem_id = problem.id
+        db.add(item)
+    db.flush()
+    recompute_problem_stats(db, problem.id)
+    _emit_problem_recommendations(db, problem, candidates, created=created)
+    return problem
+
+
+def _recompute_problem_counters(db: Session, problem: Problem) -> None:
+    recompute_problem_stats(db, problem.id)
 
 
 def _upsert_recommendation(
@@ -413,10 +691,18 @@ def upsert_problem(db: Session, *, similarity_key: str, tickets: list[Ticket]) -
     return problem, created, updated
 
 
-def detect_problems(db: Session, *, window_days: int = 7, min_count: int = 5) -> dict[str, int]:
+def detect_problems(
+    db: Session,
+    *,
+    window_days: int = PROBLEM_TRIGGER_WINDOW_DAYS,
+    min_count: int = PROBLEM_TRIGGER_MIN_COUNT,
+) -> dict[str, int]:
     now = _utcnow()
     cutoff = now - dt.timedelta(days=window_days)
-    candidates = db.query(Ticket).filter(Ticket.created_at >= cutoff).order_by(Ticket.created_at.asc()).all()
+    candidates = sorted(
+        [ticket for ticket in db.query(Ticket).all() if _ticket_event_time(ticket) >= cutoff],
+        key=_ticket_event_time,
+    )
 
     grouped: dict[str, list[Ticket]] = defaultdict(list)
     for ticket in candidates:

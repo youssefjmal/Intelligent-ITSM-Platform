@@ -21,6 +21,7 @@ from app.schemas.ticket import TicketCreate, TicketTriageUpdate
 logger = logging.getLogger(__name__)
 
 ACTIVE_STATUSES = {TicketStatus.open, TicketStatus.in_progress, TicketStatus.pending}
+RESOLVED_STATUSES = {TicketStatus.resolved, TicketStatus.closed}
 PROBLEM_REPEAT_THRESHOLD = 3
 PROBLEM_TRIGGER_WINDOW_DAYS = 7
 PROBLEM_TRIGGER_COUNT_WINDOW = 5
@@ -285,11 +286,11 @@ def _comment_signature(comment: str | None) -> set[str]:
 
 def _cluster_temporal_counts(cluster: list[Ticket], *, now: dt.datetime) -> tuple[int, int, str | None]:
     recent_cutoff = now - dt.timedelta(days=PROBLEM_TRIGGER_WINDOW_DAYS)
-    recent_occurrences_7d = sum(1 for item in cluster if _to_utc(item.created_at) >= recent_cutoff)
+    recent_occurrences_7d = sum(1 for item in cluster if analytics_created_at(item) >= recent_cutoff)
 
     day_counts: Counter[str] = Counter()
     for item in cluster:
-        day_key = _to_utc(item.created_at).date().isoformat()
+        day_key = analytics_created_at(item).date().isoformat()
         day_counts[day_key] += 1
 
     if not day_counts:
@@ -369,7 +370,7 @@ def _should_promote_to_problem(db: Session, ticket: Ticket, resolution_comment: 
     this_comment = _comment_signature(resolution_comment)
     now = dt.datetime.now(dt.timezone.utc)
     recent_cutoff = now - dt.timedelta(days=PROBLEM_TRIGGER_WINDOW_DAYS)
-    created_at = _to_utc(ticket.created_at)
+    created_at = analytics_created_at(ticket)
     recent_incident_matches = 1 if created_at >= recent_cutoff else 0
     same_day_incident_matches = 1
     same_day = created_at.date()
@@ -378,7 +379,7 @@ def _should_promote_to_problem(db: Session, ticket: Ticket, resolution_comment: 
         overlap = _signature_overlap(this_incident, _incident_signature(existing))
         if overlap >= 0.6:
             incident_matches += 1
-            existing_created = _to_utc(existing.created_at)
+            existing_created = analytics_created_at(existing)
             if existing_created >= recent_cutoff:
                 recent_incident_matches += 1
             if existing_created.date() == same_day:
@@ -396,6 +397,9 @@ def _should_promote_to_problem(db: Session, ticket: Ticket, resolution_comment: 
 
 
 def create_ticket(db: Session, data: TicketCreate, *, reporter_id: str | None = None) -> Ticket:
+    from app.services.problems import link_ticket_to_problem
+    from app.services.ai import classify_ticket
+
     now = dt.datetime.now(dt.timezone.utc)
     auto_assignment_applied = False
     assignee = (data.assignee or "").strip()
@@ -405,7 +409,27 @@ def create_ticket(db: Session, data: TicketCreate, *, reporter_id: str | None = 
     if not assignee:
         assignee = data.reporter or "Unassigned"
 
-    auto_priority_applied = bool(data.auto_priority_applied)
+    predicted_priority = data.predicted_priority
+    predicted_category = data.predicted_category
+    if predicted_priority is None or predicted_category is None:
+        try:
+            ai_priority, ai_category, _recommendations = classify_ticket(data.title, data.description)
+            if predicted_priority is None:
+                predicted_priority = ai_priority
+            if predicted_category is None:
+                predicted_category = ai_category
+        except Exception:  # noqa: BLE001
+            pass
+
+    auto_priority_applied = bool(
+        data.auto_priority_applied
+        or (
+            predicted_priority is not None
+            and predicted_category is not None
+            and predicted_priority == data.priority
+            and predicted_category == data.category
+        )
+    )
     assignment_model_version = _normalize_model_version(
         data.assignment_model_version,
         default="smart-v1" if auto_assignment_applied else "manual",
@@ -428,8 +452,8 @@ def create_ticket(db: Session, data: TicketCreate, *, reporter_id: str | None = 
         auto_priority_applied=auto_priority_applied,
         assignment_model_version=assignment_model_version,
         priority_model_version=priority_model_version,
-        predicted_priority=data.predicted_priority,
-        predicted_category=data.predicted_category,
+        predicted_priority=predicted_priority,
+        predicted_category=predicted_category,
         assignment_change_count=0,
         first_action_at=None,
         resolved_at=None,
@@ -440,6 +464,8 @@ def create_ticket(db: Session, data: TicketCreate, *, reporter_id: str | None = 
         comments=[],
     )
     db.add(ticket)
+    db.flush()
+    link_ticket_to_problem(db, ticket)
     db.commit()
     db.refresh(ticket)
 
@@ -448,6 +474,7 @@ def create_ticket(db: Session, data: TicketCreate, *, reporter_id: str | None = 
         jira_key = create_jira_issue_for_ticket(ticket)
         if jira_key:
             now = dt.datetime.now(dt.timezone.utc)
+            ticket.jira_key = jira_key
             ticket.external_source = JIRA_SOURCE
             ticket.external_id = jira_key
             ticket.external_updated_at = now
@@ -469,6 +496,8 @@ def update_status(
     actor: str,
     resolution_comment: str | None = None,
 ) -> Ticket | None:
+    from app.services.problems import link_ticket_to_problem
+
     ticket = db.get(Ticket, ticket_id)
     if not ticket:
         logger.warning("Ticket status update failed (not found): %s", ticket_id)
@@ -505,14 +534,16 @@ def update_status(
             ticket.tags = tags
 
     ticket.status = status
-    if ticket.first_action_at is None:
+    if ticket.first_action_at is None and status != TicketStatus.open:
         ticket.first_action_at = now
-    if status in {TicketStatus.resolved, TicketStatus.closed}:
+    if status in RESOLVED_STATUSES:
         ticket.resolved_at = now
     elif ticket.resolved_at is not None:
         ticket.resolved_at = None
     ticket.updated_at = now
     db.add(ticket)
+    db.flush()
+    link_ticket_to_problem(db, ticket)
     db.commit()
     db.refresh(ticket)
     logger.info("Ticket status updated: %s -> %s", ticket.id, status.value)
@@ -526,6 +557,8 @@ def update_ticket_triage(
     *,
     actor: str,
 ) -> Ticket | None:
+    from app.services.problems import link_ticket_to_problem
+
     ticket = db.get(Ticket, ticket_id)
     if not ticket:
         logger.warning("Ticket triage update failed (not found): %s", ticket_id)
@@ -566,6 +599,8 @@ def update_ticket_triage(
         ticket.first_action_at = now
     ticket.updated_at = now
     db.add(ticket)
+    db.flush()
+    link_ticket_to_problem(db, ticket)
     db.commit()
     db.refresh(ticket)
     logger.info("Ticket triage updated: %s", ticket.id)
@@ -582,12 +617,13 @@ def compute_stats(tickets: list[Ticket]) -> dict:
     critical = sum(1 for t in tickets if t.priority == TicketPriority.critical)
     high = sum(1 for t in tickets if t.priority == TicketPriority.high)
 
-    resolved_tickets = [t for t in tickets if t.status in {TicketStatus.resolved, TicketStatus.closed}]
+    resolved_tickets = [t for t in tickets if t.status in RESOLVED_STATUSES]
     if resolved_tickets:
-        days = [
-            max((t.updated_at - t.created_at).total_seconds() / 86400, 0)
-            for t in resolved_tickets
-        ]
+        days = []
+        for ticket in resolved_tickets:
+            created = analytics_created_at(ticket)
+            resolved_at = analytics_resolved_at(ticket) or analytics_updated_at(ticket)
+            days.append(max((resolved_at - created).total_seconds() / 86400, 0))
         avg_resolution = round(sum(days) / len(days), 2)
     else:
         avg_resolution = 0.0
@@ -641,7 +677,7 @@ def _filter_performance_tickets(
     assignee_filter = (assignee or "").strip().lower()
     filtered: list[Ticket] = []
     for ticket in tickets:
-        created = _to_utc(ticket.created_at)
+        created = analytics_created_at(ticket)
         if start_dt and created < start_dt:
             continue
         if end_dt and created > end_dt:
@@ -676,22 +712,33 @@ def compute_assignment_performance(
         scope=scope,
     )
     total = len(tickets)
-    resolved_tickets = [t for t in tickets if t.status in {TicketStatus.resolved, TicketStatus.closed}]
+    resolved_tickets = [t for t in tickets if t.status in RESOLVED_STATUSES]
 
     before_group = [t for t in resolved_tickets if not _is_ia_ticket(t)]
     after_group = [t for t in resolved_tickets if _is_ia_ticket(t)]
 
-    mttr_before = _avg([_duration_hours(t.created_at, t.resolved_at or t.updated_at) for t in before_group])
-    mttr_after = _avg([_duration_hours(t.created_at, t.resolved_at or t.updated_at) for t in after_group])
+    mttr_before = _avg(
+        [
+            _duration_hours(analytics_created_at(t), analytics_resolved_at(t) or analytics_updated_at(t))
+            for t in before_group
+        ]
+    )
+    mttr_after = _avg(
+        [
+            _duration_hours(analytics_created_at(t), analytics_resolved_at(t) or analytics_updated_at(t))
+            for t in after_group
+        ]
+    )
 
     reassigned_tickets = sum(1 for t in tickets if int(t.assignment_change_count or 0) > 0)
     reassignment_rate = round((reassigned_tickets / total) * 100, 2) if total else 0.0
 
-    first_action_values = [
-        _duration_hours(t.created_at, t.first_action_at)
-        for t in tickets
-        if t.first_action_at is not None
-    ]
+    first_action_values: list[float] = []
+    for ticket in tickets:
+        first_action = analytics_first_action_at(ticket)
+        if first_action is None:
+            continue
+        first_action_values.append(_duration_hours(analytics_created_at(ticket), first_action))
     avg_first_action = _avg(first_action_values)
 
     auto_assigned = [t for t in tickets if _is_ia_ticket(t)]
@@ -809,9 +856,13 @@ def compute_weekly_trends(tickets: list[Ticket], weeks: int = 6) -> list[dict]:
     for i in range(weeks):
         start = (now - dt.timedelta(weeks=weeks - i)).replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + dt.timedelta(weeks=1)
-        opened = sum(1 for t in tickets if start <= t.created_at < end)
-        closed = sum(1 for t in tickets if t.status in {TicketStatus.closed, TicketStatus.resolved} and start <= t.updated_at < end)
-        pending = sum(1 for t in tickets if t.status == TicketStatus.pending and start <= t.updated_at < end)
+        opened = sum(1 for t in tickets if start <= analytics_created_at(t) < end)
+        closed = sum(
+            1
+            for t in tickets
+            if t.status in RESOLVED_STATUSES and start <= (analytics_resolved_at(t) or analytics_updated_at(t)) < end
+        )
+        pending = sum(1 for t in tickets if t.status == TicketStatus.pending and start <= analytics_updated_at(t) < end)
         buckets.append({"week": f"Sem {i + 1}", "opened": opened, "closed": closed, "pending": pending})
     return buckets
 
@@ -820,6 +871,28 @@ def _to_utc(value: dt.datetime) -> dt.datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=dt.timezone.utc)
     return value.astimezone(dt.timezone.utc)
+
+
+def analytics_created_at(ticket: Ticket) -> dt.datetime:
+    return _to_utc(ticket.jira_created_at or ticket.created_at)
+
+
+def analytics_updated_at(ticket: Ticket) -> dt.datetime:
+    return _to_utc(ticket.jira_updated_at or ticket.updated_at)
+
+
+def analytics_resolved_at(ticket: Ticket) -> dt.datetime | None:
+    if ticket.resolved_at is not None:
+        return _to_utc(ticket.resolved_at)
+    if ticket.status in RESOLVED_STATUSES:
+        return analytics_updated_at(ticket)
+    return None
+
+
+def analytics_first_action_at(ticket: Ticket) -> dt.datetime | None:
+    if ticket.first_action_at is None:
+        return None
+    return _to_utc(ticket.first_action_at)
 
 
 def _days_since(value: dt.datetime, *, now: dt.datetime) -> int:
@@ -838,6 +911,8 @@ def _priority_rank(priority: TicketPriority) -> int:
 
 
 def _ticket_insight_payload(ticket: Ticket, *, now: dt.datetime) -> dict:
+    created = analytics_created_at(ticket)
+    updated = analytics_updated_at(ticket)
     return {
         "id": ticket.id,
         "title": ticket.title,
@@ -845,10 +920,10 @@ def _ticket_insight_payload(ticket: Ticket, *, now: dt.datetime) -> dict:
         "status": ticket.status.value,
         "category": ticket.category.value,
         "assignee": ticket.assignee,
-        "created_at": _to_utc(ticket.created_at).isoformat(),
-        "updated_at": _to_utc(ticket.updated_at).isoformat(),
-        "age_days": _days_since(ticket.created_at, now=now),
-        "inactive_days": _days_since(ticket.updated_at, now=now),
+        "created_at": created.isoformat(),
+        "updated_at": updated.isoformat(),
+        "age_days": _days_since(created, now=now),
+        "inactive_days": _days_since(updated, now=now),
     }
 
 
@@ -871,20 +946,20 @@ def compute_operational_insights(
     critical_recent = [
         t
         for t in active_tickets
-        if t.priority == TicketPriority.critical and _to_utc(t.created_at) >= recent_cutoff
+        if t.priority == TicketPriority.critical and analytics_created_at(t) >= recent_cutoff
     ]
-    critical_recent.sort(key=lambda t: _to_utc(t.created_at), reverse=True)
+    critical_recent.sort(key=analytics_created_at, reverse=True)
 
     stale_active = [
         t
         for t in active_tickets
-        if _to_utc(t.updated_at) <= stale_cutoff
+        if analytics_updated_at(t) <= stale_cutoff
     ]
     stale_active.sort(
         key=lambda t: (
             _priority_rank(t.priority),
-            -_days_since(t.updated_at, now=now),
-            _to_utc(t.updated_at),
+            -_days_since(analytics_updated_at(t), now=now),
+            analytics_updated_at(t),
         )
     )
 
@@ -908,33 +983,12 @@ def compute_problem_insights(tickets: list[Ticket], *, min_repetitions: int = 2,
         return []
 
     now = dt.datetime.now(dt.timezone.utc)
-    sorted_tickets = sorted(tickets, key=lambda t: t.updated_at, reverse=True)
-    signatures = {t.id: _incident_signature(t) for t in sorted_tickets}
-    visited: set[str] = set()
     insights: list[dict] = []
 
-    for ticket in sorted_tickets:
-        if ticket.id in visited:
-            continue
-
-        seed_sig = signatures.get(ticket.id, set())
-        cluster: list[Ticket] = [ticket]
-        visited.add(ticket.id)
-
-        for other in sorted_tickets:
-            if other.id in visited:
-                continue
-            other_sig = signatures.get(other.id, set())
-            if _signature_overlap(seed_sig, other_sig) >= 0.6:
-                cluster.append(other)
-                visited.add(other.id)
-
-        if len(cluster) < min_repetitions:
-            continue
-
-        cluster_sorted = sorted(cluster, key=lambda t: t.updated_at, reverse=True)
+    def _cluster_to_payload(cluster: list[Ticket], *, problem_id: str | None) -> dict:
+        cluster_sorted = sorted(cluster, key=analytics_updated_at, reverse=True)
         active_count = sum(1 for t in cluster if t.status in ACTIVE_STATUSES)
-        problem_count = sum(1 for t in cluster if t.category == TicketCategory.problem)
+        problem_count = 1 if problem_id else sum(1 for t in cluster if t.category == TicketCategory.problem)
         highest_priority = "low"
         if any(t.priority == TicketPriority.critical for t in cluster):
             highest_priority = "critical"
@@ -948,25 +1002,60 @@ def compute_problem_insights(tickets: list[Ticket], *, min_repetitions: int = 2,
         problem_triggered = bool(trigger_reasons)
         ai_recommendation, ai_recommendation_confidence = _build_problem_ai_recommendation(cluster_sorted)
 
-        insights.append(
-            {
-                "title": cluster_sorted[0].title,
-                "occurrences": len(cluster_sorted),
-                "active_count": active_count,
-                "problem_count": problem_count,
-                "highest_priority": highest_priority,
-                "latest_ticket_id": cluster_sorted[0].id,
-                "latest_updated_at": cluster_sorted[0].updated_at.isoformat(),
-                "ticket_ids": [t.id for t in cluster_sorted[:5]],
-                "problem_triggered": problem_triggered,
-                "trigger_reasons": trigger_reasons,
-                "recent_occurrences_7d": recent_occurrences_7d,
-                "same_day_peak": same_day_peak,
-                "same_day_peak_date": same_day_peak_date,
-                "ai_recommendation": ai_recommendation,
-                "ai_recommendation_confidence": ai_recommendation_confidence,
-            }
-        )
+        return {
+            "problem_id": problem_id,
+            "title": cluster_sorted[0].title,
+            "occurrences": len(cluster_sorted),
+            "active_count": active_count,
+            "problem_count": problem_count,
+            "highest_priority": highest_priority,
+            "latest_ticket_id": cluster_sorted[0].id,
+            "latest_updated_at": analytics_updated_at(cluster_sorted[0]).isoformat(),
+            "ticket_ids": [t.id for t in cluster_sorted[:5]],
+            "problem_triggered": problem_triggered,
+            "trigger_reasons": trigger_reasons,
+            "recent_occurrences_7d": recent_occurrences_7d,
+            "same_day_peak": same_day_peak,
+            "same_day_peak_date": same_day_peak_date,
+            "ai_recommendation": ai_recommendation,
+            "ai_recommendation_confidence": ai_recommendation_confidence,
+        }
+
+    linked_groups: dict[str, list[Ticket]] = {}
+    unlinked: list[Ticket] = []
+    for ticket in tickets:
+        if ticket.problem_id:
+            linked_groups.setdefault(ticket.problem_id, []).append(ticket)
+        else:
+            unlinked.append(ticket)
+
+    for problem_id, cluster in linked_groups.items():
+        if len(cluster) < min_repetitions:
+            continue
+        insights.append(_cluster_to_payload(cluster, problem_id=problem_id))
+
+    sorted_tickets = sorted(unlinked, key=analytics_updated_at, reverse=True)
+    signatures = {t.id: _incident_signature(t) for t in sorted_tickets}
+    visited: set[str] = set()
+
+    for ticket in sorted_tickets:
+        if ticket.id in visited:
+            continue
+
+        seed_sig = signatures.get(ticket.id, set())
+        cluster: list[Ticket] = [ticket]
+        visited.add(ticket.id)
+        for other in sorted_tickets:
+            if other.id in visited:
+                continue
+            other_sig = signatures.get(other.id, set())
+            if _signature_overlap(seed_sig, other_sig) >= 0.6:
+                cluster.append(other)
+                visited.add(other.id)
+
+        if len(cluster) < min_repetitions:
+            continue
+        insights.append(_cluster_to_payload(cluster, problem_id=None))
 
     priority_weight = {"critical": 3, "high": 2, "medium": 1, "low": 0}
     insights.sort(

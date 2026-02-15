@@ -51,7 +51,7 @@ class ProblemDetailOut(ProblemOut):
 
 
 class ProblemDetectRequest(BaseModel):
-    window_days: int = Field(default=7, ge=1, le=90)
+    window_days: int = Field(default=3, ge=1, le=90)
     min_count: int = Field(default=5, ge=2, le=100)
 
 

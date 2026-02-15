@@ -108,6 +108,7 @@ def test_reconcile_detects_project_key_when_missing(monkeypatch) -> None:
 
     monkeypatch.setattr(service, "JiraClient", FakeJiraClient)
     monkeypatch.setattr(service, "_resolve_sync_state", fake_resolve_state)
+    monkeypatch.setattr(service.settings, "JIRA_PROJECT_KEY", "")
 
     result = service.reconcile(_FakeDb(), JiraReconcileRequest(project_key=None))
 

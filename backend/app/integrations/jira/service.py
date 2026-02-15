@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import hmac
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -16,8 +17,10 @@ from app.core.config import settings
 from app.integrations.jira.client import JiraClient
 from app.integrations.jira.mapper import JIRA_SOURCE, map_issue, map_issue_comment
 from app.integrations.jira.schemas import JiraReconcileRequest, JiraReconcileResult, JiraWebhookResponse
+from app.models.enums import TicketCategory, TicketPriority, TicketStatus
 from app.models.jira_sync_state import JiraSyncState
 from app.models.ticket import Ticket, TicketComment
+from app.services.ai import classify_ticket
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +28,11 @@ WEBHOOK_SECRET_HEADER = "X-Jira-Webhook-Secret"
 LEGACY_WEBHOOK_SIGNATURE_HEADER = "X-Signature"
 SYNC_FIELDS = "summary,description,comment,priority,status,assignee,reporter,created,updated,labels,components,issuetype"
 RECONCILE_SAFETY_WINDOW = dt.timedelta(minutes=2)
+LOCAL_TICKET_SUMMARY_RE = re.compile(r"^\[(TW-\d+)\]\s*", re.IGNORECASE)
+LOCAL_TICKET_LABEL_PREFIXES = ("twseed_tw_", "local_tw_")
+DONE_STATUSES = {TicketStatus.resolved, TicketStatus.closed}
+KNOWN_JIRA_ISSUE_TYPES = {"incident", "service request", "task", "bug", "problem"}
+KNOWN_JIRA_PRIORITIES = {"highest", "critical", "high", "medium", "low", "lowest"}
 
 
 @dataclass
@@ -133,6 +141,26 @@ def _extract_issue_key(payload: dict[str, Any]) -> str:
     return str(payload.get("issueKey") or "").strip()
 
 
+def _extract_local_ticket_id(issue: dict[str, Any]) -> str:
+    fields = issue.get("fields") or {}
+    summary = str(fields.get("summary") or "").strip()
+    match = LOCAL_TICKET_SUMMARY_RE.match(summary)
+    if match:
+        return match.group(1).upper()
+
+    labels = [str(label).strip().lower() for label in list(fields.get("labels") or []) if str(label).strip()]
+    for label in labels:
+        for prefix in LOCAL_TICKET_LABEL_PREFIXES:
+            if not label.startswith(prefix):
+                continue
+            suffix = label[len(prefix) :].strip().replace("_", "-").upper()
+            if re.fullmatch(r"\d+", suffix):
+                suffix = f"TW-{suffix}"
+            if re.fullmatch(r"TW-\d+", suffix):
+                return suffix
+    return ""
+
+
 def _build_reconcile_jql(project_key: str, since: dt.datetime) -> str:
     since_utc = since.astimezone(dt.timezone.utc).strftime("%Y-%m-%d %H:%M")
     return f'project = "{project_key}" AND updated >= "{since_utc}" ORDER BY updated ASC'
@@ -165,7 +193,83 @@ def _all_issue_comments(issue: dict[str, Any], jira_client: JiraClient) -> list[
     return rows or comments
 
 
-def _find_ticket_for_issue(db: Session, *, jira_issue_id: str, jira_key: str) -> Ticket | None:
+def _is_done_status(status: TicketStatus) -> bool:
+    return status in DONE_STATUSES
+
+
+def _extract_first_agent_comment_at(ticket: Ticket, comments: list[dict[str, Any]]) -> dt.datetime | None:
+    reporter = (ticket.reporter or "").strip().casefold()
+    first_seen: dt.datetime | None = None
+    for payload in comments:
+        try:
+            mapped = map_issue_comment(payload)
+        except Exception:  # noqa: BLE001
+            continue
+        author = (mapped.author or "").strip().casefold()
+        # Jira payloads do not carry local role metadata; use reporter mismatch as a practical proxy.
+        if reporter and author == reporter:
+            continue
+        ts = mapped.jira_created_at or mapped.jira_updated_at
+        if ts is None:
+            continue
+        if first_seen is None or ts < first_seen:
+            first_seen = ts
+    return first_seen
+
+
+def _apply_ticket_lifecycle_from_issue(ticket: Ticket, *, now: dt.datetime) -> None:
+    if ticket.first_action_at is None and ticket.status != TicketStatus.open:
+        ticket.first_action_at = ticket.jira_updated_at or now
+
+    if _is_done_status(ticket.status):
+        ticket.resolved_at = ticket.resolved_at or ticket.jira_updated_at or now
+    elif ticket.resolved_at is not None:
+        ticket.resolved_at = None
+
+
+def _issue_type_name(issue: dict[str, Any]) -> str:
+    fields = issue.get("fields") or {}
+    return str(((fields.get("issuetype") or {}).get("name") or "")).strip().lower()
+
+
+def _priority_name(issue: dict[str, Any]) -> str:
+    fields = issue.get("fields") or {}
+    return str(((fields.get("priority") or {}).get("name") or "")).strip().lower()
+
+
+def _category_was_defaulted(issue: dict[str, Any], mapped_category: TicketCategory) -> bool:
+    issue_type = _issue_type_name(issue)
+    if not issue_type:
+        return True
+    if issue_type in KNOWN_JIRA_ISSUE_TYPES:
+        return False
+    return mapped_category == TicketCategory.service_request
+
+
+def _priority_was_defaulted(issue: dict[str, Any], mapped_priority: TicketPriority) -> bool:
+    value = _priority_name(issue)
+    if not value:
+        return True
+    if value in KNOWN_JIRA_PRIORITIES:
+        return False
+    return mapped_priority == TicketPriority.medium
+
+
+def _classify_inbound_ticket(title: str, description: str) -> tuple[TicketPriority | None, TicketCategory | None]:
+    try:
+        priority, category, _recommendations = classify_ticket(title, description)
+        return priority, category
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def _find_ticket_for_issue(
+    db: Session,
+    *,
+    jira_issue_id: str,
+    jira_key: str,
+    local_ticket_id: str = "",
+) -> Ticket | None:
     if jira_issue_id:
         ticket = db.query(Ticket).filter(Ticket.jira_issue_id == jira_issue_id).first()
         if ticket:
@@ -176,6 +280,10 @@ def _find_ticket_for_issue(db: Session, *, jira_issue_id: str, jira_key: str) ->
             return ticket
         # Backward compatibility with historical external_id linkage.
         ticket = db.query(Ticket).filter(Ticket.external_id == jira_key).first()
+        if ticket:
+            return ticket
+    if local_ticket_id:
+        ticket = db.get(Ticket, local_ticket_id)
         if ticket:
             return ticket
     return None
@@ -192,24 +300,50 @@ def _should_update_ticket(existing: Ticket, incoming_updated: dt.datetime | None
 def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
     now = _utcnow()
     mapped = map_issue(issue)
+    local_ticket_id = _extract_local_ticket_id(issue)
     ticket = _find_ticket_for_issue(
         db,
         jira_issue_id=mapped.jira_issue_id,
         jira_key=mapped.jira_key,
+        local_ticket_id=local_ticket_id,
     )
+
+    ai_priority: TicketPriority | None = None
+    ai_category: TicketCategory | None = None
+    resolved_priority = mapped.priority
+    resolved_category = mapped.category
+    ai_applied = False
+
+    def resolve_classification() -> None:
+        nonlocal ai_priority, ai_category, resolved_priority, resolved_category, ai_applied
+        ai_priority, ai_category = _classify_inbound_ticket(mapped.title, mapped.description)
+        if ai_category is not None and _category_was_defaulted(issue, mapped.category):
+            resolved_category = ai_category
+        if ai_priority is not None and _priority_was_defaulted(issue, mapped.priority):
+            resolved_priority = ai_priority
+        ai_applied = ai_priority is not None or ai_category is not None
+
     if ticket is None:
+        resolve_classification()
         ticket = Ticket(
             id=_internal_ticket_id(mapped.jira_key or mapped.jira_issue_id),
             title=mapped.title,
             description=mapped.description,
             status=mapped.status,
-            priority=mapped.priority,
-            category=mapped.category,
+            priority=resolved_priority,
+            category=resolved_category,
             assignee=mapped.assignee,
             reporter=mapped.reporter,
             tags=mapped.tags,
             created_at=mapped.jira_created_at or now,
             updated_at=now,
+            auto_priority_applied=ai_applied,
+            priority_model_version="smart-v1" if ai_applied else "jira-native",
+            predicted_priority=ai_priority,
+            predicted_category=ai_category,
+            assignment_change_count=0,
+            first_action_at=None,
+            resolved_at=None,
             jira_key=mapped.jira_key,
             jira_issue_id=mapped.jira_issue_id,
             jira_created_at=mapped.jira_created_at,
@@ -221,6 +355,7 @@ def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
             last_synced_at=now,
             raw_payload=mapped.raw_payload,
         )
+        _apply_ticket_lifecycle_from_issue(ticket, now=now)
         db.add(ticket)
         db.flush()
         return ticket, True
@@ -229,32 +364,43 @@ def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
         ticket.last_synced_at = now
         ticket.jira_key = ticket.jira_key or mapped.jira_key
         ticket.jira_issue_id = ticket.jira_issue_id or mapped.jira_issue_id
-        ticket.source = JIRA_SOURCE
+        ticket.source = ticket.source or JIRA_SOURCE
         ticket.external_id = ticket.external_id or mapped.jira_key
         ticket.external_source = ticket.external_source or JIRA_SOURCE
         db.add(ticket)
         db.flush()
         return ticket, False
 
+    resolve_classification()
+    previous_assignee = ticket.assignee
     ticket.title = mapped.title
     ticket.description = mapped.description
     ticket.status = mapped.status
-    ticket.priority = mapped.priority
-    ticket.category = mapped.category
+    ticket.priority = resolved_priority
+    ticket.category = resolved_category
     ticket.assignee = mapped.assignee
     ticket.reporter = mapped.reporter
     ticket.tags = mapped.tags
+    ticket.predicted_priority = ai_priority
+    ticket.predicted_category = ai_category
+    ticket.auto_priority_applied = ai_applied
+    ticket.priority_model_version = "smart-v1" if ai_applied else ticket.priority_model_version or "jira-native"
     ticket.updated_at = now
     ticket.jira_key = mapped.jira_key
     ticket.jira_issue_id = mapped.jira_issue_id
     ticket.jira_created_at = mapped.jira_created_at
     ticket.jira_updated_at = mapped.jira_updated_at
-    ticket.source = JIRA_SOURCE
+    ticket.source = ticket.source or JIRA_SOURCE
     ticket.external_id = mapped.jira_key
     ticket.external_source = JIRA_SOURCE
     ticket.external_updated_at = mapped.jira_updated_at
     ticket.last_synced_at = now
     ticket.raw_payload = mapped.raw_payload
+
+    if previous_assignee and mapped.assignee and previous_assignee != mapped.assignee:
+        ticket.assignment_change_count = int(ticket.assignment_change_count or 0) + 1
+
+    _apply_ticket_lifecycle_from_issue(ticket, now=now)
     db.add(ticket)
     db.flush()
     return ticket, True
@@ -320,6 +466,8 @@ def _upsert_comment(db: Session, *, ticket: Ticket, comment_payload: dict[str, A
 
 
 def _upsert_issue_bundle(db: Session, issue: dict[str, Any], jira_client: JiraClient) -> SyncCounts:
+    from app.services.problems import link_ticket_to_problem
+
     counts = SyncCounts()
     ticket, ticket_upserted = _upsert_ticket(db, issue)
     if ticket_upserted:
@@ -327,7 +475,8 @@ def _upsert_issue_bundle(db: Session, issue: dict[str, Any], jira_client: JiraCl
     else:
         counts.skipped += 1
 
-    for comment_payload in _all_issue_comments(issue, jira_client):
+    all_comments = _all_issue_comments(issue, jira_client)
+    for comment_payload in all_comments:
         try:
             state = _upsert_comment(db, ticket=ticket, comment_payload=comment_payload)
         except ValueError:
@@ -339,6 +488,17 @@ def _upsert_issue_bundle(db: Session, issue: dict[str, Any], jira_client: JiraCl
             counts.comments_updated += 1
         else:
             counts.skipped += 1
+
+    first_agent_comment = _extract_first_agent_comment_at(ticket, all_comments)
+    if first_agent_comment is not None:
+        if ticket.first_action_at is None or first_agent_comment < ticket.first_action_at:
+            ticket.first_action_at = first_agent_comment
+            db.add(ticket)
+
+    _apply_ticket_lifecycle_from_issue(ticket, now=_utcnow())
+    db.add(ticket)
+    db.flush()
+    link_ticket_to_problem(db, ticket)
     return counts
 
 
