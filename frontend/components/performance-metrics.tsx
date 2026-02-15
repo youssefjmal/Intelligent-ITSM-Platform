@@ -379,6 +379,11 @@ export function PerformanceMetrics({ performance: initialPerformance, assignees,
           </Card>
         ))}
       </div>
+      <p className="text-[11px] text-muted-foreground">
+        {isFr
+          ? "Condition (Classification correcte): seuls les tickets avec prediction IA (priorite et/ou categorie) sont echantillonnes. Un ticket est compte 'correct' si toutes les valeurs predites presentes correspondent aux valeurs finales du ticket."
+          : "Condition (Correct classification): only tickets with AI prediction (priority and/or category) are sampled. A ticket is counted as correct only if all predicted fields present match the ticket final values."}
+      </p>
     </section>
   )
 }

@@ -41,6 +41,39 @@ type TicketDigestRow = {
 const MAX_CHAT_MESSAGES = 40
 const MAX_CHAT_CONTENT_LEN = 4000
 
+function normalizeAssistantReply(content: string, locale: string): string {
+  const raw = (content || "").trim()
+  if (!raw.startsWith("{") || !raw.endsWith("}")) return raw
+  try {
+    const data = JSON.parse(raw) as {
+      reply?: unknown
+      solution?: unknown
+      ticket?: { title?: unknown } | null
+    }
+    const reply = typeof data.reply === "string" ? data.reply.trim() : ""
+    if (reply) return reply
+
+    if (typeof data.solution === "string" && data.solution.trim()) return data.solution.trim()
+    if (Array.isArray(data.solution)) {
+      const text = data.solution
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+        .join(" ")
+      if (text) return text
+    }
+
+    const title = String(data.ticket?.title || "").trim()
+    if (title) {
+      return locale === "fr"
+        ? `Resultat IA: ${title}`
+        : `AI result: ${title}`
+    }
+    return raw
+  } catch {
+    return raw
+  }
+}
+
 function parseTicketDigest(content: string): { header: string; rows: TicketDigestRow[]; extra: string | null } | null {
   const lines = content
     .split("\n")
@@ -198,7 +231,7 @@ export function TicketChatbot() {
         {
           id: `m-${Date.now()}-bot`,
           role: "assistant",
-          content: result.reply,
+          content: normalizeAssistantReply(result.reply, locale),
           ticketDraft,
           ticketAction: result.action ?? null,
         },
@@ -225,16 +258,23 @@ export function TicketChatbot() {
     if (!user) return
     setCreatingId(messageId)
     try {
+      const title = (draft.title || "").trim().slice(0, 120)
+      const description = (draft.description || "").trim().slice(0, 4000)
+      const tags = (draft.tags || []).map((tag) => String(tag || "").trim()).filter(Boolean).slice(0, 10)
+      const assignee = (draft.assignee || "").trim() || user.name
+      if (title.length < 3 || description.length < 5) {
+        throw new Error("invalid_draft_payload")
+      }
       const created = await apiFetch<{ id: string }>("/tickets", {
         method: "POST",
         body: JSON.stringify({
-          title: draft.title,
-          description: draft.description,
+          title,
+          description,
           priority: draft.priority,
           category: draft.category,
-          assignee: draft.assignee || user.name,
+          assignee,
           reporter: user.name,
-          tags: draft.tags || [],
+          tags,
         }),
       })
       setMessages((prev) => [
@@ -247,7 +287,15 @@ export function TicketChatbot() {
       ])
       router.push(`/tickets/${created.id}`)
       router.refresh()
-    } catch {
+    } catch (error) {
+      if (error instanceof ApiError) {
+        const detail = error.detail || "request_failed"
+        setMessages((prev) => [
+          ...prev,
+          { id: `m-${Date.now()}-error`, role: "assistant", content: `${t("chat.ticketCreateError")} (${detail})` },
+        ])
+        return
+      }
       setMessages((prev) => [
         ...prev,
         { id: `m-${Date.now()}-error`, role: "assistant", content: t("chat.ticketCreateError") },
@@ -303,7 +351,10 @@ export function TicketChatbot() {
               {messages.map((message) => {
                 const isUser = message.role === "user"
                 const draft = message.ticketDraft
-                const canCreate = message.ticketAction === "create_ticket" && hasPermission("create_ticket")
+                const canCreate =
+                  !!draft &&
+                  message.ticketAction !== "show_ticket" &&
+                  hasPermission("create_ticket")
                 return (
                   <div key={message.id} className="space-y-3">
                     <div

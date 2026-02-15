@@ -11,6 +11,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.rbac import can_view_ticket, filter_tickets_for_user
+from app.integrations.jira.mapper import JIRA_SOURCE
+from app.integrations.jira.outbound import create_jira_issue_for_ticket
 from app.models.ticket import Ticket, TicketComment
 from app.models.user import User
 from app.models.enums import SeniorityLevel, TicketCategory, TicketPriority, TicketStatus, UserRole
@@ -440,6 +442,21 @@ def create_ticket(db: Session, data: TicketCreate, *, reporter_id: str | None = 
     db.add(ticket)
     db.commit()
     db.refresh(ticket)
+
+    # Best-effort outbound sync: local creation succeeds even if Jira push fails.
+    if not ticket.external_id:
+        jira_key = create_jira_issue_for_ticket(ticket)
+        if jira_key:
+            now = dt.datetime.now(dt.timezone.utc)
+            ticket.external_source = JIRA_SOURCE
+            ticket.external_id = jira_key
+            ticket.external_updated_at = now
+            ticket.last_synced_at = now
+            db.add(ticket)
+            db.commit()
+            db.refresh(ticket)
+            logger.info("Ticket pushed to Jira: %s -> %s", ticket.id, jira_key)
+
     logger.info("Ticket created: %s", ticket.id)
     return ticket
 
