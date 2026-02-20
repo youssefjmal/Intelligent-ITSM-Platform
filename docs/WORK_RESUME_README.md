@@ -73,10 +73,12 @@ Based on repository history:
 9. `2026-02-15` `9efef63` - AI routing refactor + Jira outbound sync + Scrum docs.
 10. `2026-02-15` `9e25e11` - README alignment with current architecture.
 11. `2026-02-15` `742716b` - Jira auto-sync improvements + PlantUML DB schema.
+12. `2026-02-15` `f0841e7` - Jira reverse resync, classification updates, and AI metrics fixes.
+13. `2026-02-20` `c5ca314` - Jira KB modularization, SLA flows, migrations, and frontend updates.
 
 Current pushed head:
 
-- `742716b9a77d60a2ed7daab5817394c102611a3f` on `main`.
+- `c5ca3141e0af2fd18e0399bd2e2d79ed730a0a75` on `main`.
 
 ---
 
@@ -475,19 +477,19 @@ Examples of defined stories:
 
 Latest pushed commit:
 
-- `742716b9a77d60a2ed7daab5817394c102611a3f`
-- Message: `Implement Jira auto-sync improvements and add DB schema PlantUML`
+- `c5ca3141e0af2fd18e0399bd2e2d79ed730a0a75`
+- Message: `feat: add Jira KB, SLA flows, and UI updates`
 
 Main latest-step additions:
 
-1. Jira webhook endpoint compatibility and auth robustness.
-2. Auto reconcile background worker at startup.
-3. Reconcile project key auto-detection fallback.
-4. Jira-native DB fields and constraints via migration `0015`.
-5. Jira mapper/client/service refactor and counter-based reconcile responses.
-6. AI prompt + Jira KB improvements.
-7. Test updates for reconcile and upsert idempotency.
-8. `docs/db-schema-current.puml` added.
+1. Added migrations `0016` to `0020` for KB chunks, SLA fields, Jira comment identity uniqueness, and waiting-status support.
+2. Introduced dedicated SLA endpoints/services (`backend/app/routers/sla.py`, `backend/app/services/sla/`).
+3. Split Jira KB logic into a modular package (`backend/app/services/jira_kb/`) with scoring/filtering/formatting helpers.
+4. Added embedding service plumbing (`backend/app/services/embeddings.py`) and KB chunk model support.
+5. Expanded Jira integration services, including SLA sync support and mapper/client updates.
+6. Extended AI routing/classification test coverage (`test_ai_classifier_consensus.py`, `test_ai_routing_plan.py`).
+7. Updated frontend dashboard, ticket, problem, and chat pages/components with UX and interaction improvements.
+8. Added resume/update documentation for current working state in `docs/WORK_RESUME_README.md`.
 
 ---
 
@@ -495,22 +497,17 @@ Main latest-step additions:
 
 Already pushed:
 
-- All code changes up to commit `742716b...` are pushed to `origin/main`.
-
-Not pushed by request:
-
-- This resume file can stay local/copyable unless you explicitly ask to commit and push it.
+- All code changes up to commit `c5ca314...` are pushed to `origin/main`.
 
 ---
 
-## 13. Local unpushed work (2026-02-16 to 2026-02-17)
+## 13. Delivered work summary (2026-02-16 to 2026-02-20)
 
-Scope of this local phase:
+Scope of this delivery phase:
 
-1. UI/UX facelift and interaction polish only.
-2. No routing rewrites.
-3. No backend API contract changes.
-4. No business logic or type-model redesign.
+1. UI/UX facelift and interaction polish.
+2. Backend Jira KB and SLA capability expansion.
+3. Additional migration/test coverage for new backend flows.
 
 ### 13.1 Global layout and design-system consistency
 
