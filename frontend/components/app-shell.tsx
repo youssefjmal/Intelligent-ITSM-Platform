@@ -46,23 +46,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     : "??"
 
   return (
-    <div className="flex min-h-screen overflow-hidden bg-transparent">
+    <div className="relative flex min-h-screen overflow-hidden bg-transparent">
       <AppSidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((prev) => !prev)} />
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top Bar */}
-        <header className="relative z-20 flex h-16 items-center justify-between border-b border-border/70 bg-card/80 px-4 backdrop-blur md:px-6 shrink-0">
+        <header className="relative z-20 flex h-[4.25rem] shrink-0 items-center justify-between border-b border-border/70 bg-card/85 px-4 backdrop-blur md:px-6">
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-primary/25 to-transparent" />
-          <div className="flex items-center gap-4 flex-1">
+          <div className="flex flex-1 items-center gap-4">
             <Button
               variant="ghost"
               size="sm"
               onClick={() => setSidebarCollapsed((prev) => !prev)}
-              className="h-9 w-9 rounded-full p-0 hover:bg-primary/10"
+              className="h-9 w-9 rounded-full p-0 hover:bg-primary/10 focus-visible:ring-2 focus-visible:ring-primary/40"
             >
               {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
               <span className="sr-only">{t("nav.collapse")}</span>
             </Button>
-            <h1 className="hidden text-sm font-semibold tracking-wide text-foreground sm:block">
+            <h1 className="hidden text-sm font-semibold tracking-wide text-foreground/90 sm:block">
               {t("app.title")}
             </h1>
           </div>
@@ -70,7 +70,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <LanguageSwitcher />
             <ThemeToggle />
 
-            <Button variant="ghost" size="sm" className="relative h-9 w-9 rounded-full p-0 hover:bg-primary/10">
+            <Button variant="ghost" size="sm" className="relative h-9 w-9 rounded-full p-0 hover:bg-primary/10 focus-visible:ring-2 focus-visible:ring-primary/40">
               <Bell className="h-4 w-4 text-muted-foreground" />
               <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-[9px] font-bold text-primary-foreground ring-2 ring-card/80">
                 3
@@ -78,16 +78,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <span className="sr-only">{t("app.notifications")}</span>
             </Button>
 
-            <div className="flex items-center gap-2 rounded-full border border-border/70 bg-card/75 px-1.5 py-1 shadow-sm">
+            <div className="flex items-center gap-2 rounded-full border border-border/70 bg-card/80 px-1.5 py-1 shadow-sm">
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-primary to-emerald-700 text-xs font-bold text-primary-foreground">
                 {initials}
               </div>
-              <div className="hidden md:flex flex-col">
-                <span className="text-sm font-medium text-foreground leading-tight">
+              <div className="hidden flex-col md:flex">
+                <span className="leading-tight text-sm font-medium text-foreground">
                   {user?.name || t("app.user")}
                 </span>
                 {user && (
-                  <Badge className={`${ROLE_BADGE[user.role]} text-[9px] px-1.5 py-0 w-fit`}>
+                  <Badge className={`${ROLE_BADGE[user.role]} w-fit px-1.5 py-0 text-[9px]`}>
                     {t(`auth.${user.role}` as "auth.admin")}
                   </Badge>
                 )}
@@ -107,8 +107,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </header>
 
         {/* Content */}
-        <main className="flex-1 overflow-auto p-4 md:p-6">
-          <div className="mx-auto w-full max-w-[1400px]">{children}</div>
+        <main className="flex-1 overflow-auto p-5 md:p-6">
+          <div className="mx-auto w-full max-w-[1480px]">{children}</div>
         </main>
       </div>
     </div>

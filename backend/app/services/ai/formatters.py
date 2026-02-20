@@ -31,6 +31,8 @@ STATUS_LABELS = {
         "open": "Open",
         "in-progress": "In progress",
         "in_progress": "In progress",
+        "waiting-for-customer": "Waiting for customer",
+        "waiting-for-support-vendor": "Waiting for support/vendor",
         "pending": "Pending",
         "resolved": "Resolved",
         "closed": "Closed",
@@ -39,6 +41,8 @@ STATUS_LABELS = {
         "open": "Ouvert",
         "in-progress": "En cours",
         "in_progress": "En cours",
+        "waiting-for-customer": "En attente client",
+        "waiting-for-support-vendor": "En attente support/fournisseur",
         "pending": "En attente",
         "resolved": "Resolu",
         "closed": "Clos",
@@ -417,4 +421,3 @@ def _format_recurring_solutions(tickets: list, lang: str, question: str) -> str:
         lines.extend(kb_lines[:2])
 
     return "\n".join(lines)
-

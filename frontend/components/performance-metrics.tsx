@@ -5,6 +5,8 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Badge } from "@/components/ui/badge"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Gauge, Shuffle, Clock3, CheckCircle2, Bot } from "lucide-react"
 import { useI18n } from "@/lib/i18n"
 import { fetchTicketPerformance, type TicketPerformancePayload } from "@/lib/tickets-api"
@@ -271,22 +273,43 @@ export function PerformanceMetrics({ performance: initialPerformance, assignees,
     },
   ]
 
+  const activeFilters: string[] = []
+  if (scope !== defaultScope) {
+    activeFilters.push(scope === "all" ? (isFr ? "Portee: tous" : "Scope: all") : scope === "before" ? (isFr ? "Portee: avant IA" : "Scope: before AI") : (isFr ? "Portee: apres IA" : "Scope: after AI"))
+  }
+  if (category !== "all") {
+    const matched = categoryOptions.find((item) => item.value === category)
+    activeFilters.push(`${isFr ? "Categorie" : "Category"}: ${matched?.label ?? category}`)
+  }
+  if (assignee !== "all") {
+    activeFilters.push(`${isFr ? "Assigne" : "Assignee"}: ${assignee}`)
+  }
+  if (dateFrom || dateTo) {
+    activeFilters.push(`${isFr ? "Dates" : "Dates"}: ${dateFrom || "..."} - ${dateTo || "..."}`)
+  }
+
   return (
-    <section className="fade-slide-in space-y-3">
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold text-foreground">
-            {isFr ? "Mesures IA AVANT / APRES" : "AI before/after metrics"}
+    <section className="surface-card fade-slide-in space-y-4 rounded-2xl p-4 sm:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold text-foreground">
+            {isFr ? "Mesures IA avant / apres" : "AI before/after metrics"}
           </h3>
-          <p className="text-xs text-muted-foreground">
+          <p className="mt-1 text-xs text-muted-foreground">
             {isFr
               ? `Amelioration MTTR: ${formatDelta(performance.mttr_hours.before, performance.mttr_hours.after)}`
               : `MTTR improvement: ${formatDelta(performance.mttr_hours.before, performance.mttr_hours.after)}`}
           </p>
         </div>
+        <Badge variant="outline" className="border-primary/25 bg-primary/5 text-[11px] text-primary">
+          {isFr ? "Filtres: section IA uniquement" : "Filters: AI section only"}
+        </Badge>
+      </div>
+
+      <div className="rounded-xl border border-border/70 bg-muted/15 p-3">
         <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-6">
           <Select value={scope} onValueChange={(value) => setScope(value as Scope)}>
-            <SelectTrigger className="h-8">
+            <SelectTrigger className="h-10 rounded-xl bg-background/70">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -299,16 +322,16 @@ export function PerformanceMetrics({ performance: initialPerformance, assignees,
             type="date"
             value={dateFrom}
             onChange={(e) => setDateFrom(e.target.value)}
-            className="h-8"
+            className="h-10 rounded-xl bg-background/70"
           />
           <Input
             type="date"
             value={dateTo}
             onChange={(e) => setDateTo(e.target.value)}
-            className="h-8"
+            className="h-10 rounded-xl bg-background/70"
           />
           <Select value={category} onValueChange={(value) => setCategory(value as CategoryFilter)}>
-            <SelectTrigger className="h-8">
+            <SelectTrigger className="h-10 rounded-xl bg-background/70">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -320,7 +343,7 @@ export function PerformanceMetrics({ performance: initialPerformance, assignees,
             </SelectContent>
           </Select>
           <Select value={assignee} onValueChange={setAssignee}>
-            <SelectTrigger className="h-8">
+            <SelectTrigger className="h-10 rounded-xl bg-background/70">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -333,52 +356,79 @@ export function PerformanceMetrics({ performance: initialPerformance, assignees,
             </SelectContent>
           </Select>
           <div className="flex items-center gap-2">
-            <Button size="sm" onClick={() => refreshMetrics().catch(() => {})} disabled={loading}>
+            <Button size="sm" className="h-10 rounded-xl px-4" onClick={() => refreshMetrics().catch(() => {})} disabled={loading}>
               {loading ? (isFr ? "Chargement..." : "Loading...") : (isFr ? "Appliquer" : "Apply")}
             </Button>
-            <Button size="sm" variant="outline" onClick={resetFilters} disabled={loading}>
+            <Button size="sm" variant="outline" className="h-10 rounded-xl px-4" onClick={resetFilters} disabled={loading}>
               {isFr ? "Reset" : "Reset"}
             </Button>
           </div>
         </div>
-        <p className="text-[11px] text-muted-foreground">
+
+        {activeFilters.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {activeFilters.map((filter) => (
+              <Badge key={filter} variant="outline" className="border-border bg-background/70 text-[11px]">
+                {filter}
+              </Badge>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+        <p>
           {isFr
             ? `Tickets filtres: ${performance.total_tickets} | Resolus: ${performance.resolved_tickets}`
             : `Filtered tickets: ${performance.total_tickets} | Resolved: ${performance.resolved_tickets}`}
         </p>
-        <p className="text-[11px] text-muted-foreground">
+        <p>
           {isFr
             ? `Source: ${source === "api" ? "API backend" : "calcul local frontend"}`
             : `Source: ${source === "api" ? "backend API" : "local frontend computation"}`}
         </p>
-        {performance.total_tickets === 0 && (
-          <p className="text-xs text-amber-500">
-            {isFr
-              ? "Aucun ticket ne correspond aux filtres selectionnes."
-              : "No tickets match the selected filters."}
-          </p>
-        )}
-        {error && <p className="text-xs text-destructive">{error}</p>}
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        {cards.map((card) => (
-          <Card key={card.title} className="surface-card rounded-xl border-border/70">
-            <CardContent className="p-3">
-              <div className="flex items-start justify-between gap-2">
-                <div className="space-y-1">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{card.title}</p>
-                  <p className="text-xl font-bold text-foreground">{card.value}</p>
+      {performance.total_tickets === 0 && (
+        <p className="text-xs text-amber-500">
+          {isFr
+            ? "Aucun ticket ne correspond aux filtres selectionnes."
+            : "No tickets match the selected filters."}
+        </p>
+      )}
+      {error && <p className="text-xs text-destructive">{error}</p>}
+
+      {loading ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {Array.from({ length: 5 }).map((_, index) => (
+            <div key={`perf-card-skeleton-${index}`} className="rounded-2xl border border-border/70 bg-card/70 p-3">
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="mt-2 h-7 w-16" />
+              <Skeleton className="mt-3 h-3 w-28" />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {cards.map((card) => (
+            <Card key={card.title} className="surface-card overflow-hidden rounded-2xl border-border/70">
+              <CardContent className="p-3.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="space-y-1">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{card.title}</p>
+                    <p className="text-xl font-bold text-foreground">{card.value}</p>
+                  </div>
+                  <div className={`flex h-9 w-9 items-center justify-center rounded-xl ${card.iconBg}`}>
+                    <card.icon className={`h-4 w-4 ${card.iconColor}`} />
+                  </div>
                 </div>
-                <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${card.iconBg}`}>
-                  <card.icon className={`h-4 w-4 ${card.iconColor}`} />
-                </div>
-              </div>
-              <p className="mt-2 text-[11px] text-muted-foreground">{card.subtitle}</p>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+                <p className="mt-2.5 text-[11px] text-muted-foreground">{card.subtitle}</p>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
       <p className="text-[11px] text-muted-foreground">
         {isFr
           ? "Condition (Classification correcte): seuls les tickets avec prediction IA (priorite et/ou categorie) sont echantillonnes. Un ticket est compte 'correct' si toutes les valeurs predites presentes correspondent aux valeurs finales du ticket."

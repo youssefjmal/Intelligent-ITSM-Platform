@@ -68,7 +68,7 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         )}
       </div>
 
-      <nav className="relative flex-1 space-y-1 px-2 py-4">
+      <nav className="relative flex-1 space-y-1.5 px-2 py-4">
         {visibleNav.map((item) => {
           const isActive =
             item.href === "/"
@@ -79,9 +79,9 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
               key={item.nameKey}
               href={item.href}
               className={cn(
-                "group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all",
+                "group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring",
                 isActive
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground shadow-sm"
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground shadow-sm ring-1 ring-white/10"
                   : "text-sidebar-foreground/80 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
               )}
             >
@@ -102,7 +102,7 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         <button
           type="button"
           onClick={onToggle}
-          className="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
+          className="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
         >
           {collapsed ? (
             <ChevronRight className="h-4 w-4" />

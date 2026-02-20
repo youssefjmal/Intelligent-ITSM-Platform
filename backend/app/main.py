@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.logging import setup_logging
 from app.core.exceptions import ITSMGatekeeperException
 from app.integrations.jira.auto_reconcile import start_jira_auto_reconcile, stop_jira_auto_reconcile
-from app.routers import ai, assignees, auth, emails, integrations_jira, problems, recommendations, tickets, users
+from app.routers import ai, assignees, auth, emails, integrations_jira, problems, recommendations, sla, tickets, users
 
 
 def create_app() -> FastAPI:
@@ -44,6 +44,7 @@ def create_app() -> FastAPI:
     app.include_router(assignees.router, prefix="/api", tags=["assignees"])
     # Jira reverse-sync endpoints (webhook + reconcile).
     app.include_router(integrations_jira.router, prefix="/api", tags=["integrations-jira"])
+    app.include_router(sla.router, prefix="/api/sla", tags=["sla"])
 
     @app.exception_handler(ITSMGatekeeperException)
     async def handle_itsm_exception(_: Request, exc: ITSMGatekeeperException) -> JSONResponse:

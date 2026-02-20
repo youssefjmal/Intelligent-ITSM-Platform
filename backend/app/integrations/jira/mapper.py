@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from app.core.ticket_limits import MAX_TAG_LEN, MAX_TAGS
 from app.models.enums import TicketCategory, TicketPriority, TicketStatus
 
 logger = logging.getLogger(__name__)
@@ -20,11 +21,14 @@ STATUS_MAP = {
     "in progress": TicketStatus.in_progress,
     "in-progress": TicketStatus.in_progress,
     "ongoing": TicketStatus.in_progress,
-    "waiting for support": TicketStatus.pending,
+    "waiting for customer": TicketStatus.waiting_for_customer,
+    "waiting for support": TicketStatus.waiting_for_support_vendor,
+    "waiting for vendor": TicketStatus.waiting_for_support_vendor,
+    "waiting for support/vendor": TicketStatus.waiting_for_support_vendor,
     "pending": TicketStatus.pending,
     "waiting": TicketStatus.pending,
     "resolved": TicketStatus.resolved,
-    "done": TicketStatus.closed,
+    "done": TicketStatus.resolved,
     "closed": TicketStatus.closed,
 }
 
@@ -39,11 +43,35 @@ PRIORITY_MAP = {
 
 CATEGORY_MAP = {
     "incident": TicketCategory.service_request,
+    "report an incident": TicketCategory.service_request,
     "service request": TicketCategory.service_request,
+    "email request": TicketCategory.email,
     "task": TicketCategory.application,
     "bug": TicketCategory.application,
     "problem": TicketCategory.problem,
 }
+
+def _normalize_tags(values: list[str]) -> list[str]:
+    """Normalize Jira labels/components to local tag limits."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        tag = str(raw or "").strip()
+        if not tag:
+            continue
+        if len(tag) > MAX_TAG_LEN:
+            tag = tag[:MAX_TAG_LEN].strip()
+        if not tag:
+            continue
+        key = tag.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(tag)
+        if len(normalized) >= MAX_TAGS:
+            break
+    return normalized
+
 
 def _parse_datetime(value: str | None) -> dt.datetime | None:
     if not value:
@@ -190,6 +218,7 @@ def map_issue(issue: dict[str, Any]) -> NormalizedTicket:
         if isinstance(component, dict) and str(component.get("name") or "").strip()
     ]
     tags.extend(component_names)
+    tags = _normalize_tags(tags)
 
     return NormalizedTicket(
         jira_key=issue_key,
@@ -202,7 +231,7 @@ def map_issue(issue: dict[str, Any]) -> NormalizedTicket:
         category=map_category(fields),
         assignee=assignee[:255] or "Unassigned",
         reporter=reporter[:255] or "Jira",
-        tags=tags[:20],
+        tags=tags,
         jira_created_at=_parse_datetime(str(fields.get("created") or "")),
         jira_updated_at=_parse_datetime(str(fields.get("updated") or "")),
         raw_payload=issue,

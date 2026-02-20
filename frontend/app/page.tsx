@@ -11,6 +11,8 @@ import { PerformanceMetrics } from "@/components/performance-metrics"
 import { type Ticket, type TicketCategory } from "@/lib/ticket-data"
 import { useI18n } from "@/lib/i18n"
 import { fetchTicketInsights, fetchTicketStats, fetchTickets } from "@/lib/tickets-api"
+import { Separator } from "@/components/ui/separator"
+import { Skeleton } from "@/components/ui/skeleton"
 
 type Insights = {
   weekly: Array<{ week: string; opened: number; closed: number; pending: number }>
@@ -38,7 +40,14 @@ type Insights = {
       id: string
       title: string
       priority: "critical" | "high" | "medium" | "low"
-      status: "open" | "in-progress" | "pending" | "resolved" | "closed"
+      status:
+        | "open"
+        | "in-progress"
+        | "waiting-for-customer"
+        | "waiting-for-support-vendor"
+        | "pending"
+        | "resolved"
+        | "closed"
       category: TicketCategory
       assignee: string
       created_at: string
@@ -50,7 +59,14 @@ type Insights = {
       id: string
       title: string
       priority: "critical" | "high" | "medium" | "low"
-      status: "open" | "in-progress" | "pending" | "resolved" | "closed"
+      status:
+        | "open"
+        | "in-progress"
+        | "waiting-for-customer"
+        | "waiting-for-support-vendor"
+        | "pending"
+        | "resolved"
+        | "closed"
       category: TicketCategory
       assignee: string
       created_at: string
@@ -112,8 +128,9 @@ type Insights = {
 }
 
 export default function DashboardPage() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const [tickets, setTickets] = useState<Ticket[]>([])
+  const [loading, setLoading] = useState(true)
   const [stats, setStats] = useState({
     total: 0,
     open: 0,
@@ -169,15 +186,20 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const load = async () => {
-      const [ticketList, statsRes, insightsRes] = await Promise.all([
-        fetchTickets(),
-        fetchTicketStats(),
-        fetchTicketInsights(),
-      ])
+      setLoading(true)
+      try {
+        const [ticketList, statsRes, insightsRes] = await Promise.all([
+          fetchTickets(),
+          fetchTicketStats(),
+          fetchTicketInsights(),
+        ])
 
-      setTickets(ticketList)
-      setStats(statsRes)
-      setInsights(insightsRes)
+        setTickets(ticketList)
+        setStats(statsRes)
+        setInsights(insightsRes)
+      } finally {
+        setLoading(false)
+      }
     }
 
     load().catch(() => {})
@@ -205,10 +227,11 @@ export default function DashboardPage() {
       : insights.problems
     ).slice(0, 3)
   const assigneeOptions = Array.from(new Set(tickets.map((ticket) => ticket.assignee).filter(Boolean))).sort()
+  const isFr = locale === "fr"
 
   return (
     <AppShell>
-      <div className="page-shell fade-slide-in">
+      <div className="relative fade-slide-in space-y-6">
         <div className="page-hero">
           <p className="section-caption">{t("nav.dashboard")}</p>
           <h2 className="mt-2 text-3xl font-bold text-foreground text-balance sm:text-4xl">
@@ -219,28 +242,178 @@ export default function DashboardPage() {
           </p>
         </div>
 
-        <KPICards stats={stats} />
-        <PerformanceMetrics performance={insights.performance} assignees={assigneeOptions} tickets={tickets} />
-        <ProblemInsights insights={problemHighlights} />
-        <OperationalInsights
-          operational={insights.operational}
-          showStale={false}
-          maxCritical={4}
-        />
+        <section className="section-block">
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <h3 className="section-title">{isFr ? "Vue operationnelle" : "Operational snapshot"}</h3>
+              <p className="section-subtitle">
+                {isFr ? "Ces KPI restent globaux et ne sont pas impactes par les filtres IA." : "These KPI remain global and are not impacted by AI filters."}
+              </p>
+            </div>
+          </div>
+          {loading ? <DashboardKpiSkeleton /> : <KPICards stats={stats} />}
+        </section>
 
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">
-          <div className="xl:col-span-3">
-            <DashboardCharts
-              weeklyData={insights.weekly}
-              categoryData={insights.category}
-              priorityData={insights.priority}
+        <Separator className="bg-border/60" />
+
+        <section className="section-block">
+          {loading ? (
+            <PerformanceSectionSkeleton />
+          ) : (
+            <PerformanceMetrics performance={insights.performance} assignees={assigneeOptions} tickets={tickets} />
+          )}
+        </section>
+
+        <Separator className="bg-border/60" />
+
+        <section className="section-block">
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <h3 className="section-title">{isFr ? "Signaux de problemes" : "Problem signals"}</h3>
+              <p className="section-subtitle">
+                {isFr ? "Survolez les cartes pour plus de contexte, puis cliquez pour ouvrir la vue correspondante." : "Hover cards for more context, then click to open the related view."}
+              </p>
+            </div>
+          </div>
+          {loading ? <InsightsSkeleton /> : <ProblemInsights insights={problemHighlights} />}
+        </section>
+
+        <section className="section-block">
+          {loading ? (
+            <InsightsSkeleton compact />
+          ) : (
+            <OperationalInsights
+              operational={insights.operational}
+              showStale={false}
+              maxCritical={4}
             />
+          )}
+        </section>
+
+        <Separator className="bg-border/60" />
+
+        <section className="section-block">
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <h3 className="section-title">{isFr ? "Tendances et activite" : "Trends and activity"}</h3>
+              <p className="section-subtitle">
+                {isFr ? "Les tableaux de bord ci-dessous sont consultables au survol et cliquables." : "The dashboard cards below show hover details and are clickable."}
+              </p>
+            </div>
           </div>
-          <div className="xl:col-span-1">
-            <RecentActivity tickets={tickets} />
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-4">
+            <div className="xl:col-span-3">
+              {loading ? (
+                <ChartsSkeleton />
+              ) : (
+                <DashboardCharts
+                  weeklyData={insights.weekly}
+                  categoryData={insights.category}
+                  priorityData={insights.priority}
+                />
+              )}
+            </div>
+            <div className="xl:col-span-1">
+              {loading ? <RecentActivitySkeleton /> : <RecentActivity tickets={tickets} />}
+            </div>
           </div>
-        </div>
+        </section>
       </div>
     </AppShell>
+  )
+}
+
+function DashboardKpiSkeleton() {
+  return (
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+      {Array.from({ length: 6 }).map((_, index) => (
+        <div key={`kpi-skeleton-${index}`} className="surface-card rounded-2xl p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-2">
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="h-7 w-16" />
+            </div>
+            <Skeleton className="h-9 w-9 rounded-lg" />
+          </div>
+          <Skeleton className="mt-3 h-3 w-32" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function PerformanceSectionSkeleton() {
+  return (
+    <div className="surface-card space-y-4 rounded-2xl p-4 sm:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Skeleton className="h-5 w-56" />
+        <Skeleton className="h-5 w-32" />
+      </div>
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-6">
+        {Array.from({ length: 6 }).map((_, index) => (
+          <Skeleton key={`filter-skeleton-${index}`} className="h-10 w-full rounded-xl" />
+        ))}
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        {Array.from({ length: 5 }).map((_, index) => (
+          <div key={`metric-skeleton-${index}`} className="rounded-xl border border-border/70 p-3">
+            <Skeleton className="h-3 w-28" />
+            <Skeleton className="mt-2 h-7 w-20" />
+            <Skeleton className="mt-3 h-3 w-32" />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function InsightsSkeleton({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className="surface-card rounded-2xl p-4 sm:p-6">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        {Array.from({ length: compact ? 2 : 3 }).map((_, index) => (
+          <div key={`insight-skeleton-${index}`} className="rounded-xl border border-border/70 p-4">
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="mt-3 h-3 w-full" />
+            <Skeleton className="mt-2 h-3 w-3/4" />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ChartsSkeleton() {
+  return (
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-3">
+      <div className="surface-card rounded-2xl p-5 lg:col-span-2">
+        <Skeleton className="h-4 w-44" />
+        <Skeleton className="mt-4 h-[260px] w-full rounded-xl" />
+      </div>
+      <div className="surface-card rounded-2xl p-5">
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="mt-4 h-[260px] w-full rounded-xl" />
+      </div>
+      <div className="surface-card rounded-2xl p-5 xl:col-span-3">
+        <Skeleton className="h-4 w-48" />
+        <Skeleton className="mt-4 h-[200px] w-full rounded-xl" />
+      </div>
+    </div>
+  )
+}
+
+function RecentActivitySkeleton() {
+  return (
+    <div className="surface-card rounded-2xl p-4">
+      <Skeleton className="h-4 w-40" />
+      <div className="mt-4 space-y-3">
+        {Array.from({ length: 5 }).map((_, index) => (
+          <div key={`activity-skeleton-${index}`} className="rounded-lg border border-border/70 p-3">
+            <Skeleton className="h-3 w-40" />
+            <Skeleton className="mt-2 h-3 w-24" />
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }

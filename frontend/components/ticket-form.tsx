@@ -31,12 +31,62 @@ interface AISuggestion {
   priority: TicketPriority
   category: TicketCategory
   recommendations: Array<{ text: string; confidence: number }>
+  recommendationsEmbedding: Array<{ text: string; confidence: number }>
+  recommendationsLlm: Array<{ text: string; confidence: number }>
+  recommendationMode: "embedding" | "llm" | "hybrid"
+  similarityFound: boolean
   assignee?: string | null
+}
+
+function isActionableRecommendation(text: string): boolean {
+  const normalized = String(text || "").trim()
+  if (!normalized) return false
+  const lower = normalized.toLowerCase()
+  if (lower.endsWith(":")) return false
+  return !(
+    lower.startsWith("voici ") ||
+    lower.startsWith("here are ") ||
+    lower.startsWith("recommended actions") ||
+    lower.startsWith("actions:") ||
+    lower.startsWith("solutions recommandees") ||
+    lower.startsWith("recommended solutions") ||
+    lower.startsWith("solution rapide")
+  )
+}
+
+function cleanRecommendationText(text: string): string {
+  return String(text || "")
+    .replace(/\*\*/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
+function mapScoredRecommendations(
+  scored: Array<{ text: string; confidence: number }> | undefined,
+  fallback: string[] | undefined,
+  startConfidence = 86,
+): Array<{ text: string; confidence: number }> {
+  if (Array.isArray(scored) && scored.length > 0) {
+    return scored
+      .map((item) => ({
+        text: cleanRecommendationText(item.text),
+        confidence: Number.isFinite(item.confidence)
+          ? Math.max(0, Math.min(100, Number(item.confidence)))
+          : 0,
+      }))
+      .filter((item) => item.text.length > 0 && isActionableRecommendation(item.text))
+  }
+  return (Array.isArray(fallback) ? fallback : [])
+    .map((text, index) => ({
+      text: cleanRecommendationText(String(text || "")),
+      confidence: Math.max(55, startConfidence - index * 7),
+    }))
+    .filter((item) => item.text.length > 0 && isActionableRecommendation(item.text))
 }
 
 export function TicketForm() {
   const router = useRouter()
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const { user } = useAuth()
   const [title, setTitle] = useState("")
   const [description, setDescription] = useState("")
@@ -78,33 +128,32 @@ export function TicketForm() {
         category: TicketCategory
         recommendations: string[]
         recommendations_scored?: Array<{ text: string; confidence: number }>
+        recommendations_embedding?: string[]
+        recommendations_embedding_scored?: Array<{ text: string; confidence: number }>
+        recommendations_llm?: string[]
+        recommendations_llm_scored?: Array<{ text: string; confidence: number }>
+        recommendation_mode?: "embedding" | "llm" | "hybrid"
+        similarity_found?: boolean
         assignee?: string | null
       }>(
         "/ai/classify",
         {
           method: "POST",
-          body: JSON.stringify({ title: aiTitle, description: aiDescription }),
+          body: JSON.stringify({ title: aiTitle, description: aiDescription, locale }),
         }
       )
       const mapped: AISuggestion = {
         priority: data.priority,
         category: data.category,
-        recommendations:
-          Array.isArray(data.recommendations_scored) && data.recommendations_scored.length > 0
-            ? data.recommendations_scored
-                .map((item) => ({
-                  text: String(item.text || "").trim(),
-                  confidence: Number.isFinite(item.confidence)
-                    ? Math.max(0, Math.min(100, Number(item.confidence)))
-                    : 0,
-                }))
-                .filter((item) => item.text.length > 0)
-            : (Array.isArray(data.recommendations) ? data.recommendations : [])
-                .map((text, index) => ({
-                  text: String(text || "").trim(),
-                  confidence: Math.max(55, 86 - index * 7),
-                }))
-                .filter((item) => item.text.length > 0),
+        recommendations: mapScoredRecommendations(data.recommendations_scored, data.recommendations, 86),
+        recommendationsEmbedding: mapScoredRecommendations(
+          data.recommendations_embedding_scored,
+          data.recommendations_embedding,
+          90,
+        ),
+        recommendationsLlm: mapScoredRecommendations(data.recommendations_llm_scored, data.recommendations_llm, 82),
+        recommendationMode: data.recommendation_mode || "llm",
+        similarityFound: Boolean(data.similarity_found),
         assignee: data.assignee ?? null,
       }
       setAiSuggestion(mapped)

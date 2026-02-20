@@ -7,6 +7,7 @@ import { TicketDetail } from "@/components/ticket-detail"
 import { type Ticket } from "@/lib/ticket-data"
 import { fetchTicket } from "@/lib/tickets-api"
 import { useI18n } from "@/lib/i18n"
+import { Skeleton } from "@/components/ui/skeleton"
 
 export default function TicketDetailPage() {
   const params = useParams()
@@ -25,8 +26,16 @@ export default function TicketDetailPage() {
   if (loading) {
     return (
       <AppShell>
-        <div className="flex h-[60vh] flex-col items-center justify-center">
-          <p className="text-lg font-semibold text-foreground">{t("general.loading")}</p>
+        <div className="page-shell">
+          <div className="surface-card rounded-2xl p-6">
+            <Skeleton className="h-4 w-24" />
+            <Skeleton className="mt-4 h-8 w-56" />
+            <Skeleton className="mt-2 h-4 w-80" />
+            <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
+              <Skeleton className="h-80 rounded-2xl lg:col-span-2" />
+              <Skeleton className="h-80 rounded-2xl" />
+            </div>
+          </div>
         </div>
       </AppShell>
     )
@@ -35,11 +44,13 @@ export default function TicketDetailPage() {
   if (!ticket) {
     return (
       <AppShell>
-        <div className="flex h-[60vh] flex-col items-center justify-center">
-          <p className="text-lg font-semibold text-foreground">{t("detail.notFound")}</p>
-          <p className="text-sm text-muted-foreground mt-1">
-            {t("detail.notFoundDesc", { id: ticketId })}
-          </p>
+        <div className="page-shell">
+          <div className="surface-card rounded-2xl border-dashed p-8 text-center">
+            <p className="text-lg font-semibold text-foreground">{t("detail.notFound")}</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {t("detail.notFoundDesc", { id: ticketId })}
+            </p>
+          </div>
         </div>
       </AppShell>
     )

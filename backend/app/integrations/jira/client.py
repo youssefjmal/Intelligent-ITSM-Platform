@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
 import httpx
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class JiraClient:
@@ -94,3 +97,184 @@ class JiraClient:
             max_results=max_results,
             fields="summary,description,status,priority,issuetype,labels,assignee,reporter,created,updated,comment",
         )
+
+    def _build_issue_sla_path(self, issue_key: str) -> str:
+        # TODO: confirm alternate endpoint variants if Jira/JSM API versions differ by tenant.
+        return f"/rest/servicedeskapi/request/{issue_key}/sla"
+
+    def get_issue_sla(self, issue_key: str) -> dict[str, Any]:
+        key = (issue_key or "").strip()
+        if not key:
+            return {}
+
+        url = f"{self.base_url}{self._build_issue_sla_path(key)}"
+        backoff = 0.5
+        with httpx.Client(
+            timeout=30.0,
+            auth=(self.email, self.api_token),
+            headers={"Accept": "application/json"},
+        ) as client:
+            for attempt in range(1, self.max_retries + 1):
+                try:
+                    response = client.get(url)
+                except httpx.HTTPError:
+                    if attempt >= self.max_retries:
+                        raise
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+
+                if response.status_code in {401, 403, 404}:
+                    logger.warning(
+                        "Jira SLA endpoint unavailable for %s (status=%s). Returning empty payload.",
+                        key,
+                        response.status_code,
+                    )
+                    return {}
+
+                if response.status_code in {429, 500, 502, 503, 504} and attempt < self.max_retries:
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+
+                response.raise_for_status()
+                data = response.json()
+                return data if isinstance(data, dict) else {}
+
+        return {}
+
+    def search_users(self, query: str, *, max_results: int = 20) -> list[dict[str, Any]]:
+        value = (query or "").strip()
+        if not value:
+            return []
+
+        url = f"{self.base_url}/rest/api/3/user/search"
+        backoff = 0.5
+        with httpx.Client(
+            timeout=self.timeout,
+            auth=(self.email, self.api_token),
+            headers={"Accept": "application/json"},
+        ) as client:
+            for attempt in range(1, self.max_retries + 1):
+                try:
+                    response = client.get(url, params={"query": value, "maxResults": max(1, min(max_results, 100))})
+                except httpx.HTTPError:
+                    if attempt >= self.max_retries:
+                        raise
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+
+                if response.status_code in {429, 500, 502, 503, 504} and attempt < self.max_retries:
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+
+                response.raise_for_status()
+                data = response.json()
+                if isinstance(data, list):
+                    return [item for item in data if isinstance(item, dict)]
+                return []
+
+        return []
+
+    def update_issue_fields(self, issue_key: str, fields: dict[str, Any]) -> bool:
+        key = (issue_key or "").strip()
+        if not key:
+            return False
+        url = f"{self.base_url}/rest/api/3/issue/{key}"
+        backoff = 0.5
+        with httpx.Client(
+            timeout=self.timeout,
+            auth=(self.email, self.api_token),
+            headers={"Accept": "application/json"},
+        ) as client:
+            for attempt in range(1, self.max_retries + 1):
+                try:
+                    response = client.put(url, json={"fields": fields})
+                except httpx.HTTPError:
+                    if attempt >= self.max_retries:
+                        raise
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+
+                if response.status_code in {429, 500, 502, 503, 504} and attempt < self.max_retries:
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+
+                response.raise_for_status()
+                return True
+        return False
+
+    def get_issue_transitions(self, issue_key: str) -> list[dict[str, Any]]:
+        key = (issue_key or "").strip()
+        if not key:
+            return []
+        payload = self._request("GET", f"/rest/api/3/issue/{key}/transitions")
+        rows = payload.get("transitions")
+        if not isinstance(rows, list):
+            return []
+        return [item for item in rows if isinstance(item, dict)]
+
+    def transition_issue(self, issue_key: str, transition_id: str) -> bool:
+        key = (issue_key or "").strip()
+        value = (transition_id or "").strip()
+        if not key or not value:
+            return False
+        url = f"{self.base_url}/rest/api/3/issue/{key}/transitions"
+        backoff = 0.5
+        with httpx.Client(
+            timeout=self.timeout,
+            auth=(self.email, self.api_token),
+            headers={"Accept": "application/json"},
+        ) as client:
+            for attempt in range(1, self.max_retries + 1):
+                try:
+                    response = client.post(url, json={"transition": {"id": value}})
+                except httpx.HTTPError:
+                    if attempt >= self.max_retries:
+                        raise
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+
+                if response.status_code in {429, 500, 502, 503, 504} and attempt < self.max_retries:
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+
+                response.raise_for_status()
+                return True
+        return False
+
+    def add_issue_comment(self, issue_key: str, body: dict[str, Any]) -> bool:
+        key = (issue_key or "").strip()
+        if not key:
+            return False
+        url = f"{self.base_url}/rest/api/3/issue/{key}/comment"
+        backoff = 0.5
+        with httpx.Client(
+            timeout=self.timeout,
+            auth=(self.email, self.api_token),
+            headers={"Accept": "application/json"},
+        ) as client:
+            for attempt in range(1, self.max_retries + 1):
+                try:
+                    response = client.post(url, json={"body": body})
+                except httpx.HTTPError:
+                    if attempt >= self.max_retries:
+                        raise
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+
+                if response.status_code in {429, 500, 502, 503, 504} and attempt < self.max_retries:
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+
+                response.raise_for_status()
+                return True
+        return False

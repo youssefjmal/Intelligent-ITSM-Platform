@@ -35,11 +35,11 @@ import {
 } from "@/lib/problems-api"
 
 const PROBLEM_STATUS_CONFIG: Record<ProblemStatus, { color: string; labelFr: string; labelEn: string }> = {
-  open: { color: "bg-blue-100 text-blue-800", labelFr: "Ouvert", labelEn: "Open" },
-  investigating: { color: "bg-amber-100 text-amber-800", labelFr: "En investigation", labelEn: "Investigating" },
-  known_error: { color: "bg-orange-100 text-orange-800", labelFr: "Erreur connue", labelEn: "Known error" },
-  resolved: { color: "bg-emerald-100 text-emerald-800", labelFr: "Resolu", labelEn: "Resolved" },
-  closed: { color: "bg-slate-100 text-slate-700", labelFr: "Ferme", labelEn: "Closed" },
+  open: { color: "border border-blue-200 bg-blue-100 text-blue-800", labelFr: "Ouvert", labelEn: "Open" },
+  investigating: { color: "border border-amber-200 bg-amber-100 text-amber-800", labelFr: "En investigation", labelEn: "Investigating" },
+  known_error: { color: "border border-orange-200 bg-orange-100 text-orange-800", labelFr: "Erreur connue", labelEn: "Known error" },
+  resolved: { color: "border border-emerald-200 bg-emerald-100 text-emerald-800", labelFr: "Resolu", labelEn: "Resolved" },
+  closed: { color: "border border-slate-200 bg-slate-100 text-slate-700", labelFr: "Ferme", labelEn: "Closed" },
 }
 
 function statusLabel(status: ProblemStatus, locale: string): string {
@@ -307,7 +307,11 @@ export default function ProblemDetailPage() {
   if (loading) {
     return (
       <AppShell>
-        <div className="page-shell">{t("general.loading")}</div>
+        <div className="page-shell">
+          <div className="surface-card rounded-2xl border-dashed p-8 text-center text-sm text-muted-foreground">
+            {t("general.loading")}
+          </div>
+        </div>
       </AppShell>
     )
   }
@@ -315,7 +319,11 @@ export default function ProblemDetailPage() {
   if (!problem) {
     return (
       <AppShell>
-        <div className="page-shell">Problem not found.</div>
+        <div className="page-shell">
+          <div className="surface-card rounded-2xl border-dashed p-8 text-center">
+            <p className="text-lg font-semibold text-foreground">Problem not found.</p>
+          </div>
+        </div>
       </AppShell>
     )
   }
@@ -366,7 +374,7 @@ export default function ProblemDetailPage() {
                 <CardTitle className="text-base">{locale === "fr" ? "Analyse de probleme" : "Problem analysis"}</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div>
+                <div className="rounded-xl border border-border/70 bg-background/50 p-3">
                   <p className="mb-1 text-xs font-medium text-muted-foreground">
                     {locale === "fr" ? "Cause racine" : "Root cause"}
                   </p>
@@ -392,7 +400,7 @@ export default function ProblemDetailPage() {
                     disabled={!canEditProblem || analysisSaving || statusUpdating || assignmentUpdating}
                   />
                 </div>
-                <div>
+                <div className="rounded-xl border border-border/70 bg-background/50 p-3">
                   <p className="mb-1 text-xs font-medium text-muted-foreground">
                     {locale === "fr" ? "Contournement" : "Workaround"}
                   </p>
@@ -418,7 +426,7 @@ export default function ProblemDetailPage() {
                     disabled={!canEditProblem || analysisSaving || statusUpdating || assignmentUpdating}
                   />
                 </div>
-                <div>
+                <div className="rounded-xl border border-border/70 bg-background/50 p-3">
                   <p className="mb-1 text-xs font-medium text-muted-foreground">
                     {locale === "fr" ? "Correctif permanent" : "Permanent fix"}
                   </p>
@@ -529,12 +537,14 @@ export default function ProblemDetailPage() {
               </CardHeader>
               <CardContent className="space-y-2">
                 {problem.tickets.length === 0 && (
-                  <p className="text-sm text-muted-foreground">{locale === "fr" ? "Aucun ticket lie." : "No linked tickets."}</p>
+                  <div className="rounded-xl border border-dashed border-border/70 bg-muted/20 p-4 text-sm text-muted-foreground">
+                    {locale === "fr" ? "Aucun ticket lie." : "No linked tickets."}
+                  </div>
                 )}
                 {problem.tickets.map((ticket) => (
-                  <div key={ticket.id} className="flex items-center justify-between rounded-lg border border-border p-2.5">
+                  <div key={ticket.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/70 bg-card/70 p-3">
                     <div>
-                      <p className="text-sm font-medium">
+                      <p className="text-sm font-medium text-foreground">
                         {ticket.id} - {ticket.title}
                       </p>
                       <p className="text-xs text-muted-foreground">
@@ -542,11 +552,11 @@ export default function ProblemDetailPage() {
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
-                      <Badge variant="secondary" className="text-[10px]">
+                      <Badge variant="outline" className="border-border bg-background/70 text-[10px]">
                         {ticket.status}
                       </Badge>
                       <Link href={`/tickets/${ticket.id}`}>
-                        <Button variant="outline" size="sm" className="gap-1.5">
+                        <Button variant="outline" size="sm" className="h-8 gap-1.5 rounded-lg">
                           <ExternalLink className="h-3.5 w-3.5" />
                           Ticket
                         </Button>

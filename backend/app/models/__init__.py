@@ -9,3 +9,4 @@ from app.models.refresh_token import RefreshToken
 from app.models.password_reset_token import PasswordResetToken
 from app.models.jira_sync_state import JiraSyncState  # noqa: F401
 from app.models.problem import Problem
+from app.models.kb_chunk import KBChunk

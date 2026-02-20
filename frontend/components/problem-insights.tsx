@@ -99,7 +99,7 @@ export function ProblemInsights({ insights }: { insights: ProblemInsight[] }) {
             {insights.map((problem) => (
               <HoverCard key={`${problem.latest_ticket_id}-${problem.title}`} openDelay={100} closeDelay={80}>
                 <HoverCardTrigger asChild>
-                  <Link href="/problems" className="group block">
+                  <Link href={problem.latest_ticket_id ? `/tickets/${problem.latest_ticket_id}` : "/problems"} className="group block">
                     <article className="rounded-xl border border-white/80 bg-white/90 p-4 shadow-sm backdrop-blur transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md dark:border-slate-600/70 dark:bg-slate-900/90 dark:hover:bg-slate-900">
 	                      <div className="flex items-start justify-between gap-3">
 	                        <div className="min-w-0">
@@ -243,14 +243,16 @@ export function ProblemInsights({ insights }: { insights: ProblemInsight[] }) {
                     </div>
                     <p className="mt-0.5 text-xs font-medium text-foreground">{problem.ai_recommendation}</p>
                   </div>
-	                  <div className="mt-3 flex flex-wrap gap-1.5">
+                  <div className="mt-3 flex flex-wrap gap-1.5">
 	                    {problem.ticket_ids.map((ticketId) => (
-	                      <Badge key={`hover-${problem.latest_ticket_id}-${ticketId}`} variant="secondary" className="text-[10px]">
-                        {ticketId}
-                      </Badge>
-                    ))}
+                        <Link key={`hover-${problem.latest_ticket_id}-${ticketId}`} href={`/tickets/${ticketId}`} className="inline-flex">
+                          <Badge variant="secondary" className="text-[10px]">
+                            {ticketId}
+                          </Badge>
+                        </Link>
+                      ))}
                   </div>
-                  <Link href="/problems" className="mt-3 inline-flex">
+                  <Link href={problem.latest_ticket_id ? `/tickets/${problem.latest_ticket_id}` : "/problems"} className="mt-3 inline-flex">
                     <Button size="sm" className="h-8 gap-1.5 bg-red-600 text-white hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600">
                       {t("dashboard.problemViewLatest")}
                       <ArrowRight className="h-3.5 w-3.5" />

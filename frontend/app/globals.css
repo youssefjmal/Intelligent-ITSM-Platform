@@ -12,19 +12,31 @@
   }
 
   .page-shell {
-    @apply relative space-y-6;
+    @apply relative space-y-8;
   }
 
   .page-hero {
-    @apply relative overflow-hidden rounded-2xl border border-border/80 bg-card/85 p-5 shadow-sm backdrop-blur sm:p-6;
+    @apply relative overflow-hidden rounded-3xl border border-border/70 bg-card/85 p-6 shadow-sm backdrop-blur sm:p-7;
   }
 
   .surface-card {
-    @apply border border-border/80 bg-card/90 shadow-sm backdrop-blur;
+    @apply rounded-2xl border border-border/70 bg-card/90 shadow-sm backdrop-blur;
   }
 
   .section-caption {
     @apply text-[11px] font-semibold uppercase tracking-[0.12em] text-primary/80;
+  }
+
+  .section-block {
+    @apply space-y-4;
+  }
+
+  .section-title {
+    @apply text-base font-semibold text-foreground;
+  }
+
+  .section-subtitle {
+    @apply text-xs text-muted-foreground;
   }
 
   .fade-slide-in {

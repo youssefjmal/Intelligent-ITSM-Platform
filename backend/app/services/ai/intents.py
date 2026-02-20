@@ -102,6 +102,10 @@ SOLUTION_KEYWORDS = [
 
 EXPLICIT_CREATE_TICKET_KEYWORDS = [
     "create a ticket",
+    "create a card",
+    "create card",
+    "create a task",
+    "create task",
     "generate a ticket",
     "draft a ticket",
     "open a ticket",
@@ -125,16 +129,71 @@ EXPLICIT_CREATE_TICKET_KEYWORDS = [
     "je vais creer un ticket",
     "je veux creer un ticket",
     "i want to create a ticket",
+    "i want to create a card",
+    "i want to create card",
+    "i want to create a task",
     "i will create a ticket",
+    "i will create a card",
     "i am going to create a ticket",
+    "i am going to create a card",
     "ouvrir un incident",
     "declarer un incident",
     "signaler un incident",
     "creation ticket",
 ]
 
-ACTIVE_STATUSES = {TicketStatus.open, TicketStatus.in_progress, TicketStatus.pending}
+ACTIVE_STATUSES = {
+    TicketStatus.open,
+    TicketStatus.in_progress,
+    TicketStatus.waiting_for_customer,
+    TicketStatus.waiting_for_support_vendor,
+    TicketStatus.pending,
+}
 TICKET_ID_PATTERN = re.compile(r"\bTW-\d{3,}\b", re.IGNORECASE)
+RECENT_CONSTRAINT_PATTERN = re.compile(
+    r"\b(?:about|with|for|regarding|sur|avec|pour|concernant|qui|where|containing)\s+([a-z0-9][a-z0-9 _\-/\.]{1,80})\b",
+    re.IGNORECASE,
+)
+ERROR_CODE_PATTERN = re.compile(r"\b(?:error|erreur|code)\s*([0-9]{3,5})\b", re.IGNORECASE)
+CONSTRAINT_TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9\-_/\.]{2,}", re.IGNORECASE)
+
+RECENT_INTENT_STOPWORDS = {
+    "ticket",
+    "tickets",
+    "most",
+    "recent",
+    "latest",
+    "last",
+    "dernier",
+    "derniere",
+    "plus",
+    "le",
+    "la",
+    "les",
+    "du",
+    "des",
+    "de",
+    "d",
+    "open",
+    "opened",
+    "ouvert",
+    "ouverts",
+    "active",
+    "actif",
+    "actifs",
+    "en",
+    "cours",
+    "about",
+    "with",
+    "for",
+    "regarding",
+    "sur",
+    "avec",
+    "pour",
+    "concernant",
+    "where",
+    "containing",
+}
 
 
 class ChatIntent(str, Enum):
@@ -277,6 +336,61 @@ def _is_explicit_ticket_create_request(text: str) -> bool:
     return _contains_any(normalized, EXPLICIT_CREATE_TICKET_KEYWORDS)
 
 
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        normalized = item.strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def extract_recent_ticket_constraints(text: str) -> list[str]:
+    """Extract qualifier terms for recent-ticket requests (EN/FR)."""
+    normalized = _normalize_intent_text(text or "")
+    if not _is_recent_ticket_request(normalized):
+        return []
+
+    constraints: list[str] = []
+
+    for match in RECENT_CONSTRAINT_PATTERN.finditer(normalized):
+        raw_phrase = " ".join((match.group(1) or "").split())
+        if not raw_phrase:
+            continue
+        phrase_tokens = [
+            token
+            for token in CONSTRAINT_TOKEN_PATTERN.findall(raw_phrase)
+            if token.casefold() not in RECENT_INTENT_STOPWORDS and not token.isdigit()
+        ]
+        if phrase_tokens:
+            constraints.append(" ".join(phrase_tokens[:6]))
+
+    for match in ERROR_CODE_PATTERN.finditer(normalized):
+        code = str(match.group(1) or "").strip()
+        if code:
+            constraints.append(f"error {code}")
+
+    for token in CONSTRAINT_TOKEN_PATTERN.findall(normalized):
+        lowered = token.casefold()
+        if lowered in RECENT_INTENT_STOPWORDS:
+            continue
+        if lowered.startswith("tw-"):
+            constraints.append(lowered)
+            continue
+        if lowered.isdigit():
+            continue
+        constraints.append(lowered)
+
+    return _dedupe_preserve_order(constraints)
+
+
+def has_recent_ticket_constraints(text: str) -> bool:
+    return bool(extract_recent_ticket_constraints(text))
+
+
 def detect_intent(text: str) -> ChatIntent:
     normalized = _normalize_intent_text(text or "")
     if _is_explicit_ticket_create_request(text or ""):
@@ -294,4 +408,3 @@ def detect_intent(text: str) -> ChatIntent:
     if _looks_like_data_query(normalized):
         return ChatIntent.data_query
     return ChatIntent.general
-

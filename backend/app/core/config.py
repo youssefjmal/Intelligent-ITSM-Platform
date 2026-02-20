@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     #ollama credentials
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama3.1"
+    OLLAMA_EMBED_MODEL: str = "nomic-embed-text"
+    OLLAMA_EMBEDDING_DIM: int = 768
+    AI_CLASSIFY_SEMANTIC_TOP_K: int = 5
+    AI_CLASSIFY_STRONG_SIMILARITY_THRESHOLD: float = 0.72
+    AI_CLASSIFY_MAX_RECOMMENDATIONS: int = 4
     # jira credentials
     JIRA_BASE_URL: str = ""
     JIRA_EMAIL: str = ""

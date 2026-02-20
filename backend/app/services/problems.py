@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import math
 import re
 from collections import Counter, defaultdict
+from functools import lru_cache
 import unicodedata
 from uuid import uuid4
 
@@ -17,15 +19,24 @@ from app.models.recommendation import Recommendation
 from app.models.ticket import Ticket
 from app.schemas.problem import ProblemUpdate
 from app.services.ai import classify_ticket, score_recommendations
+from app.services.embeddings import compute_embedding
 from app.services.tickets import select_best_assignee, update_status
 from app.services.users import list_assignees
 
 logger = logging.getLogger(__name__)
 
-ACTIVE_TICKET_STATUSES = {TicketStatus.open, TicketStatus.in_progress, TicketStatus.pending}
+ACTIVE_TICKET_STATUSES = {
+    TicketStatus.open,
+    TicketStatus.in_progress,
+    TicketStatus.waiting_for_customer,
+    TicketStatus.waiting_for_support_vendor,
+    TicketStatus.pending,
+}
 PROBLEM_TRIGGER_WINDOW_DAYS = 3
 PROBLEM_TRIGGER_MIN_COUNT = 5
 PROBLEM_MATCH_SCORE_THRESHOLD = 0.45
+PROBLEM_SEMANTIC_SIMILARITY_WEIGHT = 0.35
+PROBLEM_SEMANTIC_MAX_LINKED_TICKETS = 6
 SIMILARITY_TICKET_ID_RE = re.compile(r"\b[a-z]{1,12}-\d+\b", re.IGNORECASE)
 SIMILARITY_NOISE_TAG_PREFIXES = (
     "local_",
@@ -113,6 +124,9 @@ PROBLEM_TRANSITIONS: dict[ProblemStatus, set[ProblemStatus]] = {
     ProblemStatus.resolved: set(ProblemStatus),
     ProblemStatus.closed: set(ProblemStatus),
 }
+
+_semantic_embeddings_enabled: bool | None = None
+_semantic_unavailable_logged = False
 
 
 def _utcnow() -> dt.datetime:
@@ -230,12 +244,25 @@ def _ticket_similarity_tokens(ticket: Ticket) -> set[str]:
     return set(_normalize_tokens(f"{ticket.title} {ticket.description}"))
 
 
+def _ticket_similarity_text(ticket: Ticket) -> str:
+    tags = " ".join(_normalize_tags(ticket.tags))
+    return normalize_text(f"{ticket.title} {ticket.description} {tags}")
+
+
 def _problem_similarity_tokens(problem: Problem, linked_tickets: list[Ticket]) -> set[str]:
     tokens = _extract_similarity_tokens(problem.similarity_key)
     tokens.update(_normalize_tokens(problem.title))
     for linked in linked_tickets[:8]:
         tokens.update(_ticket_similarity_tokens(linked))
     return tokens
+
+
+def _problem_similarity_text(problem: Problem, linked_tickets: list[Ticket]) -> str:
+    parts = [problem.title or "", problem.similarity_key or ""]
+    for linked in linked_tickets[:PROBLEM_SEMANTIC_MAX_LINKED_TICKETS]:
+        parts.append(linked.title or "")
+        parts.append(linked.description or "")
+    return normalize_text(" ".join(parts))
 
 
 def _jaccard_overlap(left: set[str], right: set[str]) -> float:
@@ -245,14 +272,77 @@ def _jaccard_overlap(left: set[str], right: set[str]) -> float:
     return common / max(1, len(left.union(right)))
 
 
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right))
+    left_norm = math.sqrt(sum(a * a for a in left))
+    right_norm = math.sqrt(sum(b * b for b in right))
+    if left_norm <= 0.0 or right_norm <= 0.0:
+        return 0.0
+    cosine = dot / (left_norm * right_norm)
+    return max(0.0, min(1.0, (cosine + 1.0) / 2.0))
+
+
+@lru_cache(maxsize=2048)
+def _embedding_for_similarity_text(text: str) -> tuple[float, ...] | None:
+    global _semantic_embeddings_enabled, _semantic_unavailable_logged
+
+    normalized = normalize_text(text)
+    if not normalized:
+        return None
+    if _semantic_embeddings_enabled is False:
+        return None
+
+    try:
+        vector = compute_embedding(normalized)
+    except Exception as exc:  # noqa: BLE001
+        _semantic_embeddings_enabled = False
+        if not _semantic_unavailable_logged:
+            logger.debug("Problem semantic similarity disabled; embedding generation failed: %s", exc)
+            _semantic_unavailable_logged = True
+        return None
+
+    _semantic_embeddings_enabled = True
+    return tuple(float(item) for item in vector)
+
+
+def _semantic_similarity(left_text: str, right_text: str) -> float | None:
+    left_vector = _embedding_for_similarity_text(left_text)
+    right_vector = _embedding_for_similarity_text(right_text)
+    if left_vector is None or right_vector is None:
+        return None
+    return _cosine_similarity(list(left_vector), list(right_vector))
+
+
+def _hybrid_similarity(*, lexical: float, semantic: float | None) -> float:
+    lexical_clamped = max(0.0, min(1.0, lexical))
+    if semantic is None:
+        return lexical_clamped
+    semantic_clamped = max(0.0, min(1.0, semantic))
+    if (
+        semantic_clamped >= PROBLEM_MATCH_SCORE_THRESHOLD
+        and lexical_clamped < PROBLEM_MATCH_SCORE_THRESHOLD
+    ):
+        # Allow high-confidence semantic matches to pass even when wording differs.
+        return semantic_clamped
+    blended = (
+        ((1.0 - PROBLEM_SEMANTIC_SIMILARITY_WEIGHT) * lexical_clamped)
+        + (PROBLEM_SEMANTIC_SIMILARITY_WEIGHT * semantic_clamped)
+    )
+    return max(0.0, min(1.0, blended))
+
+
 def _problem_match_score(*, ticket: Ticket, similarity_key: str, problem: Problem, linked_tickets: list[Ticket]) -> float:
     if ticket.category != problem.category:
         return 0.0
     if similarity_key == problem.similarity_key:
         return 1.0
-    left = _ticket_similarity_tokens(ticket)
-    right = _problem_similarity_tokens(problem, linked_tickets)
-    return _jaccard_overlap(left, right)
+    left_tokens = _ticket_similarity_tokens(ticket)
+    right_tokens = _problem_similarity_tokens(problem, linked_tickets)
+    lexical = _jaccard_overlap(left_tokens, right_tokens)
+    semantic = _semantic_similarity(_ticket_similarity_text(ticket), _problem_similarity_text(problem, linked_tickets))
+    return _hybrid_similarity(lexical=lexical, semantic=semantic)
 
 
 def _ticket_pair_similarity_score(ticket: Ticket, other: Ticket) -> float:
@@ -272,7 +362,9 @@ def _ticket_pair_similarity_score(ticket: Ticket, other: Ticket) -> float:
     )
     if left_key == right_key:
         return 1.0
-    return _jaccard_overlap(_ticket_similarity_tokens(ticket), _ticket_similarity_tokens(other))
+    lexical = _jaccard_overlap(_ticket_similarity_tokens(ticket), _ticket_similarity_tokens(other))
+    semantic = _semantic_similarity(_ticket_similarity_text(ticket), _ticket_similarity_text(other))
+    return _hybrid_similarity(lexical=lexical, semantic=semantic)
 
 
 def _find_similar_problem(

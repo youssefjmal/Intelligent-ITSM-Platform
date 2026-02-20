@@ -148,20 +148,23 @@ export function KPICards({ stats }: KPICardsProps) {
       {kpis.map((kpi) => (
         <HoverCard key={kpi.title} openDelay={120} closeDelay={100}>
           <HoverCardTrigger asChild>
-            <Link href={kpi.href} className="block">
-              <Card className="surface-card overflow-hidden rounded-xl transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md">
+            <Link href={kpi.href} className="group block">
+              <Card className="surface-card overflow-hidden rounded-2xl transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md">
                 <CardContent className="relative overflow-hidden p-4">
                   <div className={cn("pointer-events-none absolute inset-x-0 top-0 h-12 bg-gradient-to-b", kpi.accent)} />
-                  <div className="relative flex items-start justify-between">
+                  <div className="relative flex items-start justify-between gap-2">
                     <div className="space-y-1">
-                      <p className="text-xs font-medium text-muted-foreground">{kpi.title}</p>
-                      <p className="text-2xl font-bold text-foreground">{kpi.value}</p>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{kpi.title}</p>
+                      <p className="text-2xl font-bold leading-none text-foreground">{kpi.value}</p>
                     </div>
-                    <div className={cn("flex h-9 w-9 items-center justify-center rounded-lg", kpi.iconBg)}>
+                    <div className={cn("flex h-9 w-9 items-center justify-center rounded-xl", kpi.iconBg)}>
                       <kpi.icon className={cn("h-4 w-4", kpi.iconColor)} />
                     </div>
                   </div>
                   <p className="relative mt-2 text-xs text-muted-foreground">{kpi.description}</p>
+                  <p className="relative mt-3 text-[11px] font-medium text-primary/80 transition-colors group-hover:text-primary">
+                    {locale === "fr" ? "Voir le detail" : "Open details"}
+                  </p>
                 </CardContent>
               </Card>
             </Link>

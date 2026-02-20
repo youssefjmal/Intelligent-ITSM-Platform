@@ -13,7 +13,14 @@ type OperationalTicket = {
   id: string
   title: string
   priority: "critical" | "high" | "medium" | "low"
-  status: "open" | "in-progress" | "pending" | "resolved" | "closed"
+  status:
+    | "open"
+    | "in-progress"
+    | "waiting-for-customer"
+    | "waiting-for-support-vendor"
+    | "pending"
+    | "resolved"
+    | "closed"
   category: TicketCategory
   assignee: string
   created_at: string
@@ -43,6 +50,8 @@ function priorityBadgeClass(priority: OperationalTicket["priority"]): string {
 function statusLabel(status: OperationalTicket["status"], t: ReturnType<typeof useI18n>["t"]): string {
   if (status === "open") return t("status.open")
   if (status === "in-progress") return t("status.inProgress")
+  if (status === "waiting-for-customer") return t("status.waitingForCustomer")
+  if (status === "waiting-for-support-vendor") return t("status.waitingForSupportVendor")
   if (status === "pending") return t("status.pending")
   if (status === "resolved") return t("status.resolved")
   return t("status.closed")

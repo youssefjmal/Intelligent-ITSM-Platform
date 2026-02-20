@@ -5,14 +5,13 @@ from __future__ import annotations
 from pydantic import BaseModel, Field, field_validator
 
 from app.models.enums import TicketCategory, TicketPriority
+from app.core.ticket_limits import MAX_TAG_LEN, MAX_TAGS
 from app.core.sanitize import clean_list, clean_multiline, clean_single_line
 
 MAX_CHAT_MESSAGES = 40
 MAX_CHAT_CONTENT_LEN = 4000
 MAX_TITLE_LEN = 120
 MAX_DESCRIPTION_LEN = 4000
-MAX_TAGS = 10
-MAX_TAG_LEN = 32
 ALLOWED_CHAT_ROLES = {"user", "assistant", "system", "tool"}
 
 
@@ -84,6 +83,7 @@ class ChatResponse(BaseModel):
 class ClassificationRequest(BaseModel):
     title: str = Field(min_length=3, max_length=MAX_TITLE_LEN)
     description: str = Field(default="", max_length=MAX_DESCRIPTION_LEN)
+    locale: str | None = Field(default=None, max_length=16)
 
     @field_validator("title", mode="before")
     @classmethod
@@ -94,6 +94,12 @@ class ClassificationRequest(BaseModel):
     @classmethod
     def normalize_description(cls, value: str | None) -> str:
         return clean_multiline(value)
+
+    @field_validator("locale", mode="before")
+    @classmethod
+    def normalize_locale(cls, value: str | None) -> str | None:
+        cleaned = clean_single_line(value)
+        return cleaned or None
 
 
 class AIRecommendationOut(BaseModel):
@@ -106,4 +112,10 @@ class ClassificationResponse(BaseModel):
     category: TicketCategory
     recommendations: list[str]
     recommendations_scored: list[AIRecommendationOut] = Field(default_factory=list)
+    recommendations_embedding: list[str] = Field(default_factory=list)
+    recommendations_embedding_scored: list[AIRecommendationOut] = Field(default_factory=list)
+    recommendations_llm: list[str] = Field(default_factory=list)
+    recommendations_llm_scored: list[AIRecommendationOut] = Field(default_factory=list)
+    recommendation_mode: str = "llm"
+    similarity_found: bool = False
     assignee: str | None = None

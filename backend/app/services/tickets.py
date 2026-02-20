@@ -10,17 +10,30 @@ from typing import Literal
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.integrations.jira.client import JiraClient
 from app.core.rbac import can_view_ticket, filter_tickets_for_user
-from app.integrations.jira.mapper import JIRA_SOURCE
-from app.integrations.jira.outbound import create_jira_issue_for_ticket
+from app.integrations.jira.mapper import JIRA_SOURCE, map_status
+from app.integrations.jira.outbound import (
+    add_jira_comment_for_ticket,
+    create_jira_issue_for_ticket,
+    sync_jira_issue_for_ticket,
+)
+from app.integrations.jira.sla_sync import sync_ticket_sla
 from app.models.ticket import Ticket, TicketComment
 from app.models.user import User
 from app.models.enums import SeniorityLevel, TicketCategory, TicketPriority, TicketStatus, UserRole
 from app.schemas.ticket import TicketCreate, TicketTriageUpdate
+from app.services.sla.auto_escalation import apply_escalation
 
 logger = logging.getLogger(__name__)
 
-ACTIVE_STATUSES = {TicketStatus.open, TicketStatus.in_progress, TicketStatus.pending}
+ACTIVE_STATUSES = {
+    TicketStatus.open,
+    TicketStatus.in_progress,
+    TicketStatus.waiting_for_customer,
+    TicketStatus.waiting_for_support_vendor,
+    TicketStatus.pending,
+}
 RESOLVED_STATUSES = {TicketStatus.resolved, TicketStatus.closed}
 PROBLEM_REPEAT_THRESHOLD = 3
 PROBLEM_TRIGGER_WINDOW_DAYS = 7
@@ -259,6 +272,80 @@ def _normalize_model_version(value: str | None, *, default: str) -> str:
     return cleaned[:MODEL_VERSION_MAX_LEN]
 
 
+def _is_waiting_status(status: TicketStatus) -> bool:
+    return status in {
+        TicketStatus.waiting_for_customer,
+        TicketStatus.waiting_for_support_vendor,
+        TicketStatus.pending,
+    }
+
+
+def _align_ticket_status_with_jira(db: Session, ticket: Ticket) -> bool:
+    jira_key = str(ticket.jira_key or "").strip()
+    if not jira_key:
+        return False
+
+    try:
+        issue = JiraClient().get_issue(jira_key, fields="status")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Jira status fetch failed for local alignment %s: %s", ticket.id, exc)
+        return False
+
+    fields = issue.get("fields") if isinstance(issue, dict) else {}
+    if not isinstance(fields, dict):
+        return False
+    jira_status = map_status(fields)
+    if ticket.status == jira_status:
+        return False
+
+    ticket.status = jira_status
+    now = dt.datetime.now(dt.timezone.utc)
+    ticket.updated_at = now
+    if jira_status in RESOLVED_STATUSES:
+        ticket.resolved_at = ticket.resolved_at or now
+    elif ticket.resolved_at is not None:
+        ticket.resolved_at = None
+    db.add(ticket)
+    db.commit()
+    db.refresh(ticket)
+    logger.info("Ticket status realigned from Jira truth: %s -> %s", ticket.id, jira_status.value)
+    return True
+
+
+def ensure_jira_link_for_ticket(db: Session, ticket: Ticket) -> bool:
+    """Ensure a local ticket is linked to a Jira issue (best effort)."""
+    existing_key = str(ticket.jira_key or "").strip()
+    if existing_key:
+        return True
+
+    jira_key = create_jira_issue_for_ticket(ticket)
+    if not jira_key:
+        return False
+
+    now = dt.datetime.now(dt.timezone.utc)
+    ticket.jira_key = jira_key
+    ticket.external_source = JIRA_SOURCE
+    ticket.external_id = jira_key
+    ticket.external_updated_at = now
+    ticket.last_synced_at = now
+    db.add(ticket)
+    db.commit()
+    db.refresh(ticket)
+
+    try:
+        jira_client = JiraClient()
+        sync_ticket_sla(db, ticket, jira_key, jira_client=jira_client)
+        apply_escalation(db, ticket, actor="jira_outbound_sync")
+        db.commit()
+        db.refresh(ticket)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.warning("Ticket SLA sync after Jira link failed for %s: %s", ticket.id, exc)
+
+    logger.info("Ticket linked to Jira: %s -> %s", ticket.id, jira_key)
+    return True
+
+
 def _signature_tokens(text: str | None) -> set[str]:
     normalized = re.sub(r"[^a-z0-9\s]", " ", (text or "").lower())
     tokens = [
@@ -471,18 +558,7 @@ def create_ticket(db: Session, data: TicketCreate, *, reporter_id: str | None = 
 
     # Best-effort outbound sync: local creation succeeds even if Jira push fails.
     if not ticket.external_id:
-        jira_key = create_jira_issue_for_ticket(ticket)
-        if jira_key:
-            now = dt.datetime.now(dt.timezone.utc)
-            ticket.jira_key = jira_key
-            ticket.external_source = JIRA_SOURCE
-            ticket.external_id = jira_key
-            ticket.external_updated_at = now
-            ticket.last_synced_at = now
-            db.add(ticket)
-            db.commit()
-            db.refresh(ticket)
-            logger.info("Ticket pushed to Jira: %s -> %s", ticket.id, jira_key)
+        ensure_jira_link_for_ticket(db, ticket)
 
     logger.info("Ticket created: %s", ticket.id)
     return ticket
@@ -511,6 +587,7 @@ def update_status(
     if status == TicketStatus.closed and not normalized_comment and not has_resolution:
         raise ValueError("resolution_comment_required")
 
+    comment_to_sync = ""
     if normalized_comment:
         comment = TicketComment(
             id=_next_comment_id(db),
@@ -521,6 +598,7 @@ def update_status(
         )
         db.add(comment)
         ticket.resolution = normalized_comment
+        comment_to_sync = normalized_comment
 
     promotion_source = normalized_comment or (ticket.resolution or "")
     if status in {TicketStatus.resolved, TicketStatus.closed} and promotion_source:
@@ -546,6 +624,28 @@ def update_status(
     link_ticket_to_problem(db, ticket)
     db.commit()
     db.refresh(ticket)
+    jira_ready = bool(str(ticket.jira_key or "").strip()) or ensure_jira_link_for_ticket(db, ticket)
+    if jira_ready:
+        try:
+            synced = sync_jira_issue_for_ticket(ticket)
+            if synced:
+                sync_now = dt.datetime.now(dt.timezone.utc)
+                ticket.last_synced_at = sync_now
+                ticket.external_updated_at = sync_now
+                db.add(ticket)
+                db.commit()
+                db.refresh(ticket)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Jira outbound update failed after status change for %s: %s", ticket.id, exc)
+        if comment_to_sync:
+            try:
+                add_jira_comment_for_ticket(ticket, comment_to_sync)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Jira comment sync failed after status change for %s: %s", ticket.id, exc)
+        try:
+            _align_ticket_status_with_jira(db, ticket)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Jira status realign failed after status change for %s: %s", ticket.id, exc)
     logger.info("Ticket status updated: %s -> %s", ticket.id, status.value)
     return ticket
 
@@ -581,6 +681,7 @@ def update_ticket_triage(
         has_changes = True
 
     note = (payload.comment or "").strip()
+    comment_to_sync = ""
     if note:
         comment = TicketComment(
             id=_next_comment_id(db),
@@ -591,6 +692,7 @@ def update_ticket_triage(
         )
         db.add(comment)
         has_changes = True
+        comment_to_sync = note
 
     if not has_changes:
         return ticket
@@ -603,6 +705,28 @@ def update_ticket_triage(
     link_ticket_to_problem(db, ticket)
     db.commit()
     db.refresh(ticket)
+    jira_ready = bool(str(ticket.jira_key or "").strip()) or ensure_jira_link_for_ticket(db, ticket)
+    if jira_ready:
+        try:
+            synced = sync_jira_issue_for_ticket(ticket)
+            if synced:
+                sync_now = dt.datetime.now(dt.timezone.utc)
+                ticket.last_synced_at = sync_now
+                ticket.external_updated_at = sync_now
+                db.add(ticket)
+                db.commit()
+                db.refresh(ticket)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Jira outbound update failed after triage change for %s: %s", ticket.id, exc)
+        if comment_to_sync:
+            try:
+                add_jira_comment_for_ticket(ticket, comment_to_sync)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Jira comment sync failed after triage change for %s: %s", ticket.id, exc)
+        try:
+            _align_ticket_status_with_jira(db, ticket)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Jira status realign failed after triage change for %s: %s", ticket.id, exc)
     logger.info("Ticket triage updated: %s", ticket.id)
     return ticket
 
@@ -611,7 +735,7 @@ def compute_stats(tickets: list[Ticket]) -> dict:
     total = len(tickets)
     open_count = sum(1 for t in tickets if t.status == TicketStatus.open)
     in_progress = sum(1 for t in tickets if t.status == TicketStatus.in_progress)
-    pending = sum(1 for t in tickets if t.status == TicketStatus.pending)
+    pending = sum(1 for t in tickets if _is_waiting_status(t.status))
     resolved = sum(1 for t in tickets if t.status == TicketStatus.resolved)
     closed = sum(1 for t in tickets if t.status == TicketStatus.closed)
     critical = sum(1 for t in tickets if t.priority == TicketPriority.critical)
@@ -862,7 +986,11 @@ def compute_weekly_trends(tickets: list[Ticket], weeks: int = 6) -> list[dict]:
             for t in tickets
             if t.status in RESOLVED_STATUSES and start <= (analytics_resolved_at(t) or analytics_updated_at(t)) < end
         )
-        pending = sum(1 for t in tickets if t.status == TicketStatus.pending and start <= analytics_updated_at(t) < end)
+        pending = sum(
+            1
+            for t in tickets
+            if _is_waiting_status(t.status) and start <= analytics_updated_at(t) < end
+        )
         buckets.append({"week": f"Sem {i + 1}", "opened": opened, "closed": closed, "pending": pending})
     return buckets
 

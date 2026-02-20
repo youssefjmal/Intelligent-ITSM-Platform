@@ -9,7 +9,7 @@ export default function ChatPage() {
 
   return (
     <AppShell>
-      <div className="page-shell fade-slide-in mx-auto max-w-5xl">
+      <div className="page-shell fade-slide-in mx-auto max-w-6xl">
         <div className="page-hero">
           <p className="section-caption">{t("nav.chat")}</p>
           <h2 className="mt-2 text-3xl font-bold text-foreground text-balance sm:text-4xl">

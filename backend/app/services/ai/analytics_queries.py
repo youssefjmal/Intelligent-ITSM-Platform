@@ -26,6 +26,8 @@ from app.services.ai.intents import (
 STATUS_QUERY_KEYWORDS = {
     TicketStatus.open: ["open", "opened", "ouvert", "ouverts"],
     TicketStatus.in_progress: ["in progress", "in-progress", "en cours", "cours"],
+    TicketStatus.waiting_for_customer: ["waiting for customer", "attente client", "en attente client"],
+    TicketStatus.waiting_for_support_vendor: ["waiting for support", "waiting for vendor", "en attente support", "en attente fournisseur"],
     TicketStatus.pending: ["pending", "en attente", "attente"],
     TicketStatus.resolved: ["resolved", "resolu", "resolus"],
     TicketStatus.closed: ["closed", "clos", "ferme", "fermes"],

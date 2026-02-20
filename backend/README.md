@@ -242,3 +242,11 @@ Examples:
 - Ensure PostgreSQL is running and `DATABASE_URL` is correct.
 - If auth fails, verify cookies are not blocked and `JWT_SECRET` is set.
 - If AI fails, check `OLLAMA_BASE_URL` or rely on rule-based fallback.
+
+## Intentional Constants
+The codebase keeps a small set of fixed constants by design:
+- `app/core/ticket_limits.py`: `MAX_TAGS`, `MAX_TAG_LEN` to keep API payloads stable and prevent oversized Jira labels from breaking schemas.
+- `app/integrations/jira/service.py`: local seed label prefixes (`twseed_tw_`, `local_tw_`) used to identify import-managed tickets.
+- `app/routers/auth.py`: Google OAuth endpoints (official provider URLs) are intentionally fixed.
+
+These are intentional hardcoded values. Environment-specific values (DB, Jira credentials, SMTP, Ollama, JWT secret) must stay in `.env`.

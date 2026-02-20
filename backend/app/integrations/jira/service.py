@@ -467,6 +467,8 @@ def _upsert_comment(db: Session, *, ticket: Ticket, comment_payload: dict[str, A
 
 def _upsert_issue_bundle(db: Session, issue: dict[str, Any], jira_client: JiraClient) -> SyncCounts:
     from app.services.problems import link_ticket_to_problem
+    from app.integrations.jira.sla_sync import sync_ticket_sla
+    from app.services.sla.auto_escalation import apply_escalation
 
     counts = SyncCounts()
     ticket, ticket_upserted = _upsert_ticket(db, issue)
@@ -474,6 +476,13 @@ def _upsert_issue_bundle(db: Session, issue: dict[str, Any], jira_client: JiraCl
         counts.tickets_upserted += 1
     else:
         counts.skipped += 1
+
+    try:
+        if ticket.jira_key:
+            sync_ticket_sla(db, ticket, ticket.jira_key, jira_client=jira_client)
+            apply_escalation(db, ticket, actor="jira_reverse_sync")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Jira SLA sync/escalation skipped for %s: %s", ticket.id, exc)
 
     all_comments = _all_issue_comments(issue, jira_client)
     for comment_payload in all_comments:

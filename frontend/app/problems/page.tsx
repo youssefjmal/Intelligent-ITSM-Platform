@@ -15,24 +15,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
 import { useI18n } from "@/lib/i18n"
 import { CATEGORY_CONFIG } from "@/lib/ticket-data"
 import { fetchProblems, type ProblemListItem, type ProblemStatus } from "@/lib/problems-api"
 
 const PROBLEM_STATUS_CONFIG: Record<ProblemStatus, { color: string; labelFr: string; labelEn: string }> = {
-  open: { color: "bg-blue-100 text-blue-800", labelFr: "Ouvert", labelEn: "Open" },
-  investigating: { color: "bg-amber-100 text-amber-800", labelFr: "En investigation", labelEn: "Investigating" },
-  known_error: { color: "bg-orange-100 text-orange-800", labelFr: "Erreur connue", labelEn: "Known error" },
-  resolved: { color: "bg-emerald-100 text-emerald-800", labelFr: "Resolu", labelEn: "Resolved" },
-  closed: { color: "bg-slate-100 text-slate-700", labelFr: "Ferme", labelEn: "Closed" },
+  open: { color: "border border-blue-200 bg-blue-100 text-blue-800", labelFr: "Ouvert", labelEn: "Open" },
+  investigating: { color: "border border-amber-200 bg-amber-100 text-amber-800", labelFr: "En investigation", labelEn: "Investigating" },
+  known_error: { color: "border border-orange-200 bg-orange-100 text-orange-800", labelFr: "Erreur connue", labelEn: "Known error" },
+  resolved: { color: "border border-emerald-200 bg-emerald-100 text-emerald-800", labelFr: "Resolu", labelEn: "Resolved" },
+  closed: { color: "border border-slate-200 bg-slate-100 text-slate-700", labelFr: "Ferme", labelEn: "Closed" },
 }
 
 function statusLabel(status: ProblemStatus, locale: string): string {
@@ -204,75 +196,65 @@ export default function ProblemsPage() {
             </div>
           </div>
 
-          <Card className="surface-card overflow-hidden rounded-2xl">
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-muted/50 hover:bg-muted/50">
-                    <TableHead className="w-24 text-foreground font-semibold">{t("tickets.id")}</TableHead>
-                    <TableHead className="text-foreground font-semibold">{t("tickets.titleCol")}</TableHead>
-                    <TableHead className="text-foreground font-semibold">{t("tickets.status")}</TableHead>
-                    <TableHead className="text-foreground font-semibold">{t("tickets.assignee")}</TableHead>
-                    <TableHead className="text-foreground font-semibold">{t("tickets.category")}</TableHead>
-                    <TableHead className="text-foreground font-semibold">
-                      {locale === "fr" ? "Occurrences" : "Occurrences"}
-                    </TableHead>
-                    <TableHead className="text-foreground font-semibold">{t("tickets.date")}</TableHead>
-                    <TableHead className="w-10" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredProblems.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={8} className="py-12 text-center text-muted-foreground">
-                        {t("problems.noData")}
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    filteredProblems.map((problem) => (
-                      <TableRow key={problem.id} className="transition-colors hover:bg-muted/30">
-                        <TableCell className="font-mono text-xs font-medium text-primary">{problem.id}</TableCell>
-                        <TableCell className="max-w-xs">
-                          <Link
-                            href={`/problems/${problem.id}`}
-                            className="font-medium text-foreground hover:text-primary transition-colors line-clamp-1"
-                          >
-                            {problem.title}
-                          </Link>
-                        </TableCell>
-                        <TableCell>
-                          <Badge className={`${PROBLEM_STATUS_CONFIG[problem.status].color} border-0 text-xs font-medium`}>
+          <Card className="surface-card rounded-2xl p-4">
+            {filteredProblems.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border/70 bg-muted/20 p-8 text-center">
+                <p className="text-sm font-medium text-foreground">{t("problems.noData")}</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {locale === "fr" ? "Ajustez les filtres pour trouver des problemes." : "Adjust filters to find matching problems."}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {filteredProblems.map((problem) => (
+                  <article key={problem.id} className="rounded-xl border border-border/70 bg-card/70 p-4 transition-colors hover:bg-muted/30">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="mb-2 flex flex-wrap items-center gap-2">
+                          <Badge variant="outline" className="rounded-full border-border bg-background/70 px-2 py-0.5 font-mono text-[10px]">
+                            {problem.id}
+                          </Badge>
+                          <Badge className={`${PROBLEM_STATUS_CONFIG[problem.status].color} text-[10px] font-semibold`}>
                             {statusLabel(problem.status, locale)}
                           </Badge>
-                        </TableCell>
-                        <TableCell className="text-sm text-foreground">{problem.assignee || (locale === "fr" ? "Non assigne" : "Unassigned")}</TableCell>
-                        <TableCell className="text-sm text-muted-foreground">
-                          {CATEGORY_CONFIG[problem.category]?.label || problem.category}
-                        </TableCell>
-                        <TableCell className="text-xs text-foreground">
-                          {problem.occurrencesCount} | {problem.activeCount} {locale === "fr" ? "actifs" : "active"}
-                        </TableCell>
-                        <TableCell className="text-xs text-muted-foreground">
-                          {new Date(problem.lastSeenAt || problem.updatedAt).toLocaleDateString(locale === "fr" ? "fr-FR" : "en-US", {
-                            day: "2-digit",
-                            month: "short",
-                            year: "numeric",
-                          })}
-                        </TableCell>
-                        <TableCell>
-                          <Link href={`/problems/${problem.id}`}>
-                            <Button variant="ghost" size="sm" className="h-8 w-8 rounded-full p-0 hover:bg-primary/10">
-                              <ExternalLink className="h-3.5 w-3.5" />
-                              <span className="sr-only">Open problem {problem.id}</span>
-                            </Button>
-                          </Link>
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </div>
+                        </div>
+                        <Link href={`/problems/${problem.id}`} className="line-clamp-1 text-sm font-semibold text-foreground hover:text-primary">
+                          {problem.title}
+                        </Link>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {(problem.assignee || (locale === "fr" ? "Non assigne" : "Unassigned"))} | {CATEGORY_CONFIG[problem.category]?.label || problem.category}
+                        </p>
+                      </div>
+                      <Link href={`/problems/${problem.id}`}>
+                        <Button variant="outline" size="sm" className="h-8 gap-1.5 rounded-lg">
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          {locale === "fr" ? "Ouvrir" : "Open"}
+                        </Button>
+                      </Link>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      <ProblemMetric
+                        label={locale === "fr" ? "Occurrences" : "Occurrences"}
+                        value={String(problem.occurrencesCount)}
+                      />
+                      <ProblemMetric
+                        label={locale === "fr" ? "Tickets actifs" : "Active tickets"}
+                        value={String(problem.activeCount)}
+                      />
+                      <ProblemMetric
+                        label={locale === "fr" ? "Derniere occurrence" : "Last seen"}
+                        value={new Date(problem.lastSeenAt || problem.updatedAt).toLocaleDateString(locale === "fr" ? "fr-FR" : "en-US", {
+                          day: "2-digit",
+                          month: "short",
+                          year: "numeric",
+                        })}
+                      />
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
           </Card>
 
           <p className="text-xs text-muted-foreground text-right">
@@ -281,6 +263,15 @@ export default function ProblemsPage() {
         </div>
       </div>
     </AppShell>
+  )
+}
+
+function ProblemMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-border/70 bg-background/70 p-2.5">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="mt-1 text-sm font-semibold text-foreground">{value}</p>
+    </div>
   )
 }
 

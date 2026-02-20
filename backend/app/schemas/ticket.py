@@ -6,13 +6,12 @@ import datetime as dt
 from pydantic import BaseModel, Field, field_validator
 
 from app.models.enums import TicketCategory, TicketPriority, TicketStatus
+from app.core.ticket_limits import MAX_TAG_LEN, MAX_TAGS
 from app.core.sanitize import clean_list, clean_multiline, clean_single_line
 
 MAX_TITLE_LEN = 120
 MAX_DESCRIPTION_LEN = 4000
 MAX_NAME_LEN = 80
-MAX_TAGS = 10
-MAX_TAG_LEN = 32
 
 
 class TicketCommentOut(BaseModel):

@@ -140,3 +140,40 @@ def test_link_ticket_to_problem_links_existing_problem(monkeypatch) -> None:
 
     assert ticket.problem_id == "PB-0002"
     assert touched == ["PB-0002", "PB-0002"]
+
+
+def test_ticket_pair_similarity_uses_hybrid_semantic_score(monkeypatch) -> None:
+    ticket_a = SimpleNamespace(
+        id="TW-M9001",
+        title="Outgoing payroll emails stuck in deferred queue",
+        description="SMTP relay keeps retrying and users do not receive outbound messages.",
+        category=TicketCategory.email,
+        tags=["delivery", "mailflow"],
+    )
+    ticket_b = SimpleNamespace(
+        id="TW-M9002",
+        title="Outbox sends remain pending after mail gateway certificate rollover",
+        description="Message dispatch is delayed and transport retries continue indefinitely.",
+        category=TicketCategory.email,
+        tags=["transport", "mailing"],
+    )
+
+    def fake_embedding(text: str) -> list[float]:
+        lowered = text.lower()
+        if "mail" in lowered or "outbox" in lowered or "smtp" in lowered:
+            return [1.0, 0.0, 0.0]
+        return [0.0, 1.0, 0.0]
+
+    monkeypatch.setattr(problems, "compute_embedding", fake_embedding)
+    monkeypatch.setattr(problems, "_semantic_embeddings_enabled", None, raising=False)
+    monkeypatch.setattr(problems, "_semantic_unavailable_logged", False, raising=False)
+    problems._embedding_for_similarity_text.cache_clear()
+
+    lexical_only = problems._jaccard_overlap(
+        problems._ticket_similarity_tokens(ticket_a),
+        problems._ticket_similarity_tokens(ticket_b),
+    )
+    hybrid_score = problems._ticket_pair_similarity_score(ticket_a, ticket_b)
+
+    assert lexical_only < problems.PROBLEM_MATCH_SCORE_THRESHOLD
+    assert hybrid_score >= problems.PROBLEM_MATCH_SCORE_THRESHOLD

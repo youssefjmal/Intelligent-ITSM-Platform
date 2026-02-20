@@ -22,6 +22,9 @@ class SeniorityLevel(str, enum.Enum):
 class TicketStatus(str, enum.Enum):
     open = "open"
     in_progress = "in-progress"
+    waiting_for_customer = "waiting-for-customer"
+    waiting_for_support_vendor = "waiting-for-support-vendor"
+    # Legacy status kept for backward compatibility with old payloads.
     pending = "pending"
     resolved = "resolved"
     closed = "closed"

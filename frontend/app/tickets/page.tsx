@@ -116,7 +116,7 @@ export default function TicketsPage() {
             </div>
             {hasPermission("create_ticket") && (
               <Link href="/tickets/new">
-                <Button className="h-11 rounded-xl bg-primary px-5 text-primary-foreground hover:bg-primary/90 gap-2">
+                <Button className="h-11 gap-2 rounded-xl bg-primary px-5 text-primary-foreground shadow-sm hover:bg-primary/90">
                   <PlusCircle className="h-4 w-4" />
                   {t("tickets.new")}
                 </Button>
@@ -125,21 +125,20 @@ export default function TicketsPage() {
           </div>
         </div>
 
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium text-muted-foreground">
-              {t("tickets.search")}
-            </p>
-          </div>
+        <div className="flex items-center justify-between rounded-xl border border-border/70 bg-card/70 px-4 py-3">
+          <p className="text-sm font-medium text-muted-foreground">{t("tickets.search")}</p>
+          <p className="text-xs text-muted-foreground">
+            {t("tickets.title")}
+          </p>
         </div>
 
         {focusConfig && (
-          <div className="surface-card flex items-center justify-between rounded-lg px-3 py-2">
-            <Badge variant="secondary" className="text-xs">
+          <div className="surface-card flex items-center justify-between rounded-xl px-3 py-2.5">
+            <Badge variant="secondary" className="border border-border/60 bg-secondary/80 text-xs">
               {focusConfig.label}
             </Badge>
             <Link href="/tickets">
-              <Button variant="ghost" size="sm" className="h-7 text-xs">
+              <Button variant="ghost" size="sm" className="h-8 rounded-lg text-xs">
                 {t("general.clear")}
               </Button>
             </Link>

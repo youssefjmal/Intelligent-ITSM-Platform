@@ -72,11 +72,13 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState(false)
   const localeCode = locale === "fr" ? "fr-FR" : "en-US"
+
   const assigneeOptions = (() => {
     if (!selectedAssignee) return assignees
     if (assignees.some((member) => member.name === selectedAssignee)) return assignees
     return [{ id: "current-assignee", name: selectedAssignee, role: "current" }, ...assignees]
   })()
+
   const triageLabels = {
     assignee: locale === "fr" ? "Reaffecter a" : "Reassign to",
     priority: locale === "fr" ? "Priorite" : "Priority",
@@ -103,6 +105,7 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
         : "A resolution comment is required before closing.",
     updateFailed: locale === "fr" ? "Mise a jour triage impossible." : "Could not update triage.",
   }
+
   const canResolve = hasPermission("resolve_ticket")
   const canEditTriage = hasPermission("edit_ticket_triage")
 
@@ -140,7 +143,7 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
           title: ticketData.title,
           description: ticketData.description,
         },
-        { force },
+        { force, locale },
       )
       setAiSuggestions(data)
     } catch {
@@ -149,7 +152,7 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
     } finally {
       setAiLoading(false)
     }
-  }, [ticketData.id, ticketData.title, ticketData.description])
+  }, [locale, ticketData.id, ticketData.title, ticketData.description])
 
   useEffect(() => {
     setAiSuggestions(null)
@@ -193,20 +196,20 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
           setStatusError(
             locale === "fr"
               ? "Vous n'avez pas les permissions pour changer le statut."
-              : "You do not have permission to change status."
+              : "You do not have permission to change status.",
           )
         } else {
           setStatusError(
             locale === "fr"
               ? "Impossible de mettre a jour le statut."
-              : "Could not update status."
+              : "Could not update status.",
           )
         }
       } else {
         setStatusError(
           locale === "fr"
             ? "Impossible de mettre a jour le statut."
-            : "Could not update status."
+            : "Could not update status.",
         )
       }
     } finally {
@@ -260,26 +263,27 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
   }
 
   return (
-    <div className="space-y-6 fade-slide-in">
-      <div className="flex items-center gap-3">
+    <div className="fade-slide-in space-y-6">
+      <div className="flex flex-wrap items-center gap-3">
         <Link href="/tickets">
-          <Button variant="ghost" size="sm" className="gap-1.5">
+          <Button variant="ghost" size="sm" className="h-9 gap-1.5 rounded-xl">
             <ArrowLeft className="h-4 w-4" />
             {t("detail.back")}
           </Button>
         </Link>
-        <span className="text-sm font-mono text-muted-foreground">{ticket.id}</span>
+        <Badge variant="outline" className="rounded-full border-border bg-card/80 px-2.5 py-1 text-xs font-mono text-muted-foreground">
+          {ticket.id}
+        </Badge>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        {/* Main Content */}
-        <div className="lg:col-span-2 space-y-6">
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
+        <div className="space-y-6 xl:col-span-8">
           <Card className="surface-card overflow-hidden rounded-2xl">
             <div className="h-1.5 bg-gradient-to-r from-primary via-emerald-500 to-amber-500" />
-            <CardHeader>
+            <CardHeader className="pb-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-1">
-                  <CardTitle className="text-xl font-bold text-foreground">
+                  <CardTitle className="text-xl font-bold leading-tight text-foreground sm:text-2xl">
                     {ticketData.title}
                   </CardTitle>
                   <p className="text-sm text-muted-foreground">
@@ -291,155 +295,71 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                     })}
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Badge className={`${PRIORITY_CONFIG[ticketData.priority].color} border-0`}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge className={`${PRIORITY_CONFIG[ticketData.priority].color} border-0 px-2.5 py-1 text-xs font-semibold`}>
                     {PRIORITY_CONFIG[ticketData.priority].label}
                   </Badge>
-                  <Badge className={`${STATUS_CONFIG[status].color} border-0`}>
+                  <Badge className={`${STATUS_CONFIG[status].color} border-0 px-2.5 py-1 text-xs font-semibold`}>
                     {STATUS_CONFIG[status].label}
+                  </Badge>
+                  <Badge variant="outline" className="border-border bg-background/70 px-2.5 py-1 text-xs">
+                    {CATEGORY_CONFIG[ticketData.category].label}
                   </Badge>
                 </div>
               </div>
             </CardHeader>
-            <CardContent className="space-y-6">
-              <div>
-                <h3 className="text-sm font-semibold text-foreground mb-2">{t("detail.description")}</h3>
-                <p className="text-sm text-muted-foreground leading-relaxed">
-                  {ticketData.description}
-                </p>
+            <CardContent className="space-y-5">
+              <div className="rounded-xl border border-border/70 bg-muted/20 p-4">
+                <h3 className="mb-2 text-sm font-semibold text-foreground">{t("detail.description")}</h3>
+                <p className="text-sm leading-relaxed text-muted-foreground">{ticketData.description}</p>
               </div>
 
               {ticketData.resolution && (
-                <div className="rounded-lg bg-accent/50 p-4 border border-primary/20">
-                  <div className="flex items-center gap-2 mb-2">
+                <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
+                  <div className="mb-2 flex items-center gap-2">
                     <CheckCircle2 className="h-4 w-4 text-primary" />
                     <h3 className="text-sm font-semibold text-foreground">{t("detail.resolution")}</h3>
                   </div>
-                  <p className="text-sm text-foreground/80 leading-relaxed">
-                    {ticketData.resolution}
-                  </p>
+                  <p className="text-sm leading-relaxed text-foreground/80">{ticketData.resolution}</p>
                 </div>
               )}
 
-              <div className="rounded-lg border border-primary/25 bg-primary/5 p-4">
-                <div className="mb-3 flex items-center justify-between gap-2">
-                  <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                    <Sparkles className="h-4 w-4 text-primary" />
-                    {t("detail.aiRecommendations")}
-                  </h3>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 gap-1.5 text-[11px]"
-                    onClick={() => loadAiRecommendations(true)}
-                    disabled={aiLoading}
-                  >
-                    <RefreshCw className={`h-3.5 w-3.5 ${aiLoading ? "animate-spin" : ""}`} />
-                    {t("detail.aiRefresh")}
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground">{t("detail.aiRecommendationsDesc")}</p>
-
-                <div className="mt-3 space-y-3">
-                  {aiLoading && (
-                    <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      {t("detail.aiRecommendationsLoading")}
-                    </div>
-                  )}
-
-                  {!aiLoading && aiError && (
-                    <p className="text-xs text-destructive">{t("detail.aiRecommendationsError")}</p>
-                  )}
-
-                  {!aiLoading && !aiError && aiSuggestions && (
-                    <>
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                        <div className="rounded-md border border-border/70 bg-background/70 p-2">
-                          <p className="text-[11px] font-semibold text-muted-foreground">{t("detail.aiSuggestedPriority")}</p>
-                          <div className="mt-1">
-                            <Badge className={`${PRIORITY_CONFIG[aiSuggestions.priority].color} border-0 text-[10px]`}>
-                              {t(`priority.${aiSuggestions.priority}` as "priority.medium")}
-                            </Badge>
-                          </div>
-                        </div>
-
-                        <div className="rounded-md border border-border/70 bg-background/70 p-2">
-                          <p className="text-[11px] font-semibold text-muted-foreground">{t("detail.aiSuggestedCategory")}</p>
-                          <p className="mt-1 text-xs font-medium text-foreground">
-                            {t(`category.${aiSuggestions.category}` as "category.network")}
-                          </p>
-                        </div>
-
-                        <div className="rounded-md border border-border/70 bg-background/70 p-2">
-                          <p className="text-[11px] font-semibold text-muted-foreground">{t("detail.aiSuggestedAssignee")}</p>
-                          <p className="mt-1 text-xs font-medium text-foreground">
-                            {aiSuggestions.assignee || triageLabels.notAvailable}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="rounded-md border border-primary/30 bg-background/70 p-3">
-                        <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-primary">
-                          {t("form.recommendedSolutions")}
-                        </p>
-                        {aiSuggestions.recommendations.length === 0 ? (
-                          <p className="text-xs text-muted-foreground">{t("detail.aiRecommendationsEmpty")}</p>
-                        ) : (
-                          <div className="space-y-2">
-                            {aiSuggestions.recommendations.map((recommendation, index) => (
-                              <div
-                                key={`${ticketData.id}-ai-rec-main-${index}`}
-                                className="rounded-md border border-border/60 bg-muted/30 px-2.5 py-2 text-xs text-foreground"
-                              >
-                                <div className="flex items-start justify-between gap-2">
-                                  <span>{recommendation.text}</span>
-                                  <span className="rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-                                    {recommendation.confidence}%
-                                  </span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-
               <Separator />
 
-              {/* Comments */}
-              <div>
-                <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground mb-4">
+              <div className="space-y-4">
+                <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold text-foreground">
                   <MessageSquare className="h-4 w-4" />
                   {t("detail.comments")} ({ticketData.comments.length})
                 </h3>
                 {ticketData.comments.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">{t("detail.noComments")}</p>
+                  <div className="rounded-xl border border-dashed border-border/70 bg-muted/20 p-4 text-sm text-muted-foreground">
+                    {t("detail.noComments")}
+                  </div>
                 ) : (
                   <div className="space-y-3">
                     {ticketData.comments.map((comment) => (
-                      <div
-                        key={comment.id}
-                        className="rounded-lg border border-border p-3 bg-muted/30"
-                      >
-                        <div className="flex items-center justify-between mb-1.5">
-                          <span className="text-sm font-medium text-foreground">
-                            {comment.author}
-                          </span>
-                          <span className="text-xs text-muted-foreground">
-                            {new Date(comment.createdAt).toLocaleDateString(localeCode, {
-                              day: "2-digit",
-                              month: "short",
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })}
-                          </span>
+                      <div key={comment.id} className="rounded-xl border border-border/70 bg-card/70 p-3">
+                        <div className="flex items-start gap-3">
+                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+                            {comment.author.slice(0, 2).toUpperCase()}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="text-sm font-medium text-foreground">{comment.author}</span>
+                              <span className="text-xs text-muted-foreground">
+                                {new Date(comment.createdAt).toLocaleDateString(localeCode, {
+                                  day: "2-digit",
+                                  month: "short",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </span>
+                            </div>
+                            <div className="mt-2 rounded-xl bg-muted/35 p-3">
+                              <p className="text-sm leading-relaxed text-foreground/90">{comment.content}</p>
+                            </div>
+                          </div>
                         </div>
-                        <p className="text-sm text-muted-foreground">{comment.content}</p>
                       </div>
                     ))}
                   </div>
@@ -447,15 +367,97 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
               </div>
             </CardContent>
           </Card>
+
+          <Card className="surface-card rounded-2xl">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  <Sparkles className="h-4 w-4 text-primary" />
+                  {t("detail.aiRecommendations")}
+                </CardTitle>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5 rounded-lg text-[11px]"
+                  onClick={() => loadAiRecommendations(true)}
+                  disabled={aiLoading}
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${aiLoading ? "animate-spin" : ""}`} />
+                  {t("detail.aiRefresh")}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">{t("detail.aiRecommendationsDesc")}</p>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {aiLoading && (
+                <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  {t("detail.aiRecommendationsLoading")}
+                </div>
+              )}
+
+              {!aiLoading && aiError && <p className="text-xs text-destructive">{t("detail.aiRecommendationsError")}</p>}
+
+              {!aiLoading && !aiError && aiSuggestions && (
+                <>
+                  <div className="grid grid-cols-1 gap-2">
+                    <div className="rounded-lg border border-border/70 bg-background/70 p-2.5">
+                      <p className="text-[11px] font-semibold text-muted-foreground">{t("detail.aiSuggestedPriority")}</p>
+                      <div className="mt-1">
+                        <Badge className={`${PRIORITY_CONFIG[aiSuggestions.priority].color} border-0 text-[10px]`}>
+                          {t(`priority.${aiSuggestions.priority}` as "priority.medium")}
+                        </Badge>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-border/70 bg-background/70 p-2.5">
+                      <p className="text-[11px] font-semibold text-muted-foreground">{t("detail.aiSuggestedCategory")}</p>
+                      <p className="mt-1 text-xs font-medium text-foreground">
+                        {t(`category.${aiSuggestions.category}` as "category.network")}
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg border border-border/70 bg-background/70 p-2.5">
+                      <p className="text-[11px] font-semibold text-muted-foreground">{t("detail.aiSuggestedAssignee")}</p>
+                      <p className="mt-1 text-xs font-medium text-foreground">{aiSuggestions.assignee || triageLabels.notAvailable}</p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-primary/30 bg-primary/5 p-3">
+                      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-primary">
+                        {t("form.recommendedSolutions")}
+                      </p>
+                    {aiSuggestions.recommendations.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">{t("detail.aiRecommendationsEmpty")}</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {aiSuggestions.recommendations.map((recommendation, index) => (
+                          <div
+                            key={`${ticketData.id}-ai-rec-main-${index}`}
+                            className="rounded-md border border-border/60 bg-background/60 px-2.5 py-2 text-xs text-foreground"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <span>{recommendation.text}</span>
+                              <span className="rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                                {recommendation.confidence}%
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
         </div>
 
-        {/* Sidebar Info */}
-        <div className="space-y-4">
-          <Card className="surface-card">
+        <div className="space-y-6 xl:col-span-4 xl:sticky xl:top-4 xl:self-start">
+          <Card className="surface-card rounded-2xl">
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold text-foreground">
-                {t("detail.info")}
-              </CardTitle>
+              <CardTitle className="text-sm font-semibold text-foreground">{t("detail.info")}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               {!canResolve && !canEditTriage && (
@@ -465,14 +467,11 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                     : "Read-only mode: only agents and administrators can update this ticket."}
                 </p>
               )}
-	              <div className="space-y-1">
-	                <p className="text-xs font-medium text-muted-foreground">{t("tickets.status")}</p>
-	                <Select
-	                  value={status}
-	                  onValueChange={handleStatusChange}
-                  disabled={!canResolve || updating || triageUpdating}
-                >
-                  <SelectTrigger className="h-8 text-sm">
+
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-muted-foreground">{t("tickets.status")}</p>
+                <Select value={status} onValueChange={handleStatusChange} disabled={!canResolve || updating || triageUpdating}>
+                  <SelectTrigger className="h-10 rounded-xl text-sm">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -481,23 +480,22 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                         {val.label}
                       </SelectItem>
                     ))}
-	                  </SelectContent>
-	                </Select>
+                  </SelectContent>
+                </Select>
+
                 <div className="mt-2 space-y-1">
                   <p className="text-xs font-medium text-muted-foreground">{triageLabels.statusComment}</p>
                   <Textarea
                     value={statusComment}
                     onChange={(event) => setStatusComment(event.target.value)}
                     placeholder={triageLabels.statusCommentPlaceholder}
-                    className="min-h-[88px] text-sm"
+                    className="min-h-[92px] rounded-xl text-sm"
                     disabled={!canResolve || updating || triageUpdating}
                   />
                   <p className="text-[11px] text-muted-foreground">{triageLabels.statusCommentHint}</p>
                 </div>
-	                {statusError && (
-	                  <p className="mt-2 text-xs text-destructive">{statusError}</p>
-	                )}
-	              </div>
+                {statusError && <p className="mt-2 text-xs text-destructive">{statusError}</p>}
+              </div>
 
               <div className="space-y-1">
                 <p className="text-xs font-medium text-muted-foreground">{triageLabels.assignee}</p>
@@ -506,7 +504,7 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                   onValueChange={handleAssigneeChange}
                   disabled={!canEditTriage || updating || triageUpdating || assigneeOptions.length === 0}
                 >
-                  <SelectTrigger className="h-8 text-sm">
+                  <SelectTrigger className="h-10 rounded-xl text-sm">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -521,12 +519,8 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
 
               <div className="space-y-1">
                 <p className="text-xs font-medium text-muted-foreground">{triageLabels.priority}</p>
-                <Select
-                  value={selectedPriority}
-                  onValueChange={handlePriorityChange}
-                  disabled={!canEditTriage || updating || triageUpdating}
-                >
-                  <SelectTrigger className="h-8 text-sm">
+                <Select value={selectedPriority} onValueChange={handlePriorityChange} disabled={!canEditTriage || updating || triageUpdating}>
+                  <SelectTrigger className="h-10 rounded-xl text-sm">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -540,12 +534,8 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
 
               <div className="space-y-1">
                 <p className="text-xs font-medium text-muted-foreground">{triageLabels.category}</p>
-                <Select
-                  value={selectedCategory}
-                  onValueChange={handleCategoryChange}
-                  disabled={!canEditTriage || updating || triageUpdating}
-                >
-                  <SelectTrigger className="h-8 text-sm">
+                <Select value={selectedCategory} onValueChange={handleCategoryChange} disabled={!canEditTriage || updating || triageUpdating}>
+                  <SelectTrigger className="h-10 rounded-xl text-sm">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -559,35 +549,17 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                     <SelectItem value="problem">{t("category.problem")}</SelectItem>
                   </SelectContent>
                 </Select>
-                {triageError && (
-                  <p className="mt-2 text-xs text-destructive">{triageError}</p>
-                )}
+                {triageError && <p className="mt-2 text-xs text-destructive">{triageError}</p>}
               </div>
 
               <Separator />
 
               <InfoRow icon={User} label={t("detail.assignedTo")} value={ticketData.assignee} />
               <InfoRow icon={User} label={t("detail.reportedBy")} value={ticketData.reporter} />
-              <InfoRow
-                icon={Tag}
-                label={t("tickets.category")}
-                value={CATEGORY_CONFIG[ticketData.category].label}
-              />
-              <InfoRow
-                icon={Calendar}
-                label={t("detail.createdAt")}
-                value={new Date(ticketData.createdAt).toLocaleDateString(localeCode)}
-              />
-              <InfoRow
-                icon={Clock}
-                label={t("detail.updatedAt")}
-                value={new Date(ticketData.updatedAt).toLocaleDateString(localeCode)}
-              />
-              <InfoRow
-                icon={Clock}
-                label={triageLabels.reassignments}
-                value={String(ticketData.assignmentChangeCount || 0)}
-              />
+              <InfoRow icon={Tag} label={t("tickets.category")} value={CATEGORY_CONFIG[ticketData.category].label} />
+              <InfoRow icon={Calendar} label={t("detail.createdAt")} value={new Date(ticketData.createdAt).toLocaleDateString(localeCode)} />
+              <InfoRow icon={Clock} label={t("detail.updatedAt")} value={new Date(ticketData.updatedAt).toLocaleDateString(localeCode)} />
+              <InfoRow icon={Clock} label={triageLabels.reassignments} value={String(ticketData.assignmentChangeCount || 0)} />
               <InfoRow
                 icon={Clock}
                 label={triageLabels.firstAction}
@@ -598,7 +570,7 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
 
               {ticketData.tags.length > 0 && (
                 <div>
-                  <p className="text-xs font-medium text-muted-foreground mb-1.5">{t("form.tags")}</p>
+                  <p className="mb-1.5 text-xs font-medium text-muted-foreground">{t("form.tags")}</p>
                   <div className="flex flex-wrap gap-1">
                     {ticketData.tags.map((tag) => (
                       <Badge key={tag} variant="secondary" className="text-[10px]">
@@ -610,7 +582,6 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
               )}
             </CardContent>
           </Card>
-
         </div>
       </div>
     </div>

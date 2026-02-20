@@ -33,3 +33,13 @@ def test_status_priority_mapping_unknown_defaults() -> None:
     fields = {"status": {"name": "SomethingElse", "statusCategory": {"key": ""}}, "priority": {"name": "UnknownPriority"}}
     assert map_status(fields) == TicketStatus.open
     assert map_priority(fields) == TicketPriority.medium
+
+
+def test_status_mapping_waiting_states() -> None:
+    waiting_customer_fields = {"status": {"name": "Waiting for Customer", "statusCategory": {"key": "indeterminate"}}}
+    waiting_support_fields = {"status": {"name": "Waiting for Support", "statusCategory": {"key": "indeterminate"}}}
+    done_fields = {"status": {"name": "Done", "statusCategory": {"key": "done"}}}
+
+    assert map_status(waiting_customer_fields) == TicketStatus.waiting_for_customer
+    assert map_status(waiting_support_fields) == TicketStatus.waiting_for_support_vendor
+    assert map_status(done_fields) == TicketStatus.resolved
