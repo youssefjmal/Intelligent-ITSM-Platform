@@ -1,0 +1,428 @@
+{
+    "name":  "Critical Ticket Detector",
+    "nodes":  [
+                  {
+                      "parameters":  {
+                                         "width":  520,
+                                         "height":  180,
+                                         "content":  "## Critical Ticket Detector\nPOST /webhook/critical-ticket-detected\nBody minimum: { ticket_id }\nWorkflow fetches ticket details and sends email alert."
+                                     },
+                      "id":  "ctd-note-webhook",
+                      "name":  "Note: Webhook",
+                      "type":  "n8n-nodes-base.stickyNote",
+                      "typeVersion":  1,
+                      "position":  [
+                                       80,
+                                       60
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "path":  "critical-ticket-detected",
+                                         "httpMethod":  "POST",
+                                         "responseMode":  "onReceived",
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "id":  "ctd-webhook",
+                      "name":  "Critical Ticket Webhook",
+                      "type":  "n8n-nodes-base.webhook",
+                      "typeVersion":  2,
+                      "position":  [
+                                       220,
+                                       260
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const body = $json.body || $json || {};\nconst ticketId = body.ticket_id || body.id;\nconst traceId = body.trace_id || `ctk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;\nconst runId = $execution?.id ? String($execution.id) : `manual-${Date.now()}`;\nif (!ticketId) {\n  return [{ json: { route: \u0027error\u0027, stage: \u0027validate_inbound\u0027, error: \u0027missing_ticket_id\u0027, trace_id: traceId, run_id: runId, raw: body } }];\n}\nreturn [{ json: { route: \u0027ok\u0027, stage: \u0027validate_inbound\u0027, trace_id: traceId, run_id: runId, ticket_id: String(ticketId), inbound_priority: body.priority || \u0027critical\u0027 } }];"
+                                     },
+                      "id":  "ctd-validate",
+                      "name":  "Validate Inbound Payload",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       460,
+                                       260
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "conditions":  {
+                                                            "string":  [
+                                                                           {
+                                                                               "value1":  "={{ String($json.route || \u0027\u0027).trim() }}",
+                                                                               "operation":  "equals",
+                                                                               "value2":  "ok"
+                                                                           }
+                                                                       ]
+                                                        }
+                                     },
+                      "id":  "ctd-valid-if",
+                      "name":  "Payload Valid?",
+                      "type":  "n8n-nodes-base.if",
+                      "typeVersion":  2,
+                      "position":  [
+                                       700,
+                                       260
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "assignments":  {
+                                                             "assignments":  [
+                                                                                 {
+                                                                                     "id":  "ctd-a1",
+                                                                                     "name":  "ticket_id",
+                                                                                     "value":  "={{ $json.ticket_id }}",
+                                                                                     "type":  "string"
+                                                                                 },
+                                                                                 {
+                                                                                     "id":  "ctd-a2",
+                                                                                     "name":  "inbound_priority",
+                                                                                     "value":  "={{ $json.inbound_priority }}",
+                                                                                     "type":  "string"
+                                                                                 },
+                                                                                 {
+                                                                                     "id":  "ctd-a3",
+                                                                                     "name":  "trace_id",
+                                                                                     "value":  "={{ $json.trace_id }}",
+                                                                                     "type":  "string"
+                                                                                 },
+                                                                                 {
+                                                                                     "id":  "ctd-a4",
+                                                                                     "name":  "run_id",
+                                                                                     "value":  "={{ $json.run_id }}",
+                                                                                     "type":  "string"
+                                                                                 }
+                                                                             ]
+                                                         },
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "id":  "ctd-store",
+                      "name":  "Store Inbound Context",
+                      "type":  "n8n-nodes-base.set",
+                      "typeVersion":  3.4,
+                      "position":  [
+                                       940,
+                                       260
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "method":  "GET",
+                                         "url":  "={{ ($env.ITSM_BASE_URL || \u0027http://host.docker.internal:8000\u0027) + \u0027/api/tickets/\u0027 + $json.ticket_id }}",
+                                         "sendHeaders":  true,
+                                         "headerParameters":  {
+                                                                  "parameters":  [
+                                                                                     {
+                                                                                         "name":  "Authorization",
+                                                                                         "value":  "={{ \u0027Bearer \u0027 + $env.ITSM_API_TOKEN }}"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "X-Actor",
+                                                                                         "value":  "system:n8n"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "Accept",
+                                                                                         "value":  "application/json"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "X-Trace-Id",
+                                                                                         "value":  "={{ $json.trace_id }}"
+                                                                                     },
+                                                                                     {
+                                                                                         "name":  "X-Workflow-Run-Id",
+                                                                                         "value":  "={{ $json.run_id }}"
+                                                                                     }
+                                                                                 ]
+                                                              },
+                                         "options":  {
+                                                         "response":  {
+                                                                          "response":  {
+                                                                                           "responseFormat":  "json"
+                                                                                       }
+                                                                      }
+                                                     }
+                                     },
+                      "id":  "ctd-fetch-ticket",
+                      "name":  "Fetch Ticket from Backend",
+                      "type":  "n8n-nodes-base.httpRequest",
+                      "typeVersion":  4.2,
+                      "position":  [
+                                       1180,
+                                       260
+                                   ],
+                      "continueOnFail":  true
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const ctx = $node[\u0027Store Inbound Context\u0027].json;\nconst detail = $json || {};\nif (detail.error || detail.statusCode \u003e= 400) {\n  return [{ json: { route: \u0027error\u0027, stage: \u0027fetch_ticket\u0027, trace_id: ctx.trace_id, run_id: ctx.run_id, error: detail.error || \u0027ticket_fetch_failed\u0027, status: detail.statusCode, ticket_id: ctx.ticket_id } }];\n}\nreturn [{ json: { route: \u0027ok\u0027, stage: \u0027merge_enriched\u0027, trace_id: ctx.trace_id, run_id: ctx.run_id, ticket_id: ctx.ticket_id, title: detail.title || \u0027Critical Ticket\u0027, description: detail.description || detail.summary || \u0027No details provided.\u0027, priority: detail.priority || ctx.inbound_priority || \u0027critical\u0027, status: detail.status || \u0027open\u0027, assignee: detail.assignee || \u0027Unassigned\u0027, reporter: detail.reporter || \u0027N/A\u0027, created_at: detail.created_at || new Date().toISOString(), ticket_url: (($env.FRONTEND_BASE_URL || \u0027http://localhost:3000\u0027) + \u0027/tickets/\u0027 + ctx.ticket_id) } }];"
+                                     },
+                      "id":  "ctd-merge",
+                      "name":  "Merge \u0026 Validate Ticket",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1420,
+                                       260
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "conditions":  {
+                                                            "string":  [
+                                                                           {
+                                                                               "value1":  "={{ String($json.route || \u0027\u0027).trim() }}",
+                                                                               "operation":  "equals",
+                                                                               "value2":  "ok"
+                                                                           }
+                                                                       ]
+                                                        }
+                                     },
+                      "id":  "ctd-enrich-if",
+                      "name":  "Enrichment OK?",
+                      "type":  "n8n-nodes-base.if",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1660,
+                                       260
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const d = $json;\nconst subject = `[ITSM][CRITICAL] ${String(d.priority || \u0027critical\u0027).toUpperCase()} - ${d.ticket_id} - ${d.title || \u0027Critical Ticket\u0027}`;\nconst body = [\n  \u0027Critical Ticket Notification\u0027,\n  \u0027==========================================\u0027,\n  `Trace ID   : ${d.trace_id || \u0027N/A\u0027}`,\n  `Run ID     : ${d.run_id || \u0027N/A\u0027}`,\n  `Ticket ID  : ${d.ticket_id || \u0027N/A\u0027}`,\n  `Title      : ${d.title || \u0027N/A\u0027}`,\n  `Priority   : ${String(d.priority || \u0027critical\u0027).toUpperCase()}`,\n  `Status     : ${d.status || \u0027open\u0027}`,\n  `Assignee   : ${d.assignee || \u0027Unassigned\u0027}`,\n  `Reporter   : ${d.reporter || \u0027N/A\u0027}`,\n  `Created At : ${d.created_at || new Date().toISOString()}`,\n  \u0027\u0027,\n  \u0027Description\u0027,\n  \u0027------------------------------------------\u0027,\n  d.description || \u0027No details provided.\u0027,\n  \u0027\u0027,\n  \u0027Open in ITSM:\u0027,\n  d.ticket_url || \u0027N/A\u0027\n].join(\u0027\\n\u0027);\nreturn [{ json: { ...d, stage: \u0027build_email\u0027, email_subject: subject, email_body: body } }];"
+                                     },
+                      "id":  "ctd-build-email",
+                      "name":  "Build Email Content",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1900,
+                                       260
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "fromEmail":  "={{ $env.SMTP_FROM }}",
+                                         "toEmail":  "={{ $env.CRITICAL_ALERT_EMAIL_TO || $env.ALERT_DEFAULT_EMAIL || $env.SLA_ALERT_EMAIL_TO }}",
+                                         "subject":  "={{ $json.email_subject }}",
+                                         "emailType":  "text",
+                                         "message":  "={{ $json.email_body }}"
+                                     },
+                      "id":  "ctd-send-email",
+                      "name":  "Send Critical Ticket Email",
+                      "type":  "n8n-nodes-base.emailSend",
+                      "typeVersion":  2.1,
+                      "position":  [
+                                       2140,
+                                       260
+                                   ],
+                      "continueOnFail":  true
+                  },
+                  {
+                      "parameters":  {
+                                         "conditions":  {
+                                                            "boolean":  [
+                                                                            {
+                                                                                "value1":  "={{ !!$json.error || (!!$json.rejected \u0026\u0026 $json.rejected.length \u003e 0 \u0026\u0026 (!$json.accepted || $json.accepted.length === 0)) }}",
+                                                                                "operation":  "isTrue"
+                                                                            }
+                                                                        ]
+                                                        }
+                                     },
+                      "id":  "ctd-email-failed",
+                      "name":  "Email Failed?",
+                      "type":  "n8n-nodes-base.if",
+                      "typeVersion":  2,
+                      "position":  [
+                                       2360,
+                                       260
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "width":  460,
+                                         "height":  120,
+                                         "content":  "## Error Handling\nAny real failure routes here. Success responses are ignored."
+                                     },
+                      "id":  "ctd-note-error",
+                      "name":  "Note: Error",
+                      "type":  "n8n-nodes-base.stickyNote",
+                      "typeVersion":  1,
+                      "position":  [
+                                       760,
+                                       520
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const payload = {\n  workflow: \u0027Critical Ticket Detector\u0027,\n  timestamp: new Date().toISOString(),\n  stage: $json.stage || \u0027unknown\u0027,\n  route: \u0027error\u0027,\n  trace_id: $json.trace_id || \u0027N/A\u0027,\n  run_id: $json.run_id || \u0027N/A\u0027,\n  ticket_id: $json.ticket_id || \u0027N/A\u0027,\n  error: $json.error || $json.message || JSON.stringify($json)\n};\nconsole.error(\u0027[n8n][critical-ticket-detector][error]\u0027, JSON.stringify(payload));\nreturn [{ json: payload }];"
+                                     },
+                      "id":  "ctd-log-error",
+                      "name":  "Log Error",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       1120,
+                                       580
+                                   ]
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const payload = {\n  workflow: \u0027Critical Ticket Detector\u0027,\n  timestamp: new Date().toISOString(),\n  stage: \u0027email_sent\u0027,\n  route: \u0027ok\u0027,\n  trace_id: $json.trace_id || \u0027N/A\u0027,\n  run_id: $json.run_id || \u0027N/A\u0027,\n  ticket_id: $json.ticket_id || \u0027N/A\u0027,\n  email_to: ($env.CRITICAL_ALERT_EMAIL_TO || $env.ALERT_DEFAULT_EMAIL || $env.SLA_ALERT_EMAIL_TO || \u0027N/A\u0027),\n  message_id: $json.messageId || null\n};\nconsole.log(\u0027[n8n][critical-ticket-detector][success]\u0027, JSON.stringify(payload));\nreturn [{ json: payload }];"
+                                     },
+                      "id":  "ctd-log-success",
+                      "name":  "Log Success",
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       2580,
+                                       360
+                                   ]
+                  }
+              ],
+    "connections":  {
+                        "Critical Ticket Webhook":  {
+                                                        "main":  [
+                                                                     [
+                                                                         {
+                                                                             "node":  "Validate Inbound Payload",
+                                                                             "type":  "main",
+                                                                             "index":  0
+                                                                         }
+                                                                     ]
+                                                                 ]
+                                                    },
+                        "Validate Inbound Payload":  {
+                                                         "main":  [
+                                                                      [
+                                                                          {
+                                                                              "node":  "Payload Valid?",
+                                                                              "type":  "main",
+                                                                              "index":  0
+                                                                          }
+                                                                      ]
+                                                                  ]
+                                                     },
+                        "Payload Valid?":  {
+                                               "main":  [
+                                                            [
+                                                                {
+                                                                    "node":  "Store Inbound Context",
+                                                                    "type":  "main",
+                                                                    "index":  0
+                                                                }
+                                                            ],
+                                                            [
+                                                                {
+                                                                    "node":  "Log Error",
+                                                                    "type":  "main",
+                                                                    "index":  0
+                                                                }
+                                                            ]
+                                                        ]
+                                           },
+                        "Store Inbound Context":  {
+                                                      "main":  [
+                                                                   [
+                                                                       {
+                                                                           "node":  "Fetch Ticket from Backend",
+                                                                           "type":  "main",
+                                                                           "index":  0
+                                                                       }
+                                                                   ]
+                                                               ]
+                                                  },
+                        "Fetch Ticket from Backend":  {
+                                                          "main":  [
+                                                                       [
+                                                                           {
+                                                                               "node":  "Merge \u0026 Validate Ticket",
+                                                                               "type":  "main",
+                                                                               "index":  0
+                                                                           }
+                                                                       ]
+                                                                   ]
+                                                      },
+                        "Merge \u0026 Validate Ticket":  {
+                                                             "main":  [
+                                                                          [
+                                                                              {
+                                                                                  "node":  "Enrichment OK?",
+                                                                                  "type":  "main",
+                                                                                  "index":  0
+                                                                              }
+                                                                          ]
+                                                                      ]
+                                                         },
+                        "Enrichment OK?":  {
+                                               "main":  [
+                                                            [
+                                                                {
+                                                                    "node":  "Build Email Content",
+                                                                    "type":  "main",
+                                                                    "index":  0
+                                                                }
+                                                            ],
+                                                            [
+                                                                {
+                                                                    "node":  "Log Error",
+                                                                    "type":  "main",
+                                                                    "index":  0
+                                                                }
+                                                            ]
+                                                        ]
+                                           },
+                        "Build Email Content":  {
+                                                    "main":  [
+                                                                 [
+                                                                     {
+                                                                         "node":  "Send Critical Ticket Email",
+                                                                         "type":  "main",
+                                                                         "index":  0
+                                                                     }
+                                                                 ]
+                                                             ]
+                                                },
+                        "Send Critical Ticket Email":  {
+                                                           "main":  [
+                                                                        [
+                                                                            {
+                                                                                "node":  "Email Failed?",
+                                                                                "type":  "main",
+                                                                                "index":  0
+                                                                            }
+                                                                        ]
+                                                                    ]
+                                                       },
+                        "Email Failed?":  {
+                                              "main":  [
+                                                           [
+                                                               {
+                                                                   "node":  "Log Error",
+                                                                   "type":  "main",
+                                                                   "index":  0
+                                                               }
+                                                           ],
+                                                           [
+                                                               {
+                                                                   "node":  "Log Success",
+                                                                   "type":  "main",
+                                                                   "index":  0
+                                                               }
+                                                           ]
+                                                       ]
+                                          }
+                    },
+    "active":  false,
+    "settings":  {
+                     "executionOrder":  "v1"
+                 },
+    "pinData":  {
+
+                }
+}

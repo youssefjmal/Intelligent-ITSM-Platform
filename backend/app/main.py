@@ -14,7 +14,7 @@ from app.core.exceptions import ITSMGatekeeperException
 from app.core.rate_limit import install_global_rate_limit_middleware
 from app.core.security_headers import install_security_headers_middleware
 from app.integrations.jira.auto_reconcile import start_jira_auto_reconcile, stop_jira_auto_reconcile
-from app.routers import ai, assignees, auth, emails, integrations_jira, problems, recommendations, sla, tickets, users
+from app.routers import ai, assignees, auth, emails, integrations_jira, notifications, problems, recommendations, sla, tickets, users
 
 
 def create_app() -> FastAPI:
@@ -50,6 +50,7 @@ def create_app() -> FastAPI:
     app.include_router(emails.router, prefix="/api/emails", tags=["emails"])
     app.include_router(ai.router, prefix="/api/ai", tags=["ai"])
     app.include_router(recommendations.router, prefix="/api/recommendations", tags=["recommendations"])
+    app.include_router(notifications.router, prefix="/api/notifications", tags=["notifications"])
     app.include_router(problems.router, prefix="/api", tags=["problems"])
     app.include_router(assignees.router, prefix="/api", tags=["assignees"])
     # Jira reverse-sync endpoints (webhook + reconcile).

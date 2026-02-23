@@ -19,6 +19,8 @@ from app.schemas.ticket import (
     TicketCreate,
     TicketOut,
     TicketPerformanceOut,
+    TicketSimilarOut,
+    TicketSimilarResponse,
     TicketStats,
     TicketStatusUpdate,
     TicketTriageUpdate,
@@ -40,16 +42,28 @@ from app.services.tickets import (
     update_status,
 )
 from app.services.problems import problem_analytics_summary
+from app.services.problems import find_similar_tickets
 
 router = APIRouter(dependencies=[Depends(rate_limit()), Depends(get_current_user)])
+_ALLOWED_SLA_STATUS_FILTERS = {"ok", "at_risk", "breached", "paused", "completed", "unknown"}
 
 
 @router.get("/", response_model=list[TicketOut])
 def get_all_tickets(
+    sla_status: str | None = Query(
+        default=None,
+        description="Filter by SLA status: ok|at_risk|breached|paused|completed|unknown",
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[TicketOut]:
-    return [TicketOut.model_validate(t) for t in list_tickets_for_user(db, current_user)]
+    tickets = list_tickets_for_user(db, current_user)
+    if sla_status:
+        normalized = sla_status.strip().lower()
+        if normalized not in _ALLOWED_SLA_STATUS_FILTERS:
+            raise BadRequestError("invalid_sla_status_filter", details={"sla_status": sla_status})
+        tickets = [ticket for ticket in tickets if str(ticket.sla_status or "unknown").strip().lower() == normalized]
+    return [TicketOut.model_validate(t) for t in tickets]
 
 
 @router.get("/stats", response_model=TicketStats)
@@ -123,6 +137,46 @@ def get_ticket_by_id(
     if not ticket:
         raise NotFoundError("ticket_not_found", details={"ticket_id": ticket_id})
     return TicketOut.model_validate(ticket)
+
+
+@router.get("/{ticket_id}/similar", response_model=TicketSimilarResponse)
+def get_similar_tickets(
+    ticket_id: str = Path(..., min_length=3, max_length=32),
+    limit: int = Query(default=5, ge=1, le=12),
+    min_score: float = Query(default=0.3, ge=0.0, le=1.0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TicketSimilarResponse:
+    ticket = get_ticket_for_user(db, ticket_id, current_user)
+    if not ticket:
+        raise NotFoundError("ticket_not_found", details={"ticket_id": ticket_id})
+
+    visible_tickets = list_tickets_for_user(db, current_user)
+    matches = find_similar_tickets(
+        ticket=ticket,
+        candidates=visible_tickets,
+        limit=limit,
+        min_score=min_score,
+    )
+    return TicketSimilarResponse(
+        ticket_id=ticket.id,
+        matches=[
+            TicketSimilarOut(
+                id=item.id,
+                title=item.title,
+                description=item.description,
+                status=item.status,
+                priority=item.priority,
+                category=item.category,
+                assignee=item.assignee,
+                reporter=item.reporter,
+                created_at=item.created_at,
+                updated_at=item.updated_at,
+                similarity_score=round(float(score), 4),
+            )
+            for item, score in matches
+        ],
+    )
 
 
 @router.patch("/{ticket_id}", response_model=TicketOut)

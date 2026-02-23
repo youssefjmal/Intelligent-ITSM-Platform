@@ -603,6 +603,7 @@ def handle_classify(payload: ClassificationRequest, db: Session) -> Classificati
     return ClassificationResponse(
         priority=priority,
         category=category,
+        classification_confidence=int(details.get("classification_confidence") or 70),
         recommendations=recommendations,
         recommendations_scored=[AIRecommendationOut(text=str(item["text"]), confidence=int(item["confidence"])) for item in scored],
         recommendations_embedding=recommendations_embedding,

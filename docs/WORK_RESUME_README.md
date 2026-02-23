@@ -726,3 +726,89 @@ Execution notes:
 1. Runtime base URL for n8n backend calls should use container-safe host routing (for Docker: `http://host.docker.internal:8000`).
 2. SMTP/Gmail credentials are configured in n8n credentials and are not stored in workflow JSON.
 3. `.env` secrets remain local-only and are excluded from Git commits.
+4. Both workflows now propagate `trace_id` and `run_id` end-to-end (webhook -> backend fetch headers -> email body -> success/error log nodes) for execution correlation.
+
+---
+
+## 20. AI SLA Risk Scoring (Shadow Mode)
+
+Current implementation adds an AI advisory layer for SLA risk scoring without changing deterministic SLA enforcement.
+
+Key points:
+
+1. Deterministic SLA engine remains the primary decision-maker for escalations.
+2. AI evaluates per-ticket breach/escalation risk probabilistically during `POST /api/sla/run`.
+3. AI output is persisted for governance/audit in `ai_sla_risk_evaluations`.
+4. AI metadata is logged (`model_version`, decision source, reasoning summary).
+5. Initial operating mode is `shadow` and does not autonomously escalate.
+6. Hybrid safety architecture is preserved: rules decide, AI advises.
+7. Future roadmap supports gradual AI-assisted escalation with deterministic confirmation.
+
+Runtime controls:
+
+1. `AI_SLA_RISK_ENABLED=true|false`
+2. `AI_SLA_RISK_MODE=shadow|assist` (default `shadow`)
+
+Architecture sketch:
+
+```text
+Deterministic Rules -> Escalation Decision
+AI Risk Scoring -> Advisory Layer -> Logging
+```
+
+Safety note:
+
+- No autonomous AI escalation override is enabled.
+
+---
+
+## 21. SLA Hardening Improvements
+
+1. Dry-run mode for SLA batch runs:
+   - `POST /api/sla/run` now accepts `dry_run`.
+   - With `dry_run=true`, the batch computes eligibility and proposed SLA actions without side effects.
+   - No ticket updates, no auto-escalation writes, no stale-notification creation, and no AI risk persistence are performed.
+2. AI SLA risk visibility:
+   - Added latest risk endpoint: `GET /api/sla/ticket/{ticket_id}/ai-risk/latest`.
+   - Ticket detail UI now includes an `AI SLA Risk (Advisory)` panel that displays score band, confidence, suggested priority, reasoning, and timestamp.
+3. Automation audit trail:
+   - Added `automation_events` table to log automated actions.
+   - SLA flows now record events for:
+     - `SLA_SYNC`
+     - `AUTO_ESCALATION`
+     - `STALE_NOTIFY`
+     - `AI_RISK_EVALUATION`
+   - Event records include actor, before/after snapshots, metadata, and timestamp for governance and traceability.
+
+## 22. SLA Status Values
+
+Current local SLA status values used by API and sync flows:
+
+1. `ok`: SLA on track (> 30 minutes remaining).
+2. `at_risk`: SLA at risk (0 to 30 minutes remaining, not breached).
+3. `breached`: SLA already breached.
+4. `paused`: SLA timer paused.
+5. `completed`: SLA target met.
+6. `unknown`: SLA status unavailable or not synced.
+
+---
+
+## 23. Current Checkpoint Update (2026-02-23)
+
+Latest checkpoint work completed in this phase:
+
+1. Extended backend domain for notifications and automation audit support:
+   - new models/schemas/router/service for notifications and automation events.
+2. Added AI SLA risk persistence and latest-read capability:
+   - risk evaluations stored and exposed for ticket-level visibility.
+3. Added Alembic migration chain `0021` to `0024`:
+   - notifications, ai_sla_risk_evaluations, automation_events, and `sla_at_risk`.
+4. Expanded n8n documentation/workflows:
+   - integration checklist, env guide, combined workflow export, and escalation/alert workflows.
+5. Frontend updates:
+   - app shell and ticket flows aligned with new notifications/SLA-risk behavior.
+6. Verification executed:
+   - backend tests: `36 passed`
+   - frontend production build: success.
+7. Git hygiene enforced during commit/push:
+   - `.env` files kept local-only and excluded from staged changes.

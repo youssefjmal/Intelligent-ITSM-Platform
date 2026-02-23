@@ -474,6 +474,33 @@ def _resolve_recommendation_mode(
     return "llm"
 
 
+def _compute_classification_confidence(
+    *,
+    strong_matches: list[dict[str, Any]],
+    inferred_priority: TicketPriority | None,
+    inferred_category: TicketCategory | None,
+    recommendation_mode: str,
+    has_recommendations: bool,
+    llm_success: bool,
+) -> int:
+    score = 62
+    if llm_success:
+        score += 8
+    if strong_matches:
+        score += 12
+    if inferred_priority is not None:
+        score += 5
+    if inferred_category is not None:
+        score += 5
+    if recommendation_mode == "hybrid":
+        score += 4
+    elif recommendation_mode == "embedding":
+        score += 2
+    if not has_recommendations:
+        score -= 6
+    return int(max(45, min(97, score)))
+
+
 def classify_ticket_detailed(title: str, description: str) -> dict[str, Any]:
     description = description or title
     query = _normalize_recommendation_text(f"{title}\n{description}")
@@ -516,18 +543,27 @@ def classify_ticket_detailed(title: str, description: str) -> dict[str, Any]:
             llm_recommendations = _generate_llm_basic_recommendations(title, description)
             final_recommendations = llm_recommendations
 
+        recommendation_mode = _resolve_recommendation_mode(
+            strong_matches=strong_matches,
+            embedding_recommendations=embedding_recommendations,
+            llm_recommendations=llm_recommendations,
+        )
         return {
             "priority": priority,
             "category": category,
             "recommendations": final_recommendations[:max_items],
             "recommendations_embedding": embedding_recommendations[:max_items],
             "recommendations_llm": llm_recommendations[:max_items],
-            "recommendation_mode": _resolve_recommendation_mode(
-                strong_matches=strong_matches,
-                embedding_recommendations=embedding_recommendations,
-                llm_recommendations=llm_recommendations,
-            ),
+            "recommendation_mode": recommendation_mode,
             "similarity_found": bool(strong_matches),
+            "classification_confidence": _compute_classification_confidence(
+                strong_matches=strong_matches,
+                inferred_priority=inferred_priority,
+                inferred_category=inferred_category,
+                recommendation_mode=recommendation_mode,
+                has_recommendations=bool(final_recommendations),
+                llm_success=True,
+            ),
         }
     except Exception as exc:
         logger.warning("Ollama classify failed, using fallback: %s", exc)
@@ -542,18 +578,27 @@ def classify_ticket_detailed(title: str, description: str) -> dict[str, Any]:
         if not llm_recommendations and not strong_matches:
             llm_recommendations = _generate_llm_basic_recommendations(title, description)
         final_recommendations = embedding_recommendations or llm_recommendations
+        recommendation_mode = _resolve_recommendation_mode(
+            strong_matches=strong_matches,
+            embedding_recommendations=embedding_recommendations,
+            llm_recommendations=llm_recommendations,
+        )
         return {
             "priority": priority,
             "category": category,
             "recommendations": final_recommendations[:max_items],
             "recommendations_embedding": embedding_recommendations[:max_items],
             "recommendations_llm": llm_recommendations[:max_items],
-            "recommendation_mode": _resolve_recommendation_mode(
-                strong_matches=strong_matches,
-                embedding_recommendations=embedding_recommendations,
-                llm_recommendations=llm_recommendations,
-            ),
+            "recommendation_mode": recommendation_mode,
             "similarity_found": bool(strong_matches),
+            "classification_confidence": _compute_classification_confidence(
+                strong_matches=strong_matches,
+                inferred_priority=inferred_priority,
+                inferred_category=inferred_category,
+                recommendation_mode=recommendation_mode,
+                has_recommendations=bool(final_recommendations),
+                llm_success=False,
+            ),
         }
 
 

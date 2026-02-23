@@ -9,6 +9,7 @@ export type TicketStatus =
   | "resolved"
   | "closed"
 export type TicketPriority = "critical" | "high" | "medium" | "low"
+export type SlaStatus = "ok" | "at_risk" | "breached" | "paused" | "completed" | "unknown"
 export type TicketCategory =
   | "infrastructure"
   | "network"
@@ -45,6 +46,7 @@ export interface Ticket {
   assignmentChangeCount?: number
   firstActionAt?: string
   resolvedAt?: string
+  slaStatus?: SlaStatus | null
   createdAt: string
   updatedAt: string
   resolution?: string

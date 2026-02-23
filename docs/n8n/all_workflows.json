@@ -1,0 +1,2357 @@
+[
+  {
+    "updatedAt": "2026-02-22T22:49:28.000Z",
+    "createdAt": "2026-02-22T14:36:31.603Z",
+    "id": "VTtw3CAzM1qaqWfd",
+    "name": "Problem Launch Notifier",
+    "description": null,
+    "active": true,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {
+          "content": "## 1. Problem Detection Webhook\nTriggered by backend when a problem is detected or promoted.\n**POST** `/webhook/problem-detected`\nExpected body: `{ problem_id, title, affected_tickets_count, priority }`",
+          "width": 500
+        },
+        "id": "26e79a48-7b64-4889-b3ce-fcab2b57b4e3",
+        "name": "Note: Webhook",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          7040,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "problem-detected",
+          "options": {}
+        },
+        "id": "341d1864-a0b9-4c52-9d3d-9b11f0fed6f0",
+        "name": "Problem Detected Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          7184,
+          512
+        ],
+        "webhookId": "ac1ab440-3280-4f9d-8b89-1121dd3566f2"
+      },
+      {
+        "parameters": {
+          "jsCode": "// Safely extract and validate inbound webhook payload\nconst body = $json.body || $json || {};\nconst problemId = body.problem_id;\n\nif (!problemId) {\n  return [{ json: { route: 'error', error: 'missing_problem_id', raw: body } }];\n}\n\nreturn [{\n  json: {\n    route: 'ok',\n    problem_id: String(problemId),\n    title: body.title || 'Unknown Problem',\n    priority: body.priority || body.severity || 'high',\n    affected_tickets_count: body.affected_tickets_count || 0\n  }\n}];"
+        },
+        "id": "082a28cc-ed4c-4e4d-a9ea-a446ed031551",
+        "name": "Validate Inbound Payload",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          7424,
+          512
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "string": [
+              {
+                "value1": "={{ $json.route }}",
+                "operation": "equals",
+                "value2": "ok"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "75da30f6-353b-4207-ab88-c872f7515c80",
+        "name": "Payload Valid?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          7664,
+          512
+        ]
+      },
+      {
+        "parameters": {
+          "content": "## 2. Enrich from Backend\nFetch full problem details from FastAPI.\nStores inbound data in a Set node before the HTTP call so context is never lost.",
+          "height": 140,
+          "width": 460
+        },
+        "id": "d971544c-3fbf-4d38-8ba0-ca3cb00d4b1d",
+        "name": "Note: Enrich",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          7840,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "a1",
+                "name": "problem_id",
+                "value": "={{ $json.problem_id }}",
+                "type": "string"
+              },
+              {
+                "id": "a2",
+                "name": "inbound_title",
+                "value": "={{ $json.title }}",
+                "type": "string"
+              },
+              {
+                "id": "a3",
+                "name": "inbound_priority",
+                "value": "={{ $json.priority }}",
+                "type": "string"
+              },
+              {
+                "id": "a4",
+                "name": "inbound_affected_count",
+                "value": "={{ $json.affected_tickets_count }}",
+                "type": "number"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "43ffd999-80ce-4177-9d6c-c773301496ee",
+        "name": "Store Inbound Context",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          7904,
+          512
+        ]
+      },
+      {
+        "parameters": {
+          "url": "={{ ($env.ITSM_BASE_URL || 'http://host.docker.internal:8000') + '/api/problems/' + $json.problem_id }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "={{ 'Bearer ' + $env.ITSM_API_TOKEN }}"
+              },
+              {
+                "name": "X-Actor",
+                "value": "system:n8n"
+              },
+              {
+                "name": "Accept",
+                "value": "application/json"
+              }
+            ]
+          },
+          "options": {
+            "response": {
+              "response": {
+                "responseFormat": "json"
+              }
+            }
+          }
+        },
+        "id": "b1fe1d9f-cc50-4d9a-a6c8-ef66a3ea96ce",
+        "name": "Fetch Problem from Backend",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          8144,
+          512
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "jsCode": "// Merge inbound context with enriched backend data\n// Problem model has no dedicated description field\n\nconst ctx = $node['Store Inbound Context'].json;\nconst detail = $json || {};\n\nif (detail.error || detail.statusCode >= 400) {\n  return [{ json: { route: 'error', error: detail.error || 'backend_fetch_failed', status: detail.statusCode } }];\n}\n\nconst problemId = ctx.problem_id;\nconst uiBase = $env.FRONTEND_BASE_URL || 'http://localhost:3000';\n\nreturn [{\n  json: {\n    route: 'ok',\n    problem_id: problemId,\n    title: detail.title || ctx.inbound_title || 'Problem Detected',\n    priority: detail.priority || ctx.inbound_priority || detail.severity || 'high',\n    status: detail.status || 'open',\n    affected_tickets_count: detail.affected_tickets_count ?? ctx.inbound_affected_count ?? 0,\n    root_cause: detail.root_cause || 'Under investigation',\n    workaround: detail.workaround || 'None yet',\n    permanent_fix: detail.permanent_fix || 'None yet',\n    created_at: detail.created_at || new Date().toISOString(),\n    problem_url: `${uiBase}/problems/${problemId}`,\n    raw_detail: detail\n  }\n}];"
+        },
+        "id": "2bc0f1a6-6e13-4d33-8623-c1c20b40f27e",
+        "name": "Merge & Validate Enriched Data",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          8384,
+          512
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "string": [
+              {
+                "value1": "={{ $json.route }}",
+                "operation": "equals",
+                "value2": "ok"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "45375b63-0689-4c73-8adb-65ccbf68f57c",
+        "name": "Enrichment OK?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          8624,
+          512
+        ]
+      },
+      {
+        "parameters": {
+          "content": "## 3. Email Notification\nSends a structured plain-text email to the problem response team.\nSMTP config via n8n credentials — set PROBLEM_ALERT_EMAIL_TO in n8n env.",
+          "height": 140,
+          "width": 460
+        },
+        "id": "7b0df7e3-8e51-4cc8-92bd-35126fff3637",
+        "name": "Note: Email",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          8800,
+          304
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const d = $json;\nconst sep = '------------------------------------------';\n\nconst rawPriority = d.priority || d.raw_detail?.priority || d.inbound_priority || d.raw_detail?.severity || 'high';\nconst pri = String(rawPriority).trim() || 'high';\n\nconst tickets = Array.isArray(d.raw_detail?.tickets) ? d.raw_detail.tickets : [];\nconst topTickets = tickets.slice(0, 5);\n\nconst summaryBits = [];\nsummaryBits.push(`${d.title || 'Problem detected'} is currently ${d.status || 'open'}.`);\nsummaryBits.push(`Impact priority is ${pri.toUpperCase()} with ${d.affected_tickets_count ?? tickets.length ?? 0} related ticket(s).`);\n\nif (topTickets.length) {\n  const statuses = [...new Set(topTickets.map(t => t.status).filter(Boolean))];\n  if (statuses.length) summaryBits.push(`Linked ticket statuses: ${statuses.join(', ')}.`);\n  const sample = topTickets.map(t => t.title).filter(Boolean).slice(0,2).join(' | ');\n  if (sample) summaryBits.push(`Observed symptoms: ${sample}.`);\n}\n\nif (d.root_cause && d.root_cause !== 'Under investigation') {\n  summaryBits.push(`Likely root cause: ${d.root_cause}.`);\n} else {\n  summaryBits.push('Root cause is still under investigation.');\n}\n\nif (d.workaround && d.workaround !== 'None yet.') {\n  summaryBits.push(`Current workaround: ${d.workaround}.`);\n}\n\nconst generatedSummary = summaryBits.join(' ');\n\nconst ticketLines = topTickets.length\n  ? topTickets.map(t => `- ${t.id || 'N/A'} | ${t.title || 'Untitled'} | ${t.status || 'unknown'} | ${t.assignee || '-'}`).join('\\n')\n  : '- None listed';\n\nconst subject = `[ITSM Problem] ${pri.toUpperCase()} - ${d.title || 'Problem Detected'}`;\n\nconst body = [\n  'ITSM Platform - Problem Notification',\n  '==========================================',\n  '',\n  `Problem ID   : ${d.problem_id || 'N/A'}`,\n  `Title        : ${d.title || 'N/A'}`,\n  `Priority     : ${pri.toUpperCase()}`,\n  `Status       : ${d.status || 'open'}`,\n  `Affected     : ${d.affected_tickets_count ?? 0} ticket(s)`,\n  `Detected at  : ${d.created_at || new Date().toISOString()}`,\n  '',\n  sep,\n  'Problem Summary',\n  sep,\n  generatedSummary,\n  '',\n  sep,\n  'Root Cause',\n  sep,\n  d.root_cause || 'Under investigation.',\n  '',\n  sep,\n  'Workaround',\n  sep,\n  d.workaround || 'None yet.',\n  '',\n  sep,\n  'Permanent Fix',\n  sep,\n  d.permanent_fix || 'None yet.',\n  '',\n  sep,\n  'Linked Tickets (top 5)',\n  sep,\n  ticketLines,\n  '',\n  sep,\n  'View in ITSM Platform:',\n  d.problem_url || 'N/A',\n  sep,\n  '',\n  'This message was generated automatically by the ITSM n8n automation layer.',\n  'Actor: system:n8n'\n].join('\\n');\n\nreturn [{ json: { ...d, priority: pri, email_subject: subject, email_body: body, generated_summary: generatedSummary } }];"
+        },
+        "id": "d4b23352-eac5-4a8b-bb52-5bc067047c33",
+        "name": "Build Email Content",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          8864,
+          512
+        ]
+      },
+      {
+        "parameters": {
+          "fromEmail": "={{ $env.SMTP_FROM }}",
+          "toEmail": "={{ $env.PROBLEM_ALERT_EMAIL_TO }}",
+          "subject": "={{ $json.email_subject }}",
+          "emailFormat": "text",
+          "options": {}
+        },
+        "id": "1cefa6f2-e0c0-40b8-9e57-3d1e2efea102",
+        "name": "Send Problem Email",
+        "type": "n8n-nodes-base.emailSend",
+        "typeVersion": 2.1,
+        "position": [
+          9024,
+          512
+        ],
+        "webhookId": "682998ae-1f55-4a15-af12-4d0a7e9f177c",
+        "credentials": {
+          "smtp": {
+            "id": "oedZqWPMlOlqZiUE",
+            "name": "SMTP account 2"
+          }
+        },
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict",
+              "version": 1
+            },
+            "conditions": [
+              {
+                "id": "e4e632c2-3441-44c5-a0d3-570577e4d669",
+                "leftValue": "={{ !!$json.error }}",
+                "rightValue": "",
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true",
+                  "singleValue": true
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "id": "bf28bd10-c930-460b-ad6e-60b799f80741",
+        "name": "Email Failed?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          9232,
+          512
+        ]
+      },
+      {
+        "parameters": {
+          "content": "## 4. Error Handling\nAll failure paths converge here. Errors are logged to console for n8n execution logs.",
+          "height": 120,
+          "width": 460
+        },
+        "id": "e11919cd-400f-4ad4-bdbc-85e9d9ab9ee6",
+        "name": "Note: Error",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          7664,
+          768
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// Guard: ignore accidentally routed success payloads\nif ($json && $json.route === 'ok') {\n  return [];\n}\n\nconst stage = $runIndex === 0 ? 'unknown' : 'execution';\nconst payload = {\n  workflow: 'Problem Launch Notifier',\n  timestamp: new Date().toISOString(),\n  stage,\n  error: $json.error || $json.message || JSON.stringify($json)\n};\nconsole.error('[n8n][problem-notifier][error]', JSON.stringify(payload));\nreturn [{ json: payload }];"
+        },
+        "id": "d7937b58-2ad4-4d9c-b720-b1a853756128",
+        "name": "Log Error",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          8064,
+          832
+        ]
+      }
+    ],
+    "connections": {
+      "Problem Detected Webhook": {
+        "main": [
+          [
+            {
+              "node": "Validate Inbound Payload",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Validate Inbound Payload": {
+        "main": [
+          [
+            {
+              "node": "Payload Valid?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Payload Valid?": {
+        "main": [
+          [
+            {
+              "node": "Store Inbound Context",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Log Error",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Store Inbound Context": {
+        "main": [
+          [
+            {
+              "node": "Fetch Problem from Backend",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Problem from Backend": {
+        "main": [
+          [
+            {
+              "node": "Merge & Validate Enriched Data",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Merge & Validate Enriched Data": {
+        "main": [
+          [
+            {
+              "node": "Enrichment OK?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Enrichment OK?": {
+        "main": [
+          [
+            {
+              "node": "Build Email Content",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Log Error",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Email Content": {
+        "main": [
+          [
+            {
+              "node": "Send Problem Email",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Send Problem Email": {
+        "main": [
+          [
+            {
+              "node": "Email Failed?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Email Failed?": {
+        "main": [
+          [
+            {
+              "node": "Log Error",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1"
+    },
+    "staticData": null,
+    "meta": {
+      "templateCredsSetupCompleted": true
+    },
+    "pinData": {},
+    "versionId": "a239a453-7a99-42ae-9b2c-fe36bccb3e88",
+    "activeVersionId": "a239a453-7a99-42ae-9b2c-fe36bccb3e88",
+    "versionCounter": 84,
+    "triggerCount": 1,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-02-22T14:36:31.609Z",
+        "createdAt": "2026-02-22T14:36:31.609Z",
+        "role": "workflow:owner",
+        "workflowId": "VTtw3CAzM1qaqWfd",
+        "projectId": "Ewd0Cqdh2c3gtXL8",
+        "project": {
+          "updatedAt": "2026-02-22T20:16:20.092Z",
+          "createdAt": "2026-02-22T14:35:08.765Z",
+          "id": "Ewd0Cqdh2c3gtXL8",
+          "name": "Youssef youssefjmel@gmail.com <youssefjmel42@gmail.com>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "creatorId": "e39df77a-5310-4632-8b24-36d899db30af"
+        }
+      }
+    ]
+  },
+  {
+    "updatedAt": "2026-02-22T22:49:37.000Z",
+    "createdAt": "2026-02-22T22:08:40.126Z",
+    "id": "iqCYTXAtezmlBJrN25j7w",
+    "name": "Critical Incident Escalator",
+    "description": null,
+    "active": true,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {
+          "content": "## Incoming Escalation Webhook\nPOST /webhook/critical-incident receives ticket_id, priority, assignee_email, team_lead_email.",
+          "height": 220,
+          "width": 430
+        },
+        "id": "86b307b7-2e6a-417b-821d-f689282f67ce",
+        "name": "Sticky Webhook",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          0,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "critical-incident",
+          "options": {}
+        },
+        "id": "b4d4e14f-19ab-4eda-8375-1c20a6c6cdaa",
+        "name": "Critical Incident Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          144,
+          208
+        ],
+        "webhookId": "0b346542-adbd-4790-b997-12627ab0a4d7"
+      },
+      {
+        "parameters": {
+          "method": "PATCH",
+          "url": "={{$env.ITSM_BASE_URL + '/api/tickets/' + $json.body.ticket_id + '/triage'}}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "={{'Bearer ' + $env.ITSM_API_TOKEN}}"
+              },
+              {
+                "name": "X-Actor",
+                "value": "system:n8n"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { \"priority\": \"critical\", \"actor\": \"system:n8n\" } }}",
+          "options": {
+            "response": {
+              "response": {
+                "responseFormat": "json"
+              }
+            }
+          }
+        },
+        "id": "b6ca9974-5473-45b9-a0fa-6f0244a7709a",
+        "name": "Confirm Escalation in Backend",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          432,
+          208
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "boolean": [
+              {
+                "value1": "={{$json.error !== undefined}}",
+                "operation": "isTrue"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "70302dac-7631-4829-b724-b420d68880c4",
+        "name": "Triage Update Failed?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          672,
+          192
+        ]
+      },
+      {
+        "parameters": {
+          "content": "## Immediate Alerts\nSend escalation notification to assignee + team lead by Email.",
+          "height": 240,
+          "width": 520
+        },
+        "id": "350d96de-0c9d-4393-80de-492706341a9f",
+        "name": "Sticky Immediate Alerts",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          912,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "fromEmail": "={{$env.SMTP_FROM}}",
+          "toEmail": "={{$json.body.assignee_email + ',' + $json.body.team_lead_email}}",
+          "subject": "=[ITSM][CRITICAL] Escalation {{$json.body.ticket_id}}",
+          "options": {}
+        },
+        "id": "f4a1e2fd-9126-4200-8f86-c8001d209dd0",
+        "name": "Send Escalation Email",
+        "type": "n8n-nodes-base.emailSend",
+        "typeVersion": 2,
+        "position": [
+          976,
+          128
+        ],
+        "webhookId": "e2d54ce4-0f01-445e-b7be-6dbeb192132a",
+        "credentials": {
+          "smtp": {
+            "id": "oedZqWPMlOlqZiUE",
+            "name": "SMTP account 2"
+          }
+        },
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "amount": 5,
+          "unit": "minutes"
+        },
+        "id": "18660afe-f892-40fa-8d56-0c0b2ead673f",
+        "name": "Wait 5 Minutes",
+        "type": "n8n-nodes-base.wait",
+        "typeVersion": 1,
+        "position": [
+          1248,
+          208
+        ],
+        "webhookId": "29918508-7179-46e4-8721-38d432e7f4fa"
+      },
+      {
+        "parameters": {
+          "url": "={{$env.ITSM_BASE_URL + '/api/tickets/' + $json.body.ticket_id}}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "={{'Bearer ' + $env.ITSM_API_TOKEN}}"
+              },
+              {
+                "name": "X-Actor",
+                "value": "system:n8n"
+              }
+            ]
+          },
+          "options": {
+            "response": {
+              "response": {
+                "responseFormat": "json"
+              }
+            }
+          }
+        },
+        "id": "9d83360c-e7c3-4f30-8f0c-2c99e68f26ca",
+        "name": "Fetch Ticket After Wait",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1504,
+          192
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "jsCode": "if ($json.error) {\n  return [{ json: { needs_follow_up: true, reason: 'fetch_error', raw: $json } }];\n}\nconst status = String($json.status || '').toLowerCase();\nconst acknowledgedStatuses = new Set(['in_progress', 'resolved', 'closed']);\nconst needsFollowUp = !acknowledgedStatuses.has(status);\nreturn [{\n  json: {\n    ...$json,\n    needs_follow_up: needsFollowUp,\n    reason: needsFollowUp ? 'still_unacknowledged' : 'acknowledged'\n  }\n}];"
+        },
+        "id": "6a0f5fba-b727-4c1a-b528-d4cd22ed6645",
+        "name": "Evaluate Acknowledgement",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1760,
+          192
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "boolean": [
+              {
+                "value1": "={{$json.needs_follow_up === true}}",
+                "operation": "isTrue"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "0e83d686-99d8-444c-aa7d-5ef2a57f4399",
+        "name": "Still Unacknowledged?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          2032,
+          192
+        ]
+      },
+      {
+        "parameters": {
+          "fromEmail": "={{$env.SMTP_FROM}}",
+          "toEmail": "={{$node['Critical Incident Webhook'].json.body.assignee_email + ',' + $node['Critical Incident Webhook'].json.body.team_lead_email}}",
+          "subject": "=[ITSM][FOLLOW-UP][CRITICAL] {{$node['Critical Incident Webhook'].json.body.ticket_id}} still unacknowledged",
+          "options": {}
+        },
+        "id": "4f89da10-9825-48ac-ba48-16fee2e9f906",
+        "name": "Send Follow-up Email",
+        "type": "n8n-nodes-base.emailSend",
+        "typeVersion": 2,
+        "position": [
+          2288,
+          128
+        ],
+        "webhookId": "e96eb896-8d5d-4f19-8180-4c689ed621cc",
+        "credentials": {
+          "smtp": {
+            "id": "oedZqWPMlOlqZiUE",
+            "name": "SMTP account 2"
+          }
+        },
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "content": "## Error Handling\nAny failed backend or notification operation is routed to a logger branch.",
+          "height": 260,
+          "width": 520
+        },
+        "id": "f0b260a2-915b-4239-bf11-a226676ca8b9",
+        "name": "Sticky Error",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          464,
+          480
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const message = {\n  workflow: 'Critical Incident Escalator',\n  when: new Date().toISOString(),\n  error: $json.error || $json,\n};\nconsole.log('[n8n][error]', JSON.stringify(message));\nreturn [{ json: message }];"
+        },
+        "id": "3c7e487b-6a4b-4751-94ec-288f8ceb319c",
+        "name": "Log Failure",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          848,
+          560
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "boolean": [
+              {
+                "value1": "={{$json.error !== undefined}}",
+                "operation": "isTrue"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "a2ed6b2c-ea0d-4545-909c-990127fc178e",
+        "name": "Escalation Email Failed?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          1088,
+          368
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "boolean": [
+              {
+                "value1": "={{$json.error !== undefined}}",
+                "operation": "isTrue"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "f9743998-0ec2-4cde-bb98-153050cd2db7",
+        "name": "Follow-up Email Failed?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          2512,
+          128
+        ]
+      }
+    ],
+    "connections": {
+      "Critical Incident Webhook": {
+        "main": [
+          [
+            {
+              "node": "Confirm Escalation in Backend",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Confirm Escalation in Backend": {
+        "main": [
+          [
+            {
+              "node": "Triage Update Failed?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Triage Update Failed?": {
+        "main": [
+          [
+            {
+              "node": "Log Failure",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Send Escalation Email",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Wait 5 Minutes",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Wait 5 Minutes": {
+        "main": [
+          [
+            {
+              "node": "Fetch Ticket After Wait",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Ticket After Wait": {
+        "main": [
+          [
+            {
+              "node": "Evaluate Acknowledgement",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Evaluate Acknowledgement": {
+        "main": [
+          [
+            {
+              "node": "Still Unacknowledged?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Still Unacknowledged?": {
+        "main": [
+          [
+            {
+              "node": "Send Follow-up Email",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Send Escalation Email": {
+        "main": [
+          [
+            {
+              "node": "Escalation Email Failed?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Send Follow-up Email": {
+        "main": [
+          [
+            {
+              "node": "Follow-up Email Failed?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Escalation Email Failed?": {
+        "main": [
+          [
+            {
+              "node": "Log Failure",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Follow-up Email Failed?": {
+        "main": [
+          [
+            {
+              "node": "Log Failure",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "availableInMCP": false
+    },
+    "staticData": null,
+    "meta": {
+      "templateCredsSetupCompleted": true
+    },
+    "pinData": {},
+    "versionId": "51a7678a-0c20-4e35-9084-33e18e5b30b4",
+    "activeVersionId": "51a7678a-0c20-4e35-9084-33e18e5b30b4",
+    "versionCounter": 21,
+    "triggerCount": 1,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-02-22T22:08:40.138Z",
+        "createdAt": "2026-02-22T22:08:40.138Z",
+        "role": "workflow:owner",
+        "workflowId": "iqCYTXAtezmlBJrN25j7w",
+        "projectId": "Ewd0Cqdh2c3gtXL8",
+        "project": {
+          "updatedAt": "2026-02-22T20:16:20.092Z",
+          "createdAt": "2026-02-22T14:35:08.765Z",
+          "id": "Ewd0Cqdh2c3gtXL8",
+          "name": "Youssef youssefjmel@gmail.com <youssefjmel42@gmail.com>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "creatorId": "e39df77a-5310-4632-8b24-36d899db30af"
+        }
+      }
+    ]
+  },
+  {
+    "updatedAt": "2026-02-22T22:44:18.977Z",
+    "createdAt": "2026-02-22T22:29:44.353Z",
+    "id": "HJC1SCkjHLb8oy4hU1EjW",
+    "name": "My workflow",
+    "description": null,
+    "active": false,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {
+          "content": "## Critical Ticket Detector\nPOST /webhook/critical-ticket-detected\nBody minimum: { ticket_id }\nWorkflow fetches ticket details and sends email alert.",
+          "height": 180,
+          "width": 520
+        },
+        "id": "1b91dc73-77f5-4c5e-9ef3-0e3267ee9728",
+        "name": "Note: Webhook",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          -80,
+          -256
+        ]
+      },
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "critical-ticket-detected",
+          "options": {}
+        },
+        "id": "fee44005-a6ba-4753-aec4-62df739c807d",
+        "name": "Critical Ticket Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          64,
+          -64
+        ],
+        "webhookId": "ad3fa726-9d9e-4ffd-8dc2-18d241db28ed"
+      },
+      {
+        "parameters": {
+          "jsCode": "const body = $json.body || $json || {};\nconst ticketId = body.ticket_id || body.id;\nif (!ticketId) {\n  return [{ json: { route: 'error', error: 'missing_ticket_id', raw: body } }];\n}\nreturn [{ json: { route: 'ok', ticket_id: String(ticketId), inbound_priority: body.priority || 'critical' } }];"
+        },
+        "id": "de2ed8b0-0cbc-4dbd-a990-1b786024cf17",
+        "name": "Validate Inbound Payload",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          304,
+          -64
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "string": [
+              {
+                "value1": "={{ String($json.route || '').trim() }}",
+                "operation": "equals",
+                "value2": "ok"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "df6b479e-3d5c-4b1a-a7e6-168e441065f5",
+        "name": "Payload Valid?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          544,
+          -64
+        ]
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "ctd-a1",
+                "name": "ticket_id",
+                "value": "={{ $json.ticket_id }}",
+                "type": "string"
+              },
+              {
+                "id": "ctd-a2",
+                "name": "inbound_priority",
+                "value": "={{ $json.inbound_priority }}",
+                "type": "string"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "8580f662-04d6-4d5a-8d1f-8f726ea18f0a",
+        "name": "Store Inbound Context",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          784,
+          -64
+        ]
+      },
+      {
+        "parameters": {
+          "url": "={{ ($env.ITSM_BASE_URL || 'http://host.docker.internal:8000') + '/api/tickets/' + $json.ticket_id }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "={{ 'Bearer ' + $env.ITSM_API_TOKEN }}"
+              },
+              {
+                "name": "X-Actor",
+                "value": "system:n8n"
+              },
+              {
+                "name": "Accept",
+                "value": "application/json"
+              }
+            ]
+          },
+          "options": {
+            "response": {
+              "response": {
+                "responseFormat": "json"
+              }
+            }
+          }
+        },
+        "id": "484dface-3f81-405b-8c2a-8ede6d2696e5",
+        "name": "Fetch Ticket from Backend",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1024,
+          -64
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "jsCode": "const ctx = $node['Store Inbound Context'].json;\nconst detail = $json || {};\n\nif (detail.error || detail.statusCode >= 400) {\n  return [{\n    json: {\n      route: 'error',\n      error: detail.error || 'ticket_fetch_failed',\n      status: detail.statusCode,\n      ticket_id: ctx.ticket_id\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    route: 'ok',\n    ticket_id: ctx.ticket_id,\n    title: detail.title || 'Critical Ticket',\n    description: detail.description || detail.summary || 'No details provided.',\n    priority: detail.priority || ctx.inbound_priority || 'critical',\n    status: detail.status || 'open',\n    assignee: detail.assignee || 'Unassigned',\n    reporter: detail.reporter || 'N/A',\n    created_at: detail.created_at || new Date().toISOString(),\n    ticket_url: (($env.FRONTEND_BASE_URL || 'http://localhost:3000') + '/tickets/' + ctx.ticket_id)\n  }\n}];\n"
+        },
+        "id": "443dc92d-4e50-4d12-9161-2b052aa56dc5",
+        "name": "Merge & Validate Ticket",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1264,
+          -64
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "string": [
+              {
+                "value1": "={{ String($json.route || '').trim() }}",
+                "operation": "equals",
+                "value2": "ok"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "bfcdc240-835d-4f13-af32-568d3e34b089",
+        "name": "Enrichment OK?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          1504,
+          -64
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const ctx = $node['Store Inbound Context'].json;\nconst detail = $json || {};\n\nif (detail.error || detail.statusCode >= 400) {\n  return [{\n    json: {\n      route: 'error',\n      error: detail.error || 'ticket_fetch_failed',\n      status: detail.statusCode,\n      ticket_id: ctx.ticket_id\n    }\n  }];\n}\n\nreturn [{\n  json: {\n    route: 'ok',\n    ticket_id: ctx.ticket_id,\n    title: detail.title || 'Critical Ticket',\n    description: detail.description || detail.summary || 'No details provided.',\n    priority: detail.priority || ctx.inbound_priority || 'critical',\n    status: detail.status || 'open',\n    assignee: detail.assignee || 'Unassigned',\n    reporter: detail.reporter || 'N/A',\n    created_at: detail.created_at || new Date().toISOString(),\n    ticket_url: (($env.FRONTEND_BASE_URL || 'http://localhost:3000') + '/tickets/' + ctx.ticket_id)\n  }\n}];\n"
+        },
+        "id": "3cc1350f-f3b8-4742-8ea2-ffac90014a64",
+        "name": "Build Email Content",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1744,
+          -64
+        ]
+      },
+      {
+        "parameters": {
+          "fromEmail": "={{ $env.SMTP_FROM }}",
+          "toEmail": "={{ $env.CRITICAL_ALERT_EMAIL_TO || $env.ALERT_DEFAULT_EMAIL || $env.SLA_ALERT_EMAIL_TO }}",
+          "subject": "={{ $json.priority }}{{ $json.title }}",
+          "html": "={{ $json.description }}",
+          "options": {}
+        },
+        "id": "9efd09e7-48a7-4850-86a7-8bc782370947",
+        "name": "Send Critical Ticket Email",
+        "type": "n8n-nodes-base.emailSend",
+        "typeVersion": 2.1,
+        "position": [
+          1984,
+          -64
+        ],
+        "webhookId": "c1b2ba7e-fc7e-4ebe-9803-ffaac90f68f6",
+        "credentials": {
+          "smtp": {
+            "id": "oedZqWPMlOlqZiUE",
+            "name": "SMTP account 2"
+          }
+        },
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict",
+              "version": 1
+            },
+            "conditions": [
+              {
+                "id": "7e8bd7df-114c-4811-a1b2-bbfa22a0c2d3",
+                "leftValue": "={{ !!$json.error || (!!$json.rejected && $json.rejected.length > 0 && (!$json.accepted || $json.accepted.length === 0)) }}",
+                "rightValue": "",
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true",
+                  "singleValue": true
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "id": "fd92b220-ae74-4c51-b0a7-1d0611f9c4ff",
+        "name": "Email Failed?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          2208,
+          -64
+        ]
+      },
+      {
+        "parameters": {
+          "content": "## Error Handling\nAny real failure routes here. Success responses are ignored.",
+          "height": 120,
+          "width": 460
+        },
+        "id": "62179a1b-c55f-424a-ac1f-3d0d7502900e",
+        "name": "Note: Error",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          608,
+          208
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "if ($json && $json.route === 'ok') { return []; }\nconst payload = { workflow: 'Critical Ticket Detector', timestamp: new Date().toISOString(), error: $json.error || $json.message || JSON.stringify($json), data: $json };\nconsole.error('[n8n][critical-ticket-detector][error]', JSON.stringify(payload));\nreturn [{ json: payload }];"
+        },
+        "id": "6b198233-8369-4501-8d26-9d3271c470c6",
+        "name": "Log Error",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          960,
+          272
+        ]
+      }
+    ],
+    "connections": {
+      "Critical Ticket Webhook": {
+        "main": [
+          [
+            {
+              "node": "Validate Inbound Payload",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Validate Inbound Payload": {
+        "main": [
+          [
+            {
+              "node": "Payload Valid?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Payload Valid?": {
+        "main": [
+          [
+            {
+              "node": "Store Inbound Context",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Log Error",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Store Inbound Context": {
+        "main": [
+          [
+            {
+              "node": "Fetch Ticket from Backend",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Ticket from Backend": {
+        "main": [
+          [
+            {
+              "node": "Merge & Validate Ticket",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Merge & Validate Ticket": {
+        "main": [
+          [
+            {
+              "node": "Enrichment OK?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Enrichment OK?": {
+        "main": [
+          [
+            {
+              "node": "Build Email Content",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Log Error",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Email Content": {
+        "main": [
+          [
+            {
+              "node": "Send Critical Ticket Email",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Send Critical Ticket Email": {
+        "main": [
+          [
+            {
+              "node": "Email Failed?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Email Failed?": {
+        "main": [
+          [
+            {
+              "node": "Log Error",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "availableInMCP": false
+    },
+    "staticData": null,
+    "meta": {
+      "templateCredsSetupCompleted": true
+    },
+    "pinData": {},
+    "versionId": "cd1ca03a-c850-416d-8395-24b17706ccc7",
+    "activeVersionId": null,
+    "versionCounter": 31,
+    "triggerCount": 0,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-02-22T22:29:44.372Z",
+        "createdAt": "2026-02-22T22:29:44.372Z",
+        "role": "workflow:owner",
+        "workflowId": "HJC1SCkjHLb8oy4hU1EjW",
+        "projectId": "Ewd0Cqdh2c3gtXL8",
+        "project": {
+          "updatedAt": "2026-02-22T20:16:20.092Z",
+          "createdAt": "2026-02-22T14:35:08.765Z",
+          "id": "Ewd0Cqdh2c3gtXL8",
+          "name": "Youssef youssefjmel@gmail.com <youssefjmel42@gmail.com>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "creatorId": "e39df77a-5310-4632-8b24-36d899db30af"
+        }
+      }
+    ]
+  },
+  {
+    "updatedAt": "2026-02-23T12:42:41.812Z",
+    "createdAt": "2026-02-23T12:09:07.717Z",
+    "id": "thlIToi2Ofxq_zIF-tDZQ",
+    "name": "My workflow 2",
+    "description": null,
+    "active": true,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {
+          "content": "## Critical Ticket Detector\nPOST /webhook/critical-ticket-detected\nBody minimum: { ticket_id }\nWorkflow fetches ticket details and sends email alert.",
+          "height": 180,
+          "width": 520
+        },
+        "id": "8445d732-9dc1-4d42-b18a-33f3b70f2d1d",
+        "name": "Note: Webhook",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          192,
+          -80
+        ]
+      },
+      {
+        "parameters": {
+          "httpMethod": "POST",
+          "path": "critical-ticket-detected",
+          "options": {}
+        },
+        "id": "53f8b844-96ac-423f-b235-5d27470fd87d",
+        "name": "Critical Ticket Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          336,
+          128
+        ],
+        "webhookId": "625b6da6-5967-4880-a5fa-da374a6de11f"
+      },
+      {
+        "parameters": {
+          "jsCode": "const body = $json.body || $json || {};\nconst ticketId = body.ticket_id || body.id;\nconst traceId = body.trace_id || `ctk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;\nconst runId = $execution?.id ? String($execution.id) : `manual-${Date.now()}`;\nif (!ticketId) {\n  return [{ json: { route: 'error', stage: 'validate_inbound', error: 'missing_ticket_id', trace_id: traceId, run_id: runId, raw: body } }];\n}\nreturn [{ json: { route: 'ok', stage: 'validate_inbound', trace_id: traceId, run_id: runId, ticket_id: String(ticketId), inbound_priority: body.priority || 'critical' } }];"
+        },
+        "id": "93bf8153-b837-4203-a0a4-9eeca2141079",
+        "name": "Validate Inbound Payload",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          576,
+          128
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict",
+              "version": 1
+            },
+            "conditions": [
+              {
+                "id": "a7584dcc-95d3-49fb-9ebf-90342aff2f0a",
+                "leftValue": "={{ String($json.route || '').trim() }}",
+                "rightValue": "ok",
+                "operator": {
+                  "type": "string",
+                  "operation": "equals",
+                  "name": "filter.operator.equals"
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "id": "9fd3316e-9265-44ec-921b-e2ecae00fb34",
+        "name": "Payload Valid?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          816,
+          128
+        ]
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "ctd-a1",
+                "name": "ticket_id",
+                "value": "={{ $json.ticket_id }}",
+                "type": "string"
+              },
+              {
+                "id": "ctd-a2",
+                "name": "inbound_priority",
+                "value": "={{ $json.inbound_priority }}",
+                "type": "string"
+              },
+              {
+                "id": "ctd-a3",
+                "name": "trace_id",
+                "value": "={{ $json.trace_id }}",
+                "type": "string"
+              },
+              {
+                "id": "ctd-a4",
+                "name": "run_id",
+                "value": "={{ $json.run_id }}",
+                "type": "string"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "971a7843-67e9-44b5-ae56-ec9f0317cd8a",
+        "name": "Store Inbound Context",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          1056,
+          128
+        ]
+      },
+      {
+        "parameters": {
+          "url": "={{ ($env.ITSM_BASE_URL || 'http://host.docker.internal:8000') + '/api/tickets/' + $json.ticket_id }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "={{ 'Bearer ' + $env.ITSM_API_TOKEN }}"
+              },
+              {
+                "name": "X-Actor",
+                "value": "system:n8n"
+              },
+              {
+                "name": "Accept",
+                "value": "application/json"
+              },
+              {
+                "name": "X-Trace-Id",
+                "value": "={{ $json.trace_id }}"
+              },
+              {
+                "name": "X-Workflow-Run-Id",
+                "value": "={{ $json.run_id }}"
+              }
+            ]
+          },
+          "options": {
+            "response": {
+              "response": {
+                "responseFormat": "json"
+              }
+            }
+          }
+        },
+        "id": "9646818e-4e41-431e-bc9a-91b8ddf87e34",
+        "name": "Fetch Ticket from Backend",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1296,
+          128
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "jsCode": "const ctx = $node['Store Inbound Context'].json;\nconst detail = $json || {};\nif (detail.error || detail.statusCode >= 400) {\n  return [{ json: { route: 'error', stage: 'fetch_ticket', trace_id: ctx.trace_id, run_id: ctx.run_id, error: detail.error || 'ticket_fetch_failed', status: detail.statusCode, ticket_id: ctx.ticket_id } }];\n}\nreturn [{ json: { route: 'ok', stage: 'merge_enriched', trace_id: ctx.trace_id, run_id: ctx.run_id, ticket_id: ctx.ticket_id, title: detail.title || 'Critical Ticket', description: detail.description || detail.summary || 'No details provided.', priority: detail.priority || ctx.inbound_priority || 'critical', status: detail.status || 'open', assignee: detail.assignee || 'Unassigned', reporter: detail.reporter || 'N/A', created_at: detail.created_at || new Date().toISOString(), ticket_url: (($env.FRONTEND_BASE_URL || 'http://localhost:3000') + '/tickets/' + ctx.ticket_id) } }];"
+        },
+        "id": "14620517-bc67-440e-a9a8-befeb60e2374",
+        "name": "Merge & Validate Ticket",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1536,
+          128
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict",
+              "version": 1
+            },
+            "conditions": [
+              {
+                "id": "68d5c64c-23d2-40b1-b46e-7a2b41598d57",
+                "leftValue": "={{String($json.route || '').trim() }}",
+                "rightValue": "ok",
+                "operator": {
+                  "type": "string",
+                  "operation": "equals"
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "id": "e6071be7-4d5f-43af-a449-e95860d396e8",
+        "name": "Enrichment OK?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          1776,
+          128
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const d = $json;\n\nconst subject = `[ITSM][CRITICAL] ${String(d.priority || 'critical').toUpperCase()} - ${d.ticket_id} - ${d.title || 'Critical Ticket'}`;\n\nconst summary = [\n  `Ticket ID: ${d.ticket_id || 'N/A'}`,\n  `Title: ${d.title || 'N/A'}`,\n  `Priority: ${String(d.priority || 'critical').toUpperCase()}`,\n  `Status: ${d.status || 'open'}`,\n  `Assignee: ${d.assignee || 'Unassigned'}`,\n  `Reporter: ${d.reporter || 'N/A'}`,\n  `Created At: ${d.created_at || new Date().toISOString()}`,\n].join('\\n');\n\nconst body = [\n  'Critical Ticket Summary',\n  '==========================================',\n  summary,\n  '',\n  'Description',\n  '------------------------------------------',\n  d.description || 'No details provided.',\n  '',\n  'Open in ITSM:',\n  d.ticket_url || 'N/A',\n  '',\n  `Trace ID: ${d.trace_id || 'N/A'}`,\n  `Run ID: ${d.run_id || 'N/A'}`,\n].join('\\n');\n\nreturn [{ json: { ...d, stage: 'build_email', email_subject: subject, email_body: body } }];\n"
+        },
+        "id": "f95fd0de-ec0e-4f2c-a6c3-fc7e0cd4267e",
+        "name": "Build Email Content",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2016,
+          128
+        ]
+      },
+      {
+        "parameters": {
+          "fromEmail": "={{ $env.SMTP_FROM }}",
+          "toEmail": "={{ $env.CRITICAL_ALERT_EMAIL_TO || $env.ALERT_DEFAULT_EMAIL || $env.SLA_ALERT_EMAIL_TO }}",
+          "subject": "={{ $json.email_subject }}",
+          "emailFormat": "both",
+          "options": {}
+        },
+        "id": "17dbb6e7-39b8-4880-a5c1-ccbfafb22b45",
+        "name": "Send Critical Ticket Email",
+        "type": "n8n-nodes-base.emailSend",
+        "typeVersion": 2.1,
+        "position": [
+          2256,
+          128
+        ],
+        "webhookId": "3bc6c202-cf3c-41a3-b34c-7887a9b72dd9",
+        "credentials": {
+          "smtp": {
+            "id": "oedZqWPMlOlqZiUE",
+            "name": "SMTP account 2"
+          }
+        },
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "leftValue": "",
+              "typeValidation": "strict",
+              "version": 1
+            },
+            "conditions": [
+              {
+                "id": "85fff91b-4995-4660-a7b2-3bb4b7810503",
+                "leftValue": "={{ !!$json.error || (Array.isArray($json.rejected) && $json.rejected.length > 0) }}",
+                "rightValue": "",
+                "operator": {
+                  "type": "boolean",
+                  "operation": "true",
+                  "singleValue": true
+                }
+              }
+            ],
+            "combinator": "and"
+          },
+          "options": {}
+        },
+        "id": "8b964f62-a68a-40cb-83a9-7b3df72f2154",
+        "name": "Email Failed?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          2480,
+          128
+        ]
+      },
+      {
+        "parameters": {
+          "content": "## Error Handling\nAny real failure routes here. Success responses are ignored.",
+          "height": 120,
+          "width": 460
+        },
+        "id": "aacd9915-fffb-4988-a6fd-24b0f1698080",
+        "name": "Note: Error",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          880,
+          384
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const payload = {\n  workflow: 'Critical Ticket Detector',\n  timestamp: new Date().toISOString(),\n  stage: $json.stage || 'unknown',\n  route: 'error',\n  trace_id: $json.trace_id || 'N/A',\n  run_id: $json.run_id || 'N/A',\n  ticket_id: $json.ticket_id || 'N/A',\n  error: $json.error || $json.message || JSON.stringify($json)\n};\nconsole.error('[n8n][critical-ticket-detector][error]', JSON.stringify(payload));\nreturn [{ json: payload }];"
+        },
+        "id": "ee485b33-b1ea-4711-b65f-45c9160171f5",
+        "name": "Log Error",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1488,
+          544
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const payload = {\n  workflow: 'Critical Ticket Detector',\n  timestamp: new Date().toISOString(),\n  stage: 'email_sent',\n  route: 'ok',\n  trace_id: $json.trace_id || 'N/A',\n  run_id: $json.run_id || 'N/A',\n  ticket_id: $json.ticket_id || 'N/A',\n  email_to: ($env.CRITICAL_ALERT_EMAIL_TO || $env.ALERT_DEFAULT_EMAIL || $env.SLA_ALERT_EMAIL_TO || 'N/A'),\n  message_id: $json.messageId || null\n};\nconsole.log('[n8n][critical-ticket-detector][success]', JSON.stringify(payload));\nreturn [{ json: payload }];"
+        },
+        "id": "434d0aca-740f-41ba-8d75-e7a8ae5d7067",
+        "name": "Log Success",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2768,
+          48
+        ]
+      }
+    ],
+    "connections": {
+      "Critical Ticket Webhook": {
+        "main": [
+          [
+            {
+              "node": "Validate Inbound Payload",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Validate Inbound Payload": {
+        "main": [
+          [
+            {
+              "node": "Payload Valid?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Payload Valid?": {
+        "main": [
+          [
+            {
+              "node": "Store Inbound Context",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Log Error",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Store Inbound Context": {
+        "main": [
+          [
+            {
+              "node": "Fetch Ticket from Backend",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Ticket from Backend": {
+        "main": [
+          [
+            {
+              "node": "Merge & Validate Ticket",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Merge & Validate Ticket": {
+        "main": [
+          [
+            {
+              "node": "Enrichment OK?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Enrichment OK?": {
+        "main": [
+          [
+            {
+              "node": "Build Email Content",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Log Error",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Email Content": {
+        "main": [
+          [
+            {
+              "node": "Send Critical Ticket Email",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Send Critical Ticket Email": {
+        "main": [
+          [
+            {
+              "node": "Email Failed?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Email Failed?": {
+        "main": [
+          [
+            {
+              "node": "Log Error",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Log Success",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1",
+      "availableInMCP": false
+    },
+    "staticData": null,
+    "meta": {
+      "templateCredsSetupCompleted": true
+    },
+    "pinData": {},
+    "versionId": "e88270ad-9a31-4927-9836-9b236ff33af1",
+    "activeVersionId": "e88270ad-9a31-4927-9836-9b236ff33af1",
+    "versionCounter": 29,
+    "triggerCount": 1,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-02-23T12:09:07.724Z",
+        "createdAt": "2026-02-23T12:09:07.724Z",
+        "role": "workflow:owner",
+        "workflowId": "thlIToi2Ofxq_zIF-tDZQ",
+        "projectId": "Ewd0Cqdh2c3gtXL8",
+        "project": {
+          "updatedAt": "2026-02-22T20:16:20.092Z",
+          "createdAt": "2026-02-22T14:35:08.765Z",
+          "id": "Ewd0Cqdh2c3gtXL8",
+          "name": "Youssef youssefjmel@gmail.com <youssefjmel42@gmail.com>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "creatorId": "e39df77a-5310-4632-8b24-36d899db30af"
+        }
+      }
+    ]
+  },
+  {
+    "updatedAt": "2026-02-23T14:22:23.420Z",
+    "createdAt": "2026-02-23T14:22:23.420Z",
+    "id": "yqiuEZEe2NDj2g34",
+    "name": "Critical Ticket Detector",
+    "description": null,
+    "active": false,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {
+          "width": 520,
+          "height": 180,
+          "content": "## Critical Ticket Detector\nPOST /webhook/critical-ticket-detected\nBody minimum: { ticket_id }\nWorkflow fetches ticket details and sends email alert."
+        },
+        "id": "ctd-note-webhook",
+        "name": "Note: Webhook",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          80,
+          60
+        ]
+      },
+      {
+        "parameters": {
+          "path": "critical-ticket-detected",
+          "httpMethod": "POST",
+          "responseMode": "onReceived",
+          "options": {}
+        },
+        "id": "ctd-webhook",
+        "name": "Critical Ticket Webhook",
+        "type": "n8n-nodes-base.webhook",
+        "typeVersion": 2,
+        "position": [
+          220,
+          260
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const body = $json.body || $json || {};\nconst ticketId = body.ticket_id || body.id;\nconst traceId = body.trace_id || `ctk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;\nconst runId = $execution?.id ? String($execution.id) : `manual-${Date.now()}`;\nif (!ticketId) {\n  return [{ json: { route: 'error', stage: 'validate_inbound', error: 'missing_ticket_id', trace_id: traceId, run_id: runId, raw: body } }];\n}\nreturn [{ json: { route: 'ok', stage: 'validate_inbound', trace_id: traceId, run_id: runId, ticket_id: String(ticketId), inbound_priority: body.priority || 'critical' } }];"
+        },
+        "id": "ctd-validate",
+        "name": "Validate Inbound Payload",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          460,
+          260
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "string": [
+              {
+                "value1": "={{ String($json.route || '').trim() }}",
+                "operation": "equals",
+                "value2": "ok"
+              }
+            ]
+          }
+        },
+        "id": "ctd-valid-if",
+        "name": "Payload Valid?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          700,
+          260
+        ]
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "ctd-a1",
+                "name": "ticket_id",
+                "value": "={{ $json.ticket_id }}",
+                "type": "string"
+              },
+              {
+                "id": "ctd-a2",
+                "name": "inbound_priority",
+                "value": "={{ $json.inbound_priority }}",
+                "type": "string"
+              },
+              {
+                "id": "ctd-a3",
+                "name": "trace_id",
+                "value": "={{ $json.trace_id }}",
+                "type": "string"
+              },
+              {
+                "id": "ctd-a4",
+                "name": "run_id",
+                "value": "={{ $json.run_id }}",
+                "type": "string"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "ctd-store",
+        "name": "Store Inbound Context",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          940,
+          260
+        ]
+      },
+      {
+        "parameters": {
+          "method": "GET",
+          "url": "={{ ($env.ITSM_BASE_URL || 'http://host.docker.internal:8000') + '/api/tickets/' + $json.ticket_id }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "={{ 'Bearer ' + $env.ITSM_API_TOKEN }}"
+              },
+              {
+                "name": "X-Actor",
+                "value": "system:n8n"
+              },
+              {
+                "name": "Accept",
+                "value": "application/json"
+              },
+              {
+                "name": "X-Trace-Id",
+                "value": "={{ $json.trace_id }}"
+              },
+              {
+                "name": "X-Workflow-Run-Id",
+                "value": "={{ $json.run_id }}"
+              }
+            ]
+          },
+          "options": {
+            "response": {
+              "response": {
+                "responseFormat": "json"
+              }
+            }
+          }
+        },
+        "id": "ctd-fetch-ticket",
+        "name": "Fetch Ticket from Backend",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1180,
+          260
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "jsCode": "const ctx = $node['Store Inbound Context'].json;\nconst detail = $json || {};\nif (detail.error || detail.statusCode >= 400) {\n  return [{ json: { route: 'error', stage: 'fetch_ticket', trace_id: ctx.trace_id, run_id: ctx.run_id, error: detail.error || 'ticket_fetch_failed', status: detail.statusCode, ticket_id: ctx.ticket_id } }];\n}\nreturn [{ json: { route: 'ok', stage: 'merge_enriched', trace_id: ctx.trace_id, run_id: ctx.run_id, ticket_id: ctx.ticket_id, title: detail.title || 'Critical Ticket', description: detail.description || detail.summary || 'No details provided.', priority: detail.priority || ctx.inbound_priority || 'critical', status: detail.status || 'open', assignee: detail.assignee || 'Unassigned', reporter: detail.reporter || 'N/A', created_at: detail.created_at || new Date().toISOString(), ticket_url: (($env.FRONTEND_BASE_URL || 'http://localhost:3000') + '/tickets/' + ctx.ticket_id) } }];"
+        },
+        "id": "ctd-merge",
+        "name": "Merge & Validate Ticket",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1420,
+          260
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "string": [
+              {
+                "value1": "={{ String($json.route || '').trim() }}",
+                "operation": "equals",
+                "value2": "ok"
+              }
+            ]
+          }
+        },
+        "id": "ctd-enrich-if",
+        "name": "Enrichment OK?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          1660,
+          260
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const d = $json;\nconst subject = `[ITSM][CRITICAL] ${String(d.priority || 'critical').toUpperCase()} - ${d.ticket_id} - ${d.title || 'Critical Ticket'}`;\nconst body = [\n  'Critical Ticket Notification',\n  '==========================================',\n  `Trace ID   : ${d.trace_id || 'N/A'}`,\n  `Run ID     : ${d.run_id || 'N/A'}`,\n  `Ticket ID  : ${d.ticket_id || 'N/A'}`,\n  `Title      : ${d.title || 'N/A'}`,\n  `Priority   : ${String(d.priority || 'critical').toUpperCase()}`,\n  `Status     : ${d.status || 'open'}`,\n  `Assignee   : ${d.assignee || 'Unassigned'}`,\n  `Reporter   : ${d.reporter || 'N/A'}`,\n  `Created At : ${d.created_at || new Date().toISOString()}`,\n  '',\n  'Description',\n  '------------------------------------------',\n  d.description || 'No details provided.',\n  '',\n  'Open in ITSM:',\n  d.ticket_url || 'N/A'\n].join('\\n');\nreturn [{ json: { ...d, stage: 'build_email', email_subject: subject, email_body: body } }];"
+        },
+        "id": "ctd-build-email",
+        "name": "Build Email Content",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1900,
+          260
+        ]
+      },
+      {
+        "parameters": {
+          "fromEmail": "={{ $env.SMTP_FROM }}",
+          "toEmail": "={{ $env.CRITICAL_ALERT_EMAIL_TO || $env.ALERT_DEFAULT_EMAIL || $env.SLA_ALERT_EMAIL_TO }}",
+          "subject": "={{ $json.email_subject }}",
+          "emailType": "text",
+          "message": "={{ $json.email_body }}"
+        },
+        "id": "ctd-send-email",
+        "name": "Send Critical Ticket Email",
+        "type": "n8n-nodes-base.emailSend",
+        "typeVersion": 2.1,
+        "position": [
+          2140,
+          260
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "boolean": [
+              {
+                "value1": "={{ !!$json.error || (!!$json.rejected && $json.rejected.length > 0 && (!$json.accepted || $json.accepted.length === 0)) }}",
+                "operation": "isTrue"
+              }
+            ]
+          }
+        },
+        "id": "ctd-email-failed",
+        "name": "Email Failed?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2,
+        "position": [
+          2360,
+          260
+        ]
+      },
+      {
+        "parameters": {
+          "width": 460,
+          "height": 120,
+          "content": "## Error Handling\nAny real failure routes here. Success responses are ignored."
+        },
+        "id": "ctd-note-error",
+        "name": "Note: Error",
+        "type": "n8n-nodes-base.stickyNote",
+        "typeVersion": 1,
+        "position": [
+          760,
+          520
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const payload = {\n  workflow: 'Critical Ticket Detector',\n  timestamp: new Date().toISOString(),\n  stage: $json.stage || 'unknown',\n  route: 'error',\n  trace_id: $json.trace_id || 'N/A',\n  run_id: $json.run_id || 'N/A',\n  ticket_id: $json.ticket_id || 'N/A',\n  error: $json.error || $json.message || JSON.stringify($json)\n};\nconsole.error('[n8n][critical-ticket-detector][error]', JSON.stringify(payload));\nreturn [{ json: payload }];"
+        },
+        "id": "ctd-log-error",
+        "name": "Log Error",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1120,
+          580
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const payload = {\n  workflow: 'Critical Ticket Detector',\n  timestamp: new Date().toISOString(),\n  stage: 'email_sent',\n  route: 'ok',\n  trace_id: $json.trace_id || 'N/A',\n  run_id: $json.run_id || 'N/A',\n  ticket_id: $json.ticket_id || 'N/A',\n  email_to: ($env.CRITICAL_ALERT_EMAIL_TO || $env.ALERT_DEFAULT_EMAIL || $env.SLA_ALERT_EMAIL_TO || 'N/A'),\n  message_id: $json.messageId || null\n};\nconsole.log('[n8n][critical-ticket-detector][success]', JSON.stringify(payload));\nreturn [{ json: payload }];"
+        },
+        "id": "ctd-log-success",
+        "name": "Log Success",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2580,
+          360
+        ]
+      }
+    ],
+    "connections": {
+      "Critical Ticket Webhook": {
+        "main": [
+          [
+            {
+              "node": "Validate Inbound Payload",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Validate Inbound Payload": {
+        "main": [
+          [
+            {
+              "node": "Payload Valid?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Payload Valid?": {
+        "main": [
+          [
+            {
+              "node": "Store Inbound Context",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Log Error",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Store Inbound Context": {
+        "main": [
+          [
+            {
+              "node": "Fetch Ticket from Backend",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Ticket from Backend": {
+        "main": [
+          [
+            {
+              "node": "Merge & Validate Ticket",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Merge & Validate Ticket": {
+        "main": [
+          [
+            {
+              "node": "Enrichment OK?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Enrichment OK?": {
+        "main": [
+          [
+            {
+              "node": "Build Email Content",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Log Error",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Email Content": {
+        "main": [
+          [
+            {
+              "node": "Send Critical Ticket Email",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Send Critical Ticket Email": {
+        "main": [
+          [
+            {
+              "node": "Email Failed?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Email Failed?": {
+        "main": [
+          [
+            {
+              "node": "Log Error",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Log Success",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1"
+    },
+    "staticData": null,
+    "meta": null,
+    "pinData": {},
+    "versionId": "ba68c7cf-a6f9-49b4-ab4b-dcdfd4fcf496",
+    "activeVersionId": null,
+    "versionCounter": 1,
+    "triggerCount": 0,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-02-23T14:22:23.428Z",
+        "createdAt": "2026-02-23T14:22:23.428Z",
+        "role": "workflow:owner",
+        "workflowId": "yqiuEZEe2NDj2g34",
+        "projectId": "Ewd0Cqdh2c3gtXL8",
+        "project": {
+          "updatedAt": "2026-02-22T20:16:20.092Z",
+          "createdAt": "2026-02-22T14:35:08.765Z",
+          "id": "Ewd0Cqdh2c3gtXL8",
+          "name": "Youssef youssefjmel@gmail.com <youssefjmel42@gmail.com>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "creatorId": "e39df77a-5310-4632-8b24-36d899db30af"
+        }
+      }
+    ]
+  }
+]

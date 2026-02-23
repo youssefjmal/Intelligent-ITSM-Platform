@@ -367,6 +367,27 @@ def _ticket_pair_similarity_score(ticket: Ticket, other: Ticket) -> float:
     return _hybrid_similarity(lexical=lexical, semantic=semantic)
 
 
+def find_similar_tickets(
+    *,
+    ticket: Ticket,
+    candidates: list[Ticket],
+    limit: int = 5,
+    min_score: float = 0.3,
+) -> list[tuple[Ticket, float]]:
+    """Rank similar tickets using the same hybrid lexical+semantic score used for Problem detection."""
+    ranked: list[tuple[Ticket, float]] = []
+    for candidate in candidates:
+        if candidate.id == ticket.id:
+            continue
+        score = _ticket_pair_similarity_score(ticket, candidate)
+        if score < min_score:
+            continue
+        ranked.append((candidate, score))
+
+    ranked.sort(key=lambda item: (item[1], item[0].updated_at), reverse=True)
+    return ranked[: max(1, limit)]
+
+
 def _find_similar_problem(
     db: Session,
     *,

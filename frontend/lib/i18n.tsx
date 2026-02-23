@@ -190,6 +190,19 @@ const translations = {
   "detail.aiSuggestedCategory": { fr: "Categorie suggeree", en: "Suggested category" },
   "detail.aiSuggestedAssignee": { fr: "Assigne suggere", en: "Suggested assignee" },
   "detail.aiRefresh": { fr: "Rafraichir IA", en: "Refresh AI" },
+  "detail.similarTickets": { fr: "Tickets similaires (RAG)", en: "Similar tickets (RAG)" },
+  "detail.similarTicketsDesc": {
+    fr: "Tickets proches detectes via similarite hybride lexicale + embeddings.",
+    en: "Closest tickets detected via hybrid lexical + embedding similarity.",
+  },
+  "detail.similarTicketsLoading": { fr: "Recherche des tickets similaires...", en: "Searching similar tickets..." },
+  "detail.similarTicketsError": { fr: "Impossible de charger les tickets similaires.", en: "Could not load similar tickets." },
+  "detail.similarTicketsEmpty": {
+    fr: "Ce ticket n'a pas de tickets similaires.",
+    en: "This ticket has no similar tickets.",
+  },
+  "detail.similarityScore": { fr: "Score de similarite", en: "Similarity score" },
+  "detail.openTicket": { fr: "Ouvrir le ticket", en: "Open ticket" },
   "detail.notFound": { fr: "Ticket non trouve", en: "Ticket not found" },
   "detail.notFoundDesc": {
     fr: "Le ticket {id} n'existe pas ou a ete supprime.",

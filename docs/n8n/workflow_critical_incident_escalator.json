@@ -1,0 +1,439 @@
+{
+  "name": "Critical Incident Escalator",
+  "nodes": [
+    {
+      "parameters": {
+        "width": 430,
+        "height": 220,
+        "content": "## Incoming Escalation Webhook\nPOST /webhook/critical-incident receives ticket_id, priority, assignee_email, team_lead_email."
+      },
+      "id": "crit-note-webhook",
+      "name": "Sticky Webhook",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        80,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "path": "critical-incident",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "crit-webhook",
+      "name": "Critical Incident Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$env.ITSM_BASE_URL + '/api/tickets/' + $json.body.ticket_id + '/triage'}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{'Bearer ' + $env.ITSM_API_TOKEN}}"
+            },
+            {
+              "name": "X-Actor",
+              "value": "system:n8n"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"priority\": \"critical\", \"actor\": \"system:n8n\" } }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "crit-triage-patch",
+      "name": "Confirm Escalation in Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        500,
+        280
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.error !== undefined}}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "crit-triage-error-check",
+      "name": "Triage Update Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        760,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "width": 520,
+        "height": 240,
+        "content": "## Immediate Alerts\nSend escalation notification to assignee + team lead by Email."
+      },
+      "id": "crit-note-alerts",
+      "name": "Sticky Immediate Alerts",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        980,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$env.SMTP_FROM}}",
+        "toEmail": "={{$json.body.assignee_email + ',' + $json.body.team_lead_email}}",
+        "subject": "=[ITSM][CRITICAL] Escalation {{$json.body.ticket_id}}",
+        "message": "=Critical escalation triggered for ticket {{$json.body.ticket_id}}.\\nPriority: {{$json.body.priority || 'critical'}}\\nDescription: {{$json.body.description || $json.body.title || 'N/A'}}\\nActor: system:n8n\\n\\nPlease acknowledge immediately."
+      },
+      "id": "crit-email-primary",
+      "name": "Send Escalation Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        1050,
+        260
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "amount": 5,
+        "unit": "minutes"
+      },
+      "id": "crit-wait",
+      "name": "Wait 5 Minutes",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [
+        1320,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.ITSM_BASE_URL + '/api/tickets/' + $json.body.ticket_id}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{'Bearer ' + $env.ITSM_API_TOKEN}}"
+            },
+            {
+              "name": "X-Actor",
+              "value": "system:n8n"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "crit-recheck-ticket",
+      "name": "Fetch Ticket After Wait",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1580,
+        260
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "if ($json.error) {\n  return [{ json: { needs_follow_up: true, reason: 'fetch_error', raw: $json } }];\n}\nconst status = String($json.status || '').toLowerCase();\nconst acknowledgedStatuses = new Set(['in_progress', 'resolved', 'closed']);\nconst needsFollowUp = !acknowledgedStatuses.has(status);\nreturn [{\n  json: {\n    ...$json,\n    needs_follow_up: needsFollowUp,\n    reason: needsFollowUp ? 'still_unacknowledged' : 'acknowledged'\n  }\n}];"
+      },
+      "id": "crit-eval-ack",
+      "name": "Evaluate Acknowledgement",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.needs_follow_up === true}}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "crit-followup-if",
+      "name": "Still Unacknowledged?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2100,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$env.SMTP_FROM}}",
+        "toEmail": "={{$node['Critical Incident Webhook'].json.body.assignee_email + ',' + $node['Critical Incident Webhook'].json.body.team_lead_email}}",
+        "subject": "=[ITSM][FOLLOW-UP][CRITICAL] {{$node['Critical Incident Webhook'].json.body.ticket_id}} still unacknowledged",
+        "message": "=Follow-up escalation triggered 5 minutes after initial alert.\\nTicket: {{$node['Critical Incident Webhook'].json.body.ticket_id}}\\nDescription: {{$node['Critical Incident Webhook'].json.body.description || $node['Critical Incident Webhook'].json.body.title || 'N/A'}}\\nStatus: {{$json.status || 'unknown'}}\\nReason: {{$json.reason}}"
+      },
+      "id": "crit-email-followup",
+      "name": "Send Follow-up Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        2360,
+        200
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "width": 520,
+        "height": 260,
+        "content": "## Error Handling\nAny failed backend or notification operation is routed to a logger branch."
+      },
+      "id": "crit-note-error",
+      "name": "Sticky Error",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        540,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const message = {\n  workflow: 'Critical Incident Escalator',\n  when: new Date().toISOString(),\n  error: $json.error || $json,\n};\nconsole.log('[n8n][error]', JSON.stringify(message));\nreturn [{ json: message }];"
+      },
+      "id": "crit-error-log",
+      "name": "Log Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.error !== undefined}}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "crit-email-failed-check",
+      "name": "Escalation Email Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.error !== undefined}}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "crit-follow-email-failed-check",
+      "name": "Follow-up Email Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2580,
+        200
+      ]
+    }
+  ],
+  "connections": {
+    "Critical Incident Webhook": {
+      "main": [
+        [
+          {
+            "node": "Confirm Escalation in Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirm Escalation in Backend": {
+      "main": [
+        [
+          {
+            "node": "Triage Update Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Triage Update Failed?": {
+      "main": [
+        [
+          {
+            "node": "Log Failure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Escalation Email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Wait 5 Minutes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 5 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Fetch Ticket After Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Ticket After Wait": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Acknowledgement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Acknowledgement": {
+      "main": [
+        [
+          {
+            "node": "Still Unacknowledged?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still Unacknowledged?": {
+      "main": [
+        [
+          {
+            "node": "Send Follow-up Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Send Escalation Email": {
+      "main": [
+        [
+          {
+            "node": "Escalation Email Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Follow-up Email": {
+      "main": [
+        [
+          {
+            "node": "Follow-up Email Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escalation Email Failed?": {
+      "main": [
+        [
+          {
+            "node": "Log Failure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Follow-up Email Failed?": {
+      "main": [
+        [
+          {
+            "node": "Log Failure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "1",
+  "id": "workflow_critical_incident_escalator",
+  "tags": []
+}

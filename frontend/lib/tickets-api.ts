@@ -1,7 +1,7 @@
 // API helpers for tickets with snake_case to camelCase mapping.
 
 import { apiFetch } from "@/lib/api"
-import { type Ticket, type TicketCategory, type TicketPriority, type TicketStatus } from "@/lib/ticket-data"
+import { type SlaStatus, type Ticket, type TicketCategory, type TicketPriority, type TicketStatus } from "@/lib/ticket-data"
 
 type ApiComment = {
   id: string
@@ -29,6 +29,8 @@ type ApiTicket = {
   assignment_change_count?: number
   first_action_at?: string | null
   resolved_at?: string | null
+  sla_status?: SlaStatus | null
+  sla_remaining_minutes?: number | null
   created_at: string
   updated_at: string
   resolution?: string | null
@@ -72,6 +74,7 @@ function mapTicket(ticket: ApiTicket): Ticket {
     assignmentChangeCount: ticket.assignment_change_count,
     firstActionAt: ticket.first_action_at || undefined,
     resolvedAt: ticket.resolved_at || undefined,
+    slaStatus: ticket.sla_status ?? null,
     createdAt: ticket.created_at,
     updatedAt: ticket.updated_at,
     resolution: ticket.resolution || undefined,
@@ -254,12 +257,38 @@ export async function fetchTicketPerformance(filters: PerformanceFilters = {}): 
 export type TicketAIRecommendationsPayload = {
   priority: TicketPriority
   category: TicketCategory
+  classificationConfidence: number
   recommendations: Array<{ text: string; confidence: number }>
   recommendationsEmbedding: Array<{ text: string; confidence: number }>
   recommendationsLlm: Array<{ text: string; confidence: number }>
   recommendationMode: "embedding" | "llm" | "hybrid"
   similarityFound: boolean
   assignee: string | null
+}
+
+export type TicketAiSlaRiskLatest = {
+  ticketId: string
+  riskScore: number | null
+  confidence: number | null
+  suggestedPriority: string | null
+  reasoningSummary: string
+  modelVersion: string
+  decisionSource: string
+  createdAt: string
+} | null
+
+export type SimilarTicket = {
+  id: string
+  title: string
+  description: string
+  status: TicketStatus
+  priority: TicketPriority
+  category: TicketCategory
+  assignee: string
+  reporter: string
+  createdAt: string
+  updatedAt: string
+  similarityScore: number
 }
 
 const ticketAIRecommendationsCache = new Map<string, TicketAIRecommendationsPayload>()
@@ -324,6 +353,7 @@ export async function fetchTicketAIRecommendations(
   const data = await apiFetch<{
     priority: TicketPriority
     category: TicketCategory
+    classification_confidence?: number
     recommendations: string[]
     recommendations_scored?: Array<{ text: string; confidence: number }>
     recommendations_embedding?: string[]
@@ -345,6 +375,9 @@ export async function fetchTicketAIRecommendations(
   const payload: TicketAIRecommendationsPayload = {
     priority: data.priority,
     category: data.category,
+    classificationConfidence: Number.isFinite(data.classification_confidence)
+      ? Math.max(0, Math.min(100, Number(data.classification_confidence)))
+      : 0,
     recommendations: mapScoredRecommendations(data.recommendations_scored, data.recommendations, 86),
     recommendationsEmbedding: mapScoredRecommendations(
       data.recommendations_embedding_scored,
@@ -358,4 +391,82 @@ export async function fetchTicketAIRecommendations(
   }
   ticketAIRecommendationsCache.set(cacheKey, payload)
   return payload
+}
+
+export async function fetchTicketAiSlaRiskLatest(ticketId: string): Promise<TicketAiSlaRiskLatest> {
+  const data = await apiFetch<{
+    ticket_id: string
+    latest?: null
+    risk_score?: number | null
+    confidence?: number | null
+    suggested_priority?: string | null
+    reasoning_summary?: string
+    model_version?: string
+    decision_source?: string
+    created_at?: string | null
+  }>(`/sla/ticket/${ticketId}/ai-risk/latest`)
+
+  if ("latest" in data && data.latest === null) {
+    return null
+  }
+  if (!data.created_at) {
+    return null
+  }
+
+  return {
+    ticketId: data.ticket_id,
+    riskScore: data.risk_score ?? null,
+    confidence: data.confidence ?? null,
+    suggestedPriority: data.suggested_priority ?? null,
+    reasoningSummary: data.reasoning_summary || "",
+    modelVersion: data.model_version || "",
+    decisionSource: data.decision_source || "",
+    createdAt: data.created_at,
+  }
+}
+
+export async function fetchSimilarTickets(
+  ticketId: string,
+  options: { limit?: number; minScore?: number } = {},
+): Promise<SimilarTicket[]> {
+  const params = new URLSearchParams()
+  if (Number.isFinite(options.limit)) {
+    params.set("limit", String(options.limit))
+  }
+  if (Number.isFinite(options.minScore)) {
+    params.set("min_score", String(options.minScore))
+  }
+  const query = params.toString()
+  const path = query ? `/tickets/${ticketId}/similar?${query}` : `/tickets/${ticketId}/similar`
+
+  const data = await apiFetch<{
+    ticket_id: string
+    matches: Array<{
+      id: string
+      title: string
+      description: string
+      status: TicketStatus
+      priority: TicketPriority
+      category: TicketCategory
+      assignee: string
+      reporter: string
+      created_at: string
+      updated_at: string
+      similarity_score: number
+    }>
+  }>(path)
+
+  return data.matches.map((item) => ({
+    id: item.id,
+    title: item.title,
+    description: item.description,
+    status: item.status,
+    priority: item.priority,
+    category: item.category,
+    assignee: item.assignee,
+    reporter: item.reporter,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+    similarityScore: item.similarity_score,
+  }))
 }

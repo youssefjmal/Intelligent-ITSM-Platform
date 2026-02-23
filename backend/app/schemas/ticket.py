@@ -117,6 +117,8 @@ class TicketOut(TicketBase):
     assignment_change_count: int
     first_action_at: dt.datetime | None
     resolved_at: dt.datetime | None
+    sla_status: str | None = None
+    sla_remaining_minutes: int | None = None
     created_at: dt.datetime
     updated_at: dt.datetime
     resolution: str | None
@@ -162,3 +164,22 @@ class TicketPerformanceOut(BaseModel):
     classification_samples: int
     auto_assignment_accuracy_rate: float | None
     auto_assignment_samples: int
+
+
+class TicketSimilarOut(BaseModel):
+    id: str
+    title: str
+    description: str
+    status: TicketStatus
+    priority: TicketPriority
+    category: TicketCategory
+    assignee: str
+    reporter: str
+    created_at: dt.datetime
+    updated_at: dt.datetime
+    similarity_score: float
+
+
+class TicketSimilarResponse(BaseModel):
+    ticket_id: str
+    matches: list[TicketSimilarOut]

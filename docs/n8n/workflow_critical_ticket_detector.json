@@ -34,7 +34,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body || $json || {};\nconst ticketId = body.ticket_id || body.id;\nif (!ticketId) {\n  return [{ json: { route: 'error', error: 'missing_ticket_id', raw: body } }];\n}\nreturn [{ json: { route: 'ok', ticket_id: String(ticketId), inbound_priority: body.priority || 'critical' } }];"
+        "jsCode": "const body = $json.body || $json || {};\nconst ticketId = body.ticket_id || body.id;\nconst traceId = body.trace_id || `ctk-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;\nconst runId = $execution?.id ? String($execution.id) : `manual-${Date.now()}`;\nif (!ticketId) {\n  return [{ json: { route: 'error', stage: 'validate_inbound', error: 'missing_ticket_id', trace_id: traceId, run_id: runId, raw: body } }];\n}\nreturn [{ json: { route: 'ok', stage: 'validate_inbound', trace_id: traceId, run_id: runId, ticket_id: String(ticketId), inbound_priority: body.priority || 'critical' } }];"
       },
       "id": "ctd-validate",
       "name": "Validate Inbound Payload",
@@ -81,6 +81,18 @@
               "name": "inbound_priority",
               "value": "={{ $json.inbound_priority }}",
               "type": "string"
+            },
+            {
+              "id": "ctd-a3",
+              "name": "trace_id",
+              "value": "={{ $json.trace_id }}",
+              "type": "string"
+            },
+            {
+              "id": "ctd-a4",
+              "name": "run_id",
+              "value": "={{ $json.run_id }}",
+              "type": "string"
             }
           ]
         },
@@ -113,6 +125,14 @@
             {
               "name": "Accept",
               "value": "application/json"
+            },
+            {
+              "name": "X-Trace-Id",
+              "value": "={{ $json.trace_id }}"
+            },
+            {
+              "name": "X-Workflow-Run-Id",
+              "value": "={{ $json.run_id }}"
             }
           ]
         },
@@ -136,7 +156,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const ctx = $node['Store Inbound Context'].json;\nconst detail = $json || {};\nif (detail.error || detail.statusCode >= 400) {\n  return [{ json: { route: 'error', error: detail.error || 'ticket_fetch_failed', status: detail.statusCode, ticket_id: ctx.ticket_id } }];\n}\nreturn [{ json: { route: 'ok', ticket_id: ctx.ticket_id, title: detail.title || 'Critical Ticket', description: detail.description || detail.summary || 'No details provided.', priority: detail.priority || ctx.inbound_priority || 'critical', status: detail.status || 'open', assignee: detail.assignee || 'Unassigned', reporter: detail.reporter || 'N/A', created_at: detail.created_at || new Date().toISOString(), ticket_url: (($env.FRONTEND_BASE_URL || 'http://localhost:3000') + '/tickets/' + ctx.ticket_id) } }];"
+        "jsCode": "const ctx = $node['Store Inbound Context'].json;\nconst detail = $json || {};\nif (detail.error || detail.statusCode >= 400) {\n  return [{ json: { route: 'error', stage: 'fetch_ticket', trace_id: ctx.trace_id, run_id: ctx.run_id, error: detail.error || 'ticket_fetch_failed', status: detail.statusCode, ticket_id: ctx.ticket_id } }];\n}\nreturn [{ json: { route: 'ok', stage: 'merge_enriched', trace_id: ctx.trace_id, run_id: ctx.run_id, ticket_id: ctx.ticket_id, title: detail.title || 'Critical Ticket', description: detail.description || detail.summary || 'No details provided.', priority: detail.priority || ctx.inbound_priority || 'critical', status: detail.status || 'open', assignee: detail.assignee || 'Unassigned', reporter: detail.reporter || 'N/A', created_at: detail.created_at || new Date().toISOString(), ticket_url: (($env.FRONTEND_BASE_URL || 'http://localhost:3000') + '/tickets/' + ctx.ticket_id) } }];"
       },
       "id": "ctd-merge",
       "name": "Merge & Validate Ticket",
@@ -170,7 +190,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const d = $json;\nconst subject = `[ITSM][CRITICAL] ${String(d.priority || 'critical').toUpperCase()} - ${d.ticket_id}`;\nconst body = [\n  'Critical Ticket Notification',\n  '==========================================',\n  `Ticket ID   : ${d.ticket_id || 'N/A'}`,\n  `Title       : ${d.title || 'N/A'}`,\n  `Priority    : ${String(d.priority || 'critical').toUpperCase()}`,\n  `Status      : ${d.status || 'open'}`,\n  `Assignee    : ${d.assignee || 'Unassigned'}`,\n  `Reporter    : ${d.reporter || 'N/A'}`,\n  `Created At  : ${d.created_at || new Date().toISOString()}`,\n  '',\n  'Description',\n  '------------------------------------------',\n  d.description || 'No details provided.',\n  '',\n  'Open in ITSM:',\n  d.ticket_url || 'N/A'\n].join('\\n');\nreturn [{ json: { ...d, email_subject: subject, email_body: body } }];"
+        "jsCode": "const d = $json;\nconst subject = `[ITSM][CRITICAL] ${String(d.priority || 'critical').toUpperCase()} - ${d.ticket_id} - ${d.title || 'Critical Ticket'}`;\nconst body = [\n  'Critical Ticket Notification',\n  '==========================================',\n  `Trace ID   : ${d.trace_id || 'N/A'}`,\n  `Run ID     : ${d.run_id || 'N/A'}`,\n  `Ticket ID  : ${d.ticket_id || 'N/A'}`,\n  `Title      : ${d.title || 'N/A'}`,\n  `Priority   : ${String(d.priority || 'critical').toUpperCase()}`,\n  `Status     : ${d.status || 'open'}`,\n  `Assignee   : ${d.assignee || 'Unassigned'}`,\n  `Reporter   : ${d.reporter || 'N/A'}`,\n  `Created At : ${d.created_at || new Date().toISOString()}`,\n  '',\n  'Description',\n  '------------------------------------------',\n  d.description || 'No details provided.',\n  '',\n  'Open in ITSM:',\n  d.ticket_url || 'N/A'\n].join('\\n');\nreturn [{ json: { ...d, stage: 'build_email', email_subject: subject, email_body: body } }];"
       },
       "id": "ctd-build-email",
       "name": "Build Email Content",
@@ -236,7 +256,7 @@
     },
     {
       "parameters": {
-        "jsCode": "if ($json && $json.route === 'ok') { return []; }\nconst payload = { workflow: 'Critical Ticket Detector', timestamp: new Date().toISOString(), error: $json.error || $json.message || JSON.stringify($json), data: $json };\nconsole.error('[n8n][critical-ticket-detector][error]', JSON.stringify(payload));\nreturn [{ json: payload }];"
+        "jsCode": "const payload = {\n  workflow: 'Critical Ticket Detector',\n  timestamp: new Date().toISOString(),\n  stage: $json.stage || 'unknown',\n  route: 'error',\n  trace_id: $json.trace_id || 'N/A',\n  run_id: $json.run_id || 'N/A',\n  ticket_id: $json.ticket_id || 'N/A',\n  error: $json.error || $json.message || JSON.stringify($json)\n};\nconsole.error('[n8n][critical-ticket-detector][error]', JSON.stringify(payload));\nreturn [{ json: payload }];"
       },
       "id": "ctd-log-error",
       "name": "Log Error",
@@ -245,6 +265,19 @@
       "position": [
         1120,
         580
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = {\n  workflow: 'Critical Ticket Detector',\n  timestamp: new Date().toISOString(),\n  stage: 'email_sent',\n  route: 'ok',\n  trace_id: $json.trace_id || 'N/A',\n  run_id: $json.run_id || 'N/A',\n  ticket_id: $json.ticket_id || 'N/A',\n  email_to: ($env.CRITICAL_ALERT_EMAIL_TO || $env.ALERT_DEFAULT_EMAIL || $env.SLA_ALERT_EMAIL_TO || 'N/A'),\n  message_id: $json.messageId || null\n};\nconsole.log('[n8n][critical-ticket-detector][success]', JSON.stringify(payload));\nreturn [{ json: payload }];"
+      },
+      "id": "ctd-log-success",
+      "name": "Log Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2580,
+        360
       ]
     }
   ],
@@ -371,7 +404,13 @@
             "index": 0
           }
         ],
-        []
+        [
+          {
+            "node": "Log Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     }
   },

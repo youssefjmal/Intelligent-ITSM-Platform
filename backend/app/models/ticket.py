@@ -71,6 +71,7 @@ class Ticket(Base):
     last_synced_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     raw_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     jira_sla_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Local SLA status values: ok, at_risk, breached, paused, completed, unknown.
     sla_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     sla_first_response_due_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sla_resolution_due_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

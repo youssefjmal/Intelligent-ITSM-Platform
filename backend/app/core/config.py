@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     FRONTEND_BASE_URL: str = "http://localhost:3000"
     CORS_ORIGINS: str = "http://localhost:3000"
     ALLOWED_HOSTS: str = "localhost,127.0.0.1"
+    AUTOMATION_SECRET: str = ""
     #google login using oauth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
@@ -46,6 +47,8 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = "llama3.1"
     OLLAMA_EMBED_MODEL: str = "nomic-embed-text"
     OLLAMA_EMBEDDING_DIM: int = 768
+    AI_SLA_RISK_ENABLED: bool = True
+    AI_SLA_RISK_MODE: str = "shadow"
     AI_CLASSIFY_SEMANTIC_TOP_K: int = 5
     AI_CLASSIFY_STRONG_SIMILARITY_THRESHOLD: float = 0.72
     AI_CLASSIFY_MAX_RECOMMENDATIONS: int = 4

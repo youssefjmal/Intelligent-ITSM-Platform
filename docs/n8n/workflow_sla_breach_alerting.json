@@ -1,0 +1,369 @@
+{
+  "name": "SLA Breach Alerting",
+  "nodes": [
+    {
+      "parameters": {
+        "width": 420,
+        "height": 220,
+        "content": "## Trigger and SLA Sync\nRuns every 15 minutes and calls backend SLA batch sync before alert fan-out."
+      },
+      "id": "sla-note-trigger",
+      "name": "Sticky Trigger",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        140,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "everyX",
+              "value": 15,
+              "unit": "minutes"
+            }
+          ]
+        }
+      },
+      "id": "sla-cron",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        220,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.ITSM_BASE_URL + '/api/sla/run'}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{'Bearer ' + $env.ITSM_API_TOKEN}}"
+            },
+            {
+              "name": "X-Actor",
+              "value": "system:n8n"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"dry_run\": false } }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "sla-run",
+      "name": "Run SLA Sync Batch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        460,
+        260
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.error !== undefined}}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "sla-run-error-check",
+      "name": "SLA Run Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        700,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.ITSM_BASE_URL + '/api/tickets'}}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "sla_status",
+              "value": "breached,at_risk"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{'Bearer ' + $env.ITSM_API_TOKEN}}"
+            },
+            {
+              "name": "X-Actor",
+              "value": "system:n8n"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "sla-fetch-tickets",
+      "name": "Fetch Breached or At-Risk Tickets",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        940,
+        340
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.error !== undefined}}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "sla-fetch-error-check",
+      "name": "Ticket Fetch Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json;\nconst rows = Array.isArray(payload)\n  ? payload\n  : Array.isArray(payload.items)\n    ? payload.items\n    : Array.isArray(payload.tickets)\n      ? payload.tickets\n      : [];\n\nreturn rows.map((ticket) => ({ json: ticket }));"
+      },
+      "id": "sla-normalize",
+      "name": "Normalize Ticket Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "width": 600,
+        "height": 260,
+        "content": "## Alert Fan-out\nFor each SLA-risk ticket, send Email notifications."
+      },
+      "id": "sla-note-alert",
+      "name": "Sticky Alerts",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1540,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$env.SMTP_FROM}}",
+        "toEmail": "={{$env.SLA_ALERT_EMAIL_TO}}",
+        "subject": "=[ITSM][SLA] {{$json.id || $json.ticket_id || 'Ticket'}} {{$json.sla_status || 'at_risk'}}",
+        "message": "=Ticket: {{$json.id || $json.ticket_id}}\\nTitle: {{$json.title || 'N/A'}}\\nDescription: {{$json.description || $json.summary || $json.body || 'N/A'}}\\nPriority: {{$json.priority || 'N/A'}}\\nStatus: {{$json.status || 'N/A'}}\\nSLA Status: {{$json.sla_status || 'N/A'}}\\nAssignee: {{$json.assignee || 'Unassigned'}}\\n\\nSource: n8n SLA Breach Alerting workflow."
+      },
+      "id": "sla-email",
+      "name": "Send SLA Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        360
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.error !== undefined}}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "sla-email-error-check",
+      "name": "Email Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1880,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "width": 540,
+        "height": 250,
+        "content": "## Error Handling\nAny failed backend/notification node is routed to this logger branch."
+      },
+      "id": "sla-note-error",
+      "name": "Sticky Error",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        560,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const message = {\n  workflow: 'SLA Breach Alerting',\n  when: new Date().toISOString(),\n  error: $json.error || $json,\n};\nconsole.log('[n8n][error]', JSON.stringify(message));\nreturn [{ json: message }];"
+      },
+      "id": "sla-error-log",
+      "name": "Log Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        640
+      ]
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Run SLA Sync Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run SLA Sync Batch": {
+      "main": [
+        [
+          {
+            "node": "SLA Run Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SLA Run Failed?": {
+      "main": [
+        [
+          {
+            "node": "Log Failure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fetch Breached or At-Risk Tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Breached or At-Risk Tickets": {
+      "main": [
+        [
+          {
+            "node": "Ticket Fetch Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ticket Fetch Failed?": {
+      "main": [
+        [
+          {
+            "node": "Log Failure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Normalize Ticket Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Ticket Items": {
+      "main": [
+        [
+          {
+            "node": "Send SLA Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send SLA Email": {
+      "main": [
+        [
+          {
+            "node": "Email Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Failed?": {
+      "main": [
+        [
+          {
+            "node": "Log Failure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "1",
+  "id": "workflow_sla_breach_alerting",
+  "tags": []
+}

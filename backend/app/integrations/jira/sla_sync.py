@@ -27,6 +27,7 @@ _RESOLUTION_HINTS = (
     "resolved",
 )
 _SPACE_RE = re.compile(r"\s+")
+_KNOWN_SLA_STATUSES = {"ok", "at_risk", "paused", "breached", "completed", "unknown"}
 
 
 def _utcnow() -> dt.datetime:
@@ -168,6 +169,29 @@ def _metric_state(status_text: str, *, breached: bool, completed: bool, paused: 
     return "unknown"
 
 
+def _compute_sla_status(
+    *,
+    sla_resolution_breached: bool,
+    sla_first_response_breached: bool,
+    sla_remaining_minutes: int | None,
+    jira_sla_status: str | None,
+) -> str:
+    """Compute local ticket SLA status, including at_risk."""
+    if sla_resolution_breached or sla_first_response_breached:
+        return "breached"
+
+    normalized = _normalize_text(jira_sla_status)
+    if normalized in {"paused", "completed"}:
+        return normalized
+
+    if sla_remaining_minutes is not None and 0 <= sla_remaining_minutes <= 30:
+        return "at_risk"
+
+    if normalized in {"ok", "unknown"}:
+        return normalized
+    return "ok"
+
+
 def _extract_metric_fields(metric: dict[str, Any]) -> dict[str, Any]:
     status_raw = str(
         metric.get("status")
@@ -222,7 +246,8 @@ def parse_jira_sla(payload: dict[str, Any]) -> dict[str, Any]:
     first_data = _extract_metric_fields(first_metric) if first_metric else {}
     resolution_data = _extract_metric_fields(resolution_metric) if resolution_metric else {}
 
-    status = str(resolution_data.get("status") or first_data.get("status") or "unknown")
+    jira_status = str(resolution_data.get("status") or first_data.get("status") or "unknown")
+    status = jira_status
     if status == "unknown":
         statuses = [str(item.get("status") or "unknown") for item in (first_data, resolution_data) if item]
         if "breached" in statuses:
@@ -240,9 +265,15 @@ def parse_jira_sla(payload: dict[str, Any]) -> dict[str, Any]:
     elapsed_minutes = resolution_data.get("elapsed_minutes")
     if elapsed_minutes is None:
         elapsed_minutes = first_data.get("elapsed_minutes")
+    local_status = _compute_sla_status(
+        sla_resolution_breached=bool(resolution_data.get("breached", False)),
+        sla_first_response_breached=bool(first_data.get("breached", False)),
+        sla_remaining_minutes=remaining_minutes,
+        jira_sla_status=status,
+    )
 
     return {
-        "sla_status": status if status in {"ok", "paused", "breached", "completed", "unknown"} else "unknown",
+        "sla_status": local_status if local_status in _KNOWN_SLA_STATUSES else "unknown",
         "sla_first_response_due_at": first_data.get("due_at"),
         "sla_resolution_due_at": resolution_data.get("due_at"),
         "sla_first_response_breached": bool(first_data.get("breached", False)),

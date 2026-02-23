@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import {
   Select,
   SelectContent,
@@ -38,7 +39,11 @@ import {
 import { ApiError, apiFetch } from "@/lib/api"
 import {
   fetchTicket,
+  fetchTicketAiSlaRiskLatest,
   fetchTicketAIRecommendations,
+  fetchSimilarTickets,
+  type SimilarTicket,
+  type TicketAiSlaRiskLatest,
   type TicketAIRecommendationsPayload,
 } from "@/lib/tickets-api"
 import { useI18n } from "@/lib/i18n"
@@ -71,6 +76,11 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
   const [aiSuggestions, setAiSuggestions] = useState<TicketAIRecommendationsPayload | null>(null)
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState(false)
+  const [aiSlaRisk, setAiSlaRisk] = useState<TicketAiSlaRiskLatest>(null)
+  const [aiSlaRiskLoading, setAiSlaRiskLoading] = useState(false)
+  const [similarTickets, setSimilarTickets] = useState<SimilarTicket[]>([])
+  const [similarTicketsLoading, setSimilarTicketsLoading] = useState(false)
+  const [similarTicketsError, setSimilarTicketsError] = useState(false)
   const localeCode = locale === "fr" ? "fr-FR" : "en-US"
 
   const assigneeOptions = (() => {
@@ -159,6 +169,60 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
     setAiError(false)
     loadAiRecommendations().catch(() => {})
   }, [loadAiRecommendations])
+
+  useEffect(() => {
+    let mounted = true
+    setAiSlaRiskLoading(true)
+    fetchTicketAiSlaRiskLatest(ticketData.id)
+      .then((payload) => {
+        if (!mounted) return
+        setAiSlaRisk(payload)
+      })
+      .catch(() => {
+        if (!mounted) return
+        setAiSlaRisk(null)
+      })
+      .finally(() => {
+        if (!mounted) return
+        setAiSlaRiskLoading(false)
+      })
+    return () => {
+      mounted = false
+    }
+  }, [ticketData.id])
+
+  useEffect(() => {
+    let mounted = true
+    setSimilarTicketsLoading(true)
+    setSimilarTicketsError(false)
+    fetchSimilarTickets(ticketData.id, { limit: 6, minScore: 0.3 })
+      .then((rows) => {
+        if (!mounted) return
+        setSimilarTickets(rows)
+      })
+      .catch(() => {
+        if (!mounted) return
+        setSimilarTickets([])
+        setSimilarTicketsError(true)
+      })
+      .finally(() => {
+        if (!mounted) return
+        setSimilarTicketsLoading(false)
+      })
+    return () => {
+      mounted = false
+    }
+  }, [ticketData.id])
+
+  function statusLabelForRow(value: TicketStatus): string {
+    if (value === "open") return t("status.open")
+    if (value === "in-progress") return t("status.inProgress")
+    if (value === "waiting-for-customer") return t("status.waitingForCustomer")
+    if (value === "waiting-for-support-vendor") return t("status.waitingForSupportVendor")
+    if (value === "pending") return t("status.pending")
+    if (value === "resolved") return t("status.resolved")
+    return t("status.closed")
+  }
 
   async function handleStatusChange(newStatus: string) {
     if (newStatus === status) return
@@ -452,9 +516,142 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
               )}
             </CardContent>
           </Card>
+
+          <Card className="surface-card rounded-2xl">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                <Sparkles className="h-4 w-4 text-primary" />
+                {t("detail.similarTickets")}
+              </CardTitle>
+              <p className="text-xs text-muted-foreground">{t("detail.similarTicketsDesc")}</p>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {similarTicketsLoading ? (
+                <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  {t("detail.similarTicketsLoading")}
+                </div>
+              ) : null}
+
+              {!similarTicketsLoading && similarTicketsError ? (
+                <p className="text-xs text-destructive">{t("detail.similarTicketsError")}</p>
+              ) : null}
+
+              {!similarTicketsLoading && !similarTicketsError && similarTickets.length === 0 ? (
+                <p className="text-xs text-muted-foreground">{t("detail.similarTicketsEmpty")}</p>
+              ) : null}
+
+              {!similarTicketsLoading && !similarTicketsError && similarTickets.length > 0 ? (
+                <div className="space-y-2">
+                  {similarTickets.map((row) => (
+                    <HoverCard key={`${ticketData.id}-similar-${row.id}`} openDelay={100} closeDelay={80}>
+                      <HoverCardTrigger asChild>
+                        <Link
+                          href={`/tickets/${row.id}`}
+                          className="group block rounded-xl border border-border/70 bg-card/70 p-3 transition-colors hover:bg-card"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="line-clamp-2 text-sm font-medium text-foreground group-hover:text-primary">
+                                {row.title}
+                              </p>
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {row.id} | {row.assignee || triageLabels.notAvailable}
+                              </p>
+                            </div>
+                            <Badge variant="outline" className="text-[10px]">
+                              {Math.round(row.similarityScore * 100)}%
+                            </Badge>
+                          </div>
+                        </Link>
+                      </HoverCardTrigger>
+                      <HoverCardContent className="w-96 border-border/70 bg-background/95 p-3 shadow-xl backdrop-blur">
+                        <p className="text-sm font-semibold text-foreground">{row.title}</p>
+                        <p className="mt-2 line-clamp-4 text-xs leading-relaxed text-muted-foreground">{row.description}</p>
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <div className="rounded-md border border-border/60 bg-muted/40 px-2 py-1.5">
+                            <p className="text-[10px] text-muted-foreground">{t("detail.similarityScore")}</p>
+                            <p className="text-xs font-semibold text-foreground">{Math.round(row.similarityScore * 100)}%</p>
+                          </div>
+                          <div className="rounded-md border border-border/60 bg-muted/40 px-2 py-1.5">
+                            <p className="text-[10px] text-muted-foreground">{t("tickets.status")}</p>
+                            <p className="text-xs font-semibold text-foreground">{statusLabelForRow(row.status)}</p>
+                          </div>
+                          <div className="rounded-md border border-border/60 bg-muted/40 px-2 py-1.5">
+                            <p className="text-[10px] text-muted-foreground">{t("tickets.priority")}</p>
+                            <p className="text-xs font-semibold text-foreground">{t(`priority.${row.priority}` as "priority.medium")}</p>
+                          </div>
+                          <div className="rounded-md border border-border/60 bg-muted/40 px-2 py-1.5">
+                            <p className="text-[10px] text-muted-foreground">{t("tickets.category")}</p>
+                            <p className="text-xs font-semibold text-foreground">{t(`category.${row.category}` as "category.application")}</p>
+                          </div>
+                        </div>
+                        <Link href={`/tickets/${row.id}`} className="mt-3 inline-flex">
+                          <Button size="sm" className="h-8 rounded-lg text-xs">
+                            {t("detail.openTicket")}
+                          </Button>
+                        </Link>
+                      </HoverCardContent>
+                    </HoverCard>
+                  ))}
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
         </div>
 
         <div className="space-y-6 xl:col-span-4 xl:sticky xl:top-4 xl:self-start">
+          <Card className="surface-card rounded-2xl">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-sm font-semibold text-foreground">AI SLA Risk (Advisory)</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {aiSlaRiskLoading ? (
+                <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Loading AI SLA risk...
+                </div>
+              ) : null}
+
+              {!aiSlaRiskLoading && !aiSlaRisk ? (
+                <p className="text-xs text-muted-foreground">No AI risk evaluation available.</p>
+              ) : null}
+
+              {!aiSlaRiskLoading && aiSlaRisk ? (
+                <>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge
+                      className={
+                        (aiSlaRisk.riskScore ?? 0) >= 80
+                          ? "border-0 bg-red-100 text-red-700"
+                          : (aiSlaRisk.riskScore ?? 0) >= 50
+                            ? "border-0 bg-amber-100 text-amber-700"
+                            : "border-0 bg-emerald-100 text-emerald-700"
+                      }
+                    >
+                      Risk {(aiSlaRisk.riskScore ?? 0) >= 80 ? "High" : (aiSlaRisk.riskScore ?? 0) >= 50 ? "Medium" : "Low"}
+                      {aiSlaRisk.riskScore != null ? ` (${aiSlaRisk.riskScore})` : ""}
+                    </Badge>
+                    <Badge variant="outline" className="text-xs">
+                      Confidence {aiSlaRisk.confidence != null ? `${Math.round(aiSlaRisk.confidence * 100)}%` : "N/A"}
+                    </Badge>
+                  </div>
+                  {aiSlaRisk.suggestedPriority ? (
+                    <p className="text-xs text-foreground">
+                      Suggested priority: <span className="font-semibold">{aiSlaRisk.suggestedPriority}</span>
+                    </p>
+                  ) : null}
+                  <p className="rounded-lg border border-border/70 bg-background/70 p-2.5 text-xs text-muted-foreground">
+                    {aiSlaRisk.reasoningSummary}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {new Date(aiSlaRisk.createdAt).toLocaleString(localeCode)} · {aiSlaRisk.modelVersion}
+                  </p>
+                </>
+              ) : null}
+            </CardContent>
+          </Card>
+
           <Card className="surface-card rounded-2xl">
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-semibold text-foreground">{t("detail.info")}</CardTitle>

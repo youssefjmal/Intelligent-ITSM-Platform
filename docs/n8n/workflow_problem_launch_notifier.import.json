@@ -5,7 +5,7 @@
       "parameters": {
         "width": 500,
         "height": 160,
-        "content": "## 1. Problem Detection Webhook\nTriggered by backend when a problem is detected or promoted.\n**POST** `/webhook/problem-detected`\nExpected body: `{ problem_id, title, affected_tickets_count, priority }`"
+        "content": "## 1. Problem Detection Webhook\nTriggered by backend when a problem is detected or promoted.\n**POST** `/webhook/problem-detected`\nExpected body: `{ problem_id, title, affected_tickets_count, severity }`"
       },
       "id": "note-webhook",
       "name": "Note: Webhook",
@@ -34,7 +34,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Safely extract and validate inbound webhook payload\nconst body = $json.body || $json || {};\nconst problemId = body.problem_id;\nconst traceId = body.trace_id || `prb-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;\nconst runId = $execution?.id ? String($execution.id) : `manual-${Date.now()}`;\n\nif (!problemId) {\n  return [{ json: { route: 'error', stage: 'validate_inbound', error: 'missing_problem_id', trace_id: traceId, run_id: runId, raw: body } }];\n}\n\nreturn [{\n  json: {\n    route: 'ok',\n    stage: 'validate_inbound',\n    trace_id: traceId,\n    run_id: runId,\n    problem_id: String(problemId),\n    title: body.title || 'Unknown Problem',\n    priority: body.priority || body.severity || 'high',\n    affected_tickets_count: body.affected_tickets_count || 0\n  }\n}];"
+        "jsCode": "// Safely extract and validate inbound webhook payload\nconst body = $json.body || $json || {};\nconst problemId = body.problem_id;\n\nif (!problemId) {\n  return [{ json: { route: 'error', error: 'missing_problem_id', raw: body } }];\n}\n\nreturn [{\n  json: {\n    route: 'ok',\n    problem_id: String(problemId),\n    title: body.title || 'Unknown Problem',\n    severity: body.severity || 'unknown',\n    affected_tickets_count: body.affected_tickets_count || 0\n  }\n}];"
       },
       "id": "validate-inbound",
       "name": "Validate Inbound Payload",
@@ -92,18 +92,6 @@
               "type": "string"
             },
             {
-              "id": "a1b",
-              "name": "trace_id",
-              "value": "={{ $json.trace_id }}",
-              "type": "string"
-            },
-            {
-              "id": "a1c",
-              "name": "run_id",
-              "value": "={{ $json.run_id }}",
-              "type": "string"
-            },
-            {
               "id": "a2",
               "name": "inbound_title",
               "value": "={{ $json.title }}",
@@ -111,8 +99,8 @@
             },
             {
               "id": "a3",
-              "name": "inbound_priority",
-              "value": "={{ $json.priority }}",
+              "name": "inbound_severity",
+              "value": "={{ $json.severity }}",
               "type": "string"
             },
             {
@@ -152,14 +140,6 @@
             {
               "name": "Accept",
               "value": "application/json"
-            },
-            {
-              "name": "X-Trace-Id",
-              "value": "={{ $json.trace_id }}"
-            },
-            {
-              "name": "X-Workflow-Run-Id",
-              "value": "={{ $json.run_id }}"
             }
           ]
         },
@@ -183,7 +163,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Merge inbound context with enriched backend data\n// Problem model has no dedicated description field\n\nconst ctx = $node['Store Inbound Context'].json;\nconst detail = $json || {};\n\nif (detail.error || detail.statusCode >= 400) {\n  return [{ json: { route: 'error', stage: 'fetch_problem', trace_id: ctx.trace_id, run_id: ctx.run_id, error: detail.error || 'backend_fetch_failed', status: detail.statusCode } }];\n}\n\nconst problemId = ctx.problem_id;\nconst uiBase = $env.FRONTEND_BASE_URL || 'http://localhost:3000';\n\nreturn [{\n  json: {\n    route: 'ok',\n    stage: 'merge_enriched',\n    trace_id: ctx.trace_id,\n    run_id: ctx.run_id,\n    problem_id: problemId,\n    title: detail.title || ctx.inbound_title || 'Problem Detected',\n    priority: detail.priority || ctx.inbound_priority || detail.severity || 'high',\n    status: detail.status || 'open',\n    affected_tickets_count: detail.affected_tickets_count ?? ctx.inbound_affected_count ?? 0,\n    root_cause: detail.root_cause || 'Under investigation',\n    workaround: detail.workaround || 'None yet',\n    permanent_fix: detail.permanent_fix || 'None yet',\n    created_at: detail.created_at || new Date().toISOString(),\n    problem_url: `${uiBase}/problems/${problemId}`,\n    raw_detail: detail\n  }\n}];"
+        "jsCode": "// Merge inbound context with enriched backend data\n// Safely fall back to inbound values when backend fields are missing\n\nconst ctx = $node['Store Inbound Context'].json;\nconst detail = $json || {};\n\n// Detect HTTP error from continueOnFail\nif (detail.error || detail.statusCode >= 400) {\n  return [{ json: { route: 'error', error: detail.error || 'backend_fetch_failed', status: detail.statusCode } }];\n}\n\nconst problemId = ctx.problem_id;\nconst uiBase = $env.FRONTEND_BASE_URL || 'http://localhost:3000';\n\nreturn [{\n  json: {\n    route: 'ok',\n    problem_id: problemId,\n    title: detail.title || ctx.inbound_title || 'Problem Detected',\n    description: detail.description || detail.root_cause || 'No description available.',\n    severity: detail.severity || ctx.inbound_severity || 'unknown',\n    status: detail.status || 'open',\n    affected_tickets_count: detail.affected_tickets_count ?? ctx.inbound_affected_count ?? 0,\n    root_cause: detail.root_cause || 'Under investigation',\n    workaround: detail.workaround || 'None yet',\n    created_at: detail.created_at || new Date().toISOString(),\n    problem_url: `${uiBase}/problems/${problemId}`\n  }\n}];"
       },
       "id": "merge-and-validate",
       "name": "Merge & Validate Enriched Data",
@@ -232,7 +212,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const d = $json;\nconst sep = '------------------------------------------';\n\nconst rawPriority = d.priority || d.raw_detail?.priority || d.inbound_priority || d.raw_detail?.severity || 'high';\nconst pri = String(rawPriority).trim() || 'high';\n\nconst tickets = Array.isArray(d.raw_detail?.tickets) ? d.raw_detail.tickets : [];\nconst topTickets = tickets.slice(0, 5);\n\nconst summaryBits = [];\nsummaryBits.push(`${d.title || 'Problem detected'} is currently ${d.status || 'open'}.`);\nsummaryBits.push(`Impact priority is ${pri.toUpperCase()} with ${d.affected_tickets_count ?? tickets.length ?? 0} related ticket(s).`);\n\nif (topTickets.length) {\n  const statuses = [...new Set(topTickets.map(t => t.status).filter(Boolean))];\n  if (statuses.length) summaryBits.push(`Linked ticket statuses: ${statuses.join(', ')}.`);\n  const sample = topTickets.map(t => t.title).filter(Boolean).slice(0,2).join(' | ');\n  if (sample) summaryBits.push(`Observed symptoms: ${sample}.`);\n}\n\nif (d.root_cause && d.root_cause !== 'Under investigation') {\n  summaryBits.push(`Likely root cause: ${d.root_cause}.`);\n} else {\n  summaryBits.push('Root cause is still under investigation.');\n}\n\nif (d.workaround && d.workaround !== 'None yet.') {\n  summaryBits.push(`Current workaround: ${d.workaround}.`);\n}\n\nconst generatedSummary = summaryBits.join(' ');\n\nconst ticketLines = topTickets.length\n  ? topTickets.map(t => `- ${t.id || 'N/A'} | ${t.title || 'Untitled'} | ${t.status || 'unknown'} | ${t.assignee || '-'}`).join('\\n')\n  : '- None listed';\n\nconst subject = `[ITSM Problem] ${pri.toUpperCase()} - ${d.title || 'Problem Detected'}`;\n\nconst body = [\n  'ITSM Platform - Problem Notification',\n  '==========================================',\n  '',\n  `Trace ID     : ${d.trace_id || 'N/A'}`,\n  `Run ID       : ${d.run_id || 'N/A'}`,\n  `Problem ID   : ${d.problem_id || 'N/A'}`,\n  `Title        : ${d.title || 'N/A'}`,\n  `Priority     : ${pri.toUpperCase()}`,\n  `Status       : ${d.status || 'open'}`,\n  `Affected     : ${d.affected_tickets_count ?? 0} ticket(s)`,\n  `Detected at  : ${d.created_at || new Date().toISOString()}`,\n  '',\n  sep,\n  'Problem Summary',\n  sep,\n  generatedSummary,\n  '',\n  sep,\n  'Root Cause',\n  sep,\n  d.root_cause || 'Under investigation.',\n  '',\n  sep,\n  'Workaround',\n  sep,\n  d.workaround || 'None yet.',\n  '',\n  sep,\n  'Permanent Fix',\n  sep,\n  d.permanent_fix || 'None yet.',\n  '',\n  sep,\n  'Linked Tickets (top 5)',\n  sep,\n  ticketLines,\n  '',\n  sep,\n  'View in ITSM Platform:',\n  d.problem_url || 'N/A',\n  sep,\n  '',\n  'This message was generated automatically by the ITSM n8n automation layer.',\n  'Actor: system:n8n'\n].join('\\n');\n\nreturn [{ json: { ...d, stage: 'build_email', priority: pri, email_subject: subject, email_body: body, generated_summary: generatedSummary } }];"
+        "jsCode": "const d = $json;\nconst sep = '------------------------------------------';\n\nconst subject = `[ITSM Problem] ${(d.severity || 'unknown').toUpperCase()} \u2014 ${d.title || 'Problem Detected'}`;\n\nconst body = [\n  'ITSM Platform \u2013 Problem Notification',\n  '==========================================',\n  '',\n  `Problem ID   : ${d.problem_id || 'N/A'}`,\n  `Title        : ${d.title || 'N/A'}`,\n  `Severity     : ${(d.severity || 'unknown').toUpperCase()}`,\n  `Status       : ${d.status || 'open'}`,\n  `Affected     : ${d.affected_tickets_count ?? 0} ticket(s)`,\n  `Detected at  : ${d.created_at || new Date().toISOString()}`,\n  '',\n  sep,\n  'Description',\n  sep,\n  d.description || 'No description available.',\n  '',\n  sep,\n  'Root Cause',\n  sep,\n  d.root_cause || 'Under investigation.',\n  '',\n  sep,\n  'Workaround',\n  sep,\n  d.workaround || 'None yet.',\n  '',\n  sep,\n  'View in ITSM Platform:',\n  d.problem_url || 'N/A',\n  sep,\n  '',\n  'This message was generated automatically by the ITSM n8n automation layer.',\n  'Actor: system:n8n'\n].join('\\n');\n\nreturn [{ json: { ...d, email_subject: subject, email_body: body } }];"
       },
       "id": "build-email-content",
       "name": "Build Email Content",
@@ -299,7 +279,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const payload = {\n  workflow: 'Problem Launch Notifier',\n  timestamp: new Date().toISOString(),\n  stage: $json.stage || 'unknown',\n  trace_id: $json.trace_id || 'N/A',\n  run_id: $json.run_id || 'N/A',\n  route: 'error',\n  error: $json.error || $json.message || JSON.stringify($json)\n};\nconsole.error('[n8n][problem-notifier][error]', JSON.stringify(payload));\nreturn [{ json: payload }];"
+        "jsCode": "const stage = $runIndex === 0 ? 'unknown' : 'execution';\nconst payload = {\n  workflow: 'Problem Launch Notifier',\n  timestamp: new Date().toISOString(),\n  stage: stage,\n  error: $json.error || $json.message || JSON.stringify($json)\n};\nconsole.error('[n8n][problem-notifier][error]', JSON.stringify(payload));\nreturn [{ json: payload }];"
       },
       "id": "log-error",
       "name": "Log Error",
@@ -308,19 +288,6 @@
       "position": [
         1100,
         580
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "const payload = {\n  workflow: 'Problem Launch Notifier',\n  timestamp: new Date().toISOString(),\n  stage: 'email_sent',\n  route: 'ok',\n  trace_id: $json.trace_id || 'N/A',\n  run_id: $json.run_id || 'N/A',\n  problem_id: $json.problem_id || 'N/A',\n  email_to: $env.PROBLEM_ALERT_EMAIL_TO || 'N/A',\n  message_id: $json.messageId || null\n};\nconsole.log('[n8n][problem-notifier][success]', JSON.stringify(payload));\nreturn [{ json: payload }];"
-      },
-      "id": "log-success",
-      "name": "Log Success",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        2360,
-        360
       ]
     }
   ],
@@ -447,13 +414,7 @@
             "index": 0
           }
         ],
-        [
-          {
-            "node": "Log Success",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        []
       ]
     }
   },
@@ -462,11 +423,5 @@
     "executionOrder": "v1"
   },
   "pinData": {},
-  "versionId": "2",
-  "id": "workflow_problem_launch_notifier",
-  "tags": [
-    "itsm",
-    "problems",
-    "notifications"
-  ]
+  "tags": []
 }

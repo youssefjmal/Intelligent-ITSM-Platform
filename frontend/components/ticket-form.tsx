@@ -30,6 +30,7 @@ type Assignee = {
 interface AISuggestion {
   priority: TicketPriority
   category: TicketCategory
+  classificationConfidence: number
   recommendations: Array<{ text: string; confidence: number }>
   recommendationsEmbedding: Array<{ text: string; confidence: number }>
   recommendationsLlm: Array<{ text: string; confidence: number }>
@@ -126,6 +127,7 @@ export function TicketForm() {
       const data = await apiFetch<{
         priority: TicketPriority
         category: TicketCategory
+        classification_confidence?: number
         recommendations: string[]
         recommendations_scored?: Array<{ text: string; confidence: number }>
         recommendations_embedding?: string[]
@@ -145,6 +147,9 @@ export function TicketForm() {
       const mapped: AISuggestion = {
         priority: data.priority,
         category: data.category,
+        classificationConfidence: Number.isFinite(data.classification_confidence)
+          ? Math.max(0, Math.min(100, Number(data.classification_confidence)))
+          : 0,
         recommendations: mapScoredRecommendations(data.recommendations_scored, data.recommendations, 86),
         recommendationsEmbedding: mapScoredRecommendations(
           data.recommendations_embedding_scored,
@@ -422,6 +427,14 @@ export function TicketForm() {
                               : aiSuggestion.category === "email"
                                 ? t("category.email")
                                 : t("category.problem")}
+                </Badge>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-muted-foreground mb-1">
+                  Classification confidence
+                </p>
+                <Badge variant="outline" className="text-xs">
+                  {aiSuggestion.classificationConfidence}%
                 </Badge>
               </div>
               {aiSuggestion.assignee && (

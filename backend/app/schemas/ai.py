@@ -110,6 +110,7 @@ class AIRecommendationOut(BaseModel):
 class ClassificationResponse(BaseModel):
     priority: TicketPriority
     category: TicketCategory
+    classification_confidence: int = Field(ge=0, le=100)
     recommendations: list[str]
     recommendations_scored: list[AIRecommendationOut] = Field(default_factory=list)
     recommendations_embedding: list[str] = Field(default_factory=list)

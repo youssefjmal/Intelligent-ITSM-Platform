@@ -24,6 +24,7 @@ from app.models.enums import (
 from app.models.ticket import Ticket, TicketComment  # noqa: E402
 from app.models.recommendation import Recommendation  # noqa: E402
 from app.models.problem import Problem  # noqa: E402
+from app.models.notification import Notification  # noqa: E402
 from app.models.user import User  # noqa: E402
 from app.services.problems import detect_problems  # noqa: E402
 
@@ -809,6 +810,30 @@ RECOMMENDATIONS = [
     },
 ]
 
+NOTIFICATIONS = [
+    {
+        "title": "Critical tickets need review",
+        "body": "3 critical tickets are pending triage action.",
+        "severity": "critical",
+        "link": "/tickets?view=critical",
+        "source": "system",
+    },
+    {
+        "title": "Problem cluster detected",
+        "body": "A recurring email incident has been grouped into a problem record.",
+        "severity": "warning",
+        "link": "/problems/PB-0002",
+        "source": "n8n",
+    },
+    {
+        "title": "SLA sync completed",
+        "body": "Latest SLA synchronization run completed successfully.",
+        "severity": "info",
+        "link": "/tickets",
+        "source": "n8n",
+    },
+]
+
 
 def seed() -> None:
     db = SessionLocal()
@@ -895,6 +920,29 @@ def seed() -> None:
                 created_at=parse_dt(rec["created_at"]),
             )
         )
+
+    admin_user = db.query(User).filter(User.email == "admin@teamwill.com").first()
+    if admin_user:
+        for idx, item in enumerate(NOTIFICATIONS, start=1):
+            title = item["title"]
+            exists = (
+                db.query(Notification)
+                .filter(Notification.user_id == admin_user.id, Notification.title == title)
+                .first()
+            )
+            if exists:
+                continue
+            db.add(
+                Notification(
+                    user_id=admin_user.id,
+                    title=title,
+                    body=item["body"],
+                    severity=item["severity"],
+                    link=item["link"],
+                    source=item["source"],
+                    created_at=dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=idx * 7),
+                )
+            )
 
     db.commit()
     detect_problems(db, window_days=30, min_count=5)
