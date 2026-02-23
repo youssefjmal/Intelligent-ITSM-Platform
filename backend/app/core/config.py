@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,6 +36,7 @@ class Settings(BaseSettings):
     
     FRONTEND_BASE_URL: str = "http://localhost:3000"
     CORS_ORIGINS: str = "http://localhost:3000"
+    ALLOWED_HOSTS: str = "localhost,127.0.0.1"
     #google login using oauth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
@@ -78,6 +80,11 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
     @property
+    def allowed_hosts(self) -> list[str]:
+        hosts = [host.strip() for host in self.ALLOWED_HOSTS.split(",") if host.strip()]
+        return hosts or ["localhost", "127.0.0.1"]
+
+    @property
     def jira_kb_ready(self) -> bool:
         return bool(
             self.JIRA_KB_ENABLED
@@ -85,6 +92,27 @@ class Settings(BaseSettings):
             and self.JIRA_EMAIL.strip()
             and self.JIRA_API_TOKEN.strip()
         )
+
+    @property
+    def is_production(self) -> bool:
+        return self.ENV.strip().lower() in {"prod", "production"}
+
+    def validate_runtime_security(self) -> None:
+        jwt_secret = self.JWT_SECRET.strip()
+        weak_secret = jwt_secret in {"", "change-me", "changeme", "secret", "default"} or len(jwt_secret) < 32
+
+        if self.is_production and weak_secret:
+            raise ValueError("Insecure JWT_SECRET for production. Use a strong secret (>= 32 chars).")
+
+        if self.is_production and "*" in self.cors_origins:
+            raise ValueError("CORS wildcard is not allowed in production. Set explicit origins.")
+        if self.is_production and "*" in self.allowed_hosts:
+            raise ValueError("ALLOWED_HOSTS wildcard is not allowed in production. Set explicit hosts.")
+
+        if weak_secret and not self.is_production:
+            logging.getLogger(__name__).warning(
+                "Weak JWT_SECRET detected for non-production environment. Use a strong secret before deployment."
+            )
 
 
 settings = Settings()

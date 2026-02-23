@@ -1,0 +1,433 @@
+{
+  "name": "Problem Launch Notifier",
+  "nodes": [
+    {
+      "parameters": {
+        "width": 500,
+        "height": 160,
+        "content": "## 1. Problem Detection Webhook\nTriggered by backend when a problem is detected or promoted.\n**POST** `/webhook/problem-detected`\nExpected body: `{ problem_id, title, affected_tickets_count, priority }`"
+      },
+      "id": "note-webhook",
+      "name": "Note: Webhook",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        80,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "path": "problem-detected",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Problem Detected Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Safely extract and validate inbound webhook payload\nconst body = $json.body || $json || {};\nconst problemId = body.problem_id;\n\nif (!problemId) {\n  return [{ json: { route: 'error', error: 'missing_problem_id', raw: body } }];\n}\n\nreturn [{\n  json: {\n    route: 'ok',\n    problem_id: String(problemId),\n    title: body.title || 'Unknown Problem',\n    priority: body.priority || body.severity || 'high',\n    affected_tickets_count: body.affected_tickets_count || 0\n  }\n}];"
+      },
+      "id": "validate-inbound",
+      "name": "Validate Inbound Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.route }}",
+              "operation": "equals",
+              "value2": "ok"
+            }
+          ]
+        }
+      },
+      "id": "check-inbound-valid",
+      "name": "Payload Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        700,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "width": 460,
+        "height": 140,
+        "content": "## 2. Enrich from Backend\nFetch full problem details from FastAPI.\nStores inbound data in a Set node before the HTTP call so context is never lost."
+      },
+      "id": "note-enrich",
+      "name": "Note: Enrich",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        880,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "problem_id",
+              "value": "={{ $json.problem_id }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "inbound_title",
+              "value": "={{ $json.title }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "inbound_priority",
+              "value": "={{ $json.priority }}",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "inbound_affected_count",
+              "value": "={{ $json.affected_tickets_count }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-inbound-context",
+      "name": "Store Inbound Context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        940,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.ITSM_BASE_URL || 'http://host.docker.internal:8000') + '/api/problems/' + $json.problem_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.ITSM_API_TOKEN }}"
+            },
+            {
+              "name": "X-Actor",
+              "value": "system:n8n"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "fetch-problem",
+      "name": "Fetch Problem from Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1180,
+        260
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge inbound context with enriched backend data\n// Problem model has no dedicated description field\n\nconst ctx = $node['Store Inbound Context'].json;\nconst detail = $json || {};\n\nif (detail.error || detail.statusCode >= 400) {\n  return [{ json: { route: 'error', error: detail.error || 'backend_fetch_failed', status: detail.statusCode } }];\n}\n\nconst problemId = ctx.problem_id;\nconst uiBase = $env.FRONTEND_BASE_URL || 'http://localhost:3000';\n\nreturn [{\n  json: {\n    route: 'ok',\n    problem_id: problemId,\n    title: detail.title || ctx.inbound_title || 'Problem Detected',\n    priority: detail.priority || ctx.inbound_priority || detail.severity || 'high',\n    status: detail.status || 'open',\n    affected_tickets_count: detail.affected_tickets_count ?? ctx.inbound_affected_count ?? 0,\n    root_cause: detail.root_cause || 'Under investigation',\n    workaround: detail.workaround || 'None yet',\n    permanent_fix: detail.permanent_fix || 'None yet',\n    created_at: detail.created_at || new Date().toISOString(),\n    problem_url: `${uiBase}/problems/${problemId}`,\n    raw_detail: detail\n  }\n}];"
+      },
+      "id": "merge-and-validate",
+      "name": "Merge & Validate Enriched Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.route }}",
+              "operation": "equals",
+              "value2": "ok"
+            }
+          ]
+        }
+      },
+      "id": "check-enrich-valid",
+      "name": "Enrichment OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "width": 460,
+        "height": 140,
+        "content": "## 3. Email Notification\nSends a structured plain-text email to the problem response team.\nSMTP config via n8n credentials \u2014 set PROBLEM_ALERT_EMAIL_TO in n8n env."
+      },
+      "id": "note-email",
+      "name": "Note: Email",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1840,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $json;\nconst sep = '------------------------------------------';\n\nconst rawPriority = d.priority || d.raw_detail?.priority || d.inbound_priority || d.raw_detail?.severity || 'high';\nconst pri = String(rawPriority).trim() || 'high';\n\nconst tickets = Array.isArray(d.raw_detail?.tickets) ? d.raw_detail.tickets : [];\nconst topTickets = tickets.slice(0, 5);\n\nconst summaryBits = [];\nsummaryBits.push(`${d.title || 'Problem detected'} is currently ${d.status || 'open'}.`);\nsummaryBits.push(`Impact priority is ${pri.toUpperCase()} with ${d.affected_tickets_count ?? tickets.length ?? 0} related ticket(s).`);\n\nif (topTickets.length) {\n  const statuses = [...new Set(topTickets.map(t => t.status).filter(Boolean))];\n  if (statuses.length) summaryBits.push(`Linked ticket statuses: ${statuses.join(', ')}.`);\n  const sample = topTickets.map(t => t.title).filter(Boolean).slice(0,2).join(' | ');\n  if (sample) summaryBits.push(`Observed symptoms: ${sample}.`);\n}\n\nif (d.root_cause && d.root_cause !== 'Under investigation') {\n  summaryBits.push(`Likely root cause: ${d.root_cause}.`);\n} else {\n  summaryBits.push('Root cause is still under investigation.');\n}\n\nif (d.workaround && d.workaround !== 'None yet.') {\n  summaryBits.push(`Current workaround: ${d.workaround}.`);\n}\n\nconst generatedSummary = summaryBits.join(' ');\n\nconst ticketLines = topTickets.length\n  ? topTickets.map(t => `- ${t.id || 'N/A'} | ${t.title || 'Untitled'} | ${t.status || 'unknown'} | ${t.assignee || '-'}`).join('\\n')\n  : '- None listed';\n\nconst subject = `[ITSM Problem] ${pri.toUpperCase()} - ${d.title || 'Problem Detected'}`;\n\nconst body = [\n  'ITSM Platform - Problem Notification',\n  '==========================================',\n  '',\n  `Problem ID   : ${d.problem_id || 'N/A'}`,\n  `Title        : ${d.title || 'N/A'}`,\n  `Priority     : ${pri.toUpperCase()}`,\n  `Status       : ${d.status || 'open'}`,\n  `Affected     : ${d.affected_tickets_count ?? 0} ticket(s)`,\n  `Detected at  : ${d.created_at || new Date().toISOString()}`,\n  '',\n  sep,\n  'Problem Summary',\n  sep,\n  generatedSummary,\n  '',\n  sep,\n  'Root Cause',\n  sep,\n  d.root_cause || 'Under investigation.',\n  '',\n  sep,\n  'Workaround',\n  sep,\n  d.workaround || 'None yet.',\n  '',\n  sep,\n  'Permanent Fix',\n  sep,\n  d.permanent_fix || 'None yet.',\n  '',\n  sep,\n  'Linked Tickets (top 5)',\n  sep,\n  ticketLines,\n  '',\n  sep,\n  'View in ITSM Platform:',\n  d.problem_url || 'N/A',\n  sep,\n  '',\n  'This message was generated automatically by the ITSM n8n automation layer.',\n  'Actor: system:n8n'\n].join('\\n');\n\nreturn [{ json: { ...d, priority: pri, email_subject: subject, email_body: body, generated_summary: generatedSummary } }];"
+      },
+      "id": "build-email-content",
+      "name": "Build Email Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1900,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.SMTP_FROM }}",
+        "toEmail": "={{ $env.PROBLEM_ALERT_EMAIL_TO }}",
+        "subject": "={{ $json.email_subject }}",
+        "emailType": "text",
+        "message": "={{ $json.email_body }}",
+        "options": {}
+      },
+      "id": "send-email",
+      "name": "Send Problem Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        2060,
+        260
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !!$json.error || (!!$json.rejected && $json.rejected.length > 0 && (!$json.accepted || $json.accepted.length === 0)) }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "check-email-sent",
+      "name": "Email Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2140,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "width": 460,
+        "height": 120,
+        "content": "## 4. Error Handling\nAll failure paths converge here. Errors are logged to console for n8n execution logs."
+      },
+      "id": "note-error",
+      "name": "Note: Error",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        700,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Guard: ignore accidentally routed success payloads\nif ($json && $json.route === 'ok') {\n  return [];\n}\n\nconst stage = $runIndex === 0 ? 'unknown' : 'execution';\nconst payload = {\n  workflow: 'Problem Launch Notifier',\n  timestamp: new Date().toISOString(),\n  stage,\n  error: $json.error || $json.message || JSON.stringify($json)\n};\nconsole.error('[n8n][problem-notifier][error]', JSON.stringify(payload));\nreturn [{ json: payload }];"
+      },
+      "id": "log-error",
+      "name": "Log Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        580
+      ]
+    }
+  ],
+  "connections": {
+    "Problem Detected Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Inbound Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Inbound Payload": {
+      "main": [
+        [
+          {
+            "node": "Payload Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Payload Valid?": {
+      "main": [
+        [
+          {
+            "node": "Store Inbound Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Inbound Context": {
+      "main": [
+        [
+          {
+            "node": "Fetch Problem from Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Problem from Backend": {
+      "main": [
+        [
+          {
+            "node": "Merge & Validate Enriched Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge & Validate Enriched Data": {
+      "main": [
+        [
+          {
+            "node": "Enrichment OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrichment OK?": {
+      "main": [
+        [
+          {
+            "node": "Build Email Content",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Email Content": {
+      "main": [
+        [
+          {
+            "node": "Send Problem Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Problem Email": {
+      "main": [
+        [
+          {
+            "node": "Email Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Failed?": {
+      "main": [
+        [
+          {
+            "node": "Log Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "2",
+  "id": "workflow_problem_launch_notifier",
+  "tags": [
+    "itsm",
+    "problems",
+    "notifications"
+  ]
+}

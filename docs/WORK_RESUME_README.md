@@ -75,10 +75,11 @@ Based on repository history:
 11. `2026-02-15` `742716b` - Jira auto-sync improvements + PlantUML DB schema.
 12. `2026-02-15` `f0841e7` - Jira reverse resync, classification updates, and AI metrics fixes.
 13. `2026-02-20` `c5ca314` - Jira KB modularization, SLA flows, migrations, and frontend updates.
+14. `2026-02-20` `63b832d` - Resume documentation refreshed to match delivered state.
 
 Current pushed head:
 
-- `c5ca3141e0af2fd18e0399bd2e2d79ed730a0a75` on `main`.
+- `63b832d2202f0bf02880f555943becc4b35ca02b` on `main`.
 
 ---
 
@@ -101,6 +102,7 @@ Routers present in `backend/app/routers`:
 7. `assignees.py`
 8. `problems.py`
 9. `integrations_jira.py`
+10. `sla.py`
 
 Mounted in `backend/app/main.py` under:
 
@@ -113,6 +115,7 @@ Mounted in `backend/app/main.py` under:
 - `/api/assignees`
 - `/api/problems*`
 - `/api/integrations/jira/*`
+- `/api/sla/*`
 
 ### 5.2 Auth and identity
 
@@ -165,7 +168,7 @@ Implemented behavior:
 2. AI chat endpoint supporting actionable responses and ticket draft outputs.
 3. Rule-based fallback when model inference is unavailable.
 4. Prompt hardening and confidence/sources guidance.
-5. Jira knowledge enrichment via `services/jira_kb.py`.
+5. Jira knowledge enrichment via modular `services/jira_kb/*` package.
 
 ### 5.5 Problem management domain
 
@@ -219,6 +222,16 @@ Outbound capabilities (local -> Jira):
 n8n role in this architecture:
 
 - Orchestrator only (webhooks, cron, cross-system notifications), not source of truth.
+
+### 5.8 SLA sync and escalation domain
+
+SLA management capabilities:
+
+1. Ticket-level SLA snapshot endpoint for operational visibility.
+2. On-demand SLA sync by ticket against Jira SLA data.
+3. Batch SLA sync endpoint with status filters and staleness controls.
+4. Auto-escalation logic that can raise ticket priority when SLA risk/breach conditions are detected.
+5. System actor tagging (`system:n8n`) for auditability of automated escalation actions.
 
 ---
 
@@ -311,6 +324,11 @@ Migration history (`backend/alembic/versions`):
 13. `0013_rbac_user_role.py` - role-based access additions.
 14. `0014_problem_mgmt.py` - problem management entities/relations.
 15. `0015_jira_native_sync_fields.py` - Jira-native keys/fields + constraints.
+16. `0016_add_kb_chunks_pgvector.py` - KB chunk persistence foundation for semantic retrieval.
+17. `0017_add_ticket_sla_fields.py` - ticket-level SLA tracking fields.
+18. `0018_add_unique_jira_comment_identity.py` - uniqueness constraints for Jira comment identity.
+19. `0019_kb_chunk_identity_uniques.py` - KB chunk uniqueness guarantees.
+20. `0020_add_jira_native_waiting_statuses.py` - Jira-native waiting status support.
 
 ### 7.1 Current core tables
 
@@ -324,7 +342,8 @@ Migration history (`backend/alembic/versions`):
 8. `problems`
 9. `recommendations`
 10. `jira_sync_state`
-11. `alembic_version`
+11. `kb_chunks`
+12. `alembic_version`
 
 ### 7.2 Current key relationships
 
@@ -421,7 +440,15 @@ This includes keys, major constraints, relations, and enum notes.
 2. `POST /upsert` (legacy alias)
 3. `POST /reconcile`
 
-### 8.8 Other
+### 8.8 SLA
+
+`/api/sla`:
+
+1. `GET /ticket/{ticket_id}`
+2. `POST /ticket/{ticket_id}/sync`
+3. `POST /run`
+
+### 8.9 Other
 
 1. `GET /api/emails`
 2. `GET /api/users/assignees`
@@ -477,6 +504,11 @@ Examples of defined stories:
 
 Latest pushed commit:
 
+- `63b832d2202f0bf02880f555943becc4b35ca02b`
+- Message: `docs: refresh work resume with latest delivered state`
+
+Latest feature delivery commit:
+
 - `c5ca3141e0af2fd18e0399bd2e2d79ed730a0a75`
 - Message: `feat: add Jira KB, SLA flows, and UI updates`
 
@@ -497,7 +529,7 @@ Main latest-step additions:
 
 Already pushed:
 
-- All code changes up to commit `c5ca314...` are pushed to `origin/main`.
+- All code changes up to commit `63b832d...` are pushed to `origin/main`.
 
 ---
 
@@ -637,3 +669,60 @@ npm run dev
 ## 16. Resume intent
 
 This file is intentionally written as a complete, copy-ready project resume from the beginning of the project to the latest completed step, covering frontend, backend, database, integrations, and operational context.
+
+---
+
+## 17. Next implementation phase (requested)
+
+Requested next scope before execution:
+
+1. Implement optional n8n alerts workflow first (before other automation work).
+2. Focus on critical-incident and escalation-driven alerting.
+3. Trigger problem-launch notifications by email and Microsoft Teams.
+4. Make frontend top-bar notification bell actionable (currently static UI badge).
+
+Planned workflow count for this phase:
+
+1. Alerting workflow (n8n): SLA breach risk + critical incidents -> email + Teams.
+2. Optional follow-up workflow: problem launch notifier pipeline, if split is preferred for maintainability.
+
+---
+
+## 18. Security hardening update (current session)
+
+Security controls added:
+
+1. Runtime production guardrails in backend settings:
+   - Reject weak/default `JWT_SECRET` in production.
+   - Reject wildcard CORS (`*`) in production.
+   - Warn in non-production when JWT secret is weak.
+2. API-level security headers middleware for `/api/*` responses:
+   - `X-Content-Type-Options: nosniff`
+   - `X-Frame-Options: DENY`
+   - `Referrer-Policy: strict-origin-when-cross-origin`
+   - `Permissions-Policy`, `Cross-Origin-*`, and restrictive `Content-Security-Policy`
+   - `Strict-Transport-Security` enabled in production mode.
+3. Secret leak prevention in CI:
+   - Added GitHub Action workflow using `gitleaks` on push and pull requests (`.github/workflows/secret-scan.yml`).
+4. Repository hygiene checks:
+   - Verified no `.env`/`.env.local` files are tracked (only example env files are versioned).
+   - Performed targeted static scan for hardcoded credential-like string assignments in source files.
+
+---
+
+## 19. n8n workflows completed in this phase
+
+Completed workflow artifacts:
+
+1. `docs/n8n/workflow_problem_launch_notifier.json`
+   - Trigger: `POST /webhook/problem-detected`
+   - Purpose: fetch problem details, build email payload, send problem launch alert email, and log automation result.
+2. `docs/n8n/workflow_critical_ticket_detector.json`
+   - Trigger: `POST /webhook/critical-ticket-detected`
+   - Purpose: fetch critical ticket details, build escalation payload, send critical-ticket alert email, and log automation result.
+
+Execution notes:
+
+1. Runtime base URL for n8n backend calls should use container-safe host routing (for Docker: `http://host.docker.internal:8000`).
+2. SMTP/Gmail credentials are configured in n8n credentials and are not stored in workflow JSON.
+3. `.env` secrets remain local-only and are excluded from Git commits.

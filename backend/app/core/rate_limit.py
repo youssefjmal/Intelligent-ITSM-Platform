@@ -7,7 +7,7 @@ from collections import deque
 from threading import Lock
 from typing import Deque
 
-from fastapi import Request, Response
+from fastapi import FastAPI, Request, Response
 
 from app.core.config import settings
 from app.core.exceptions import RateLimitExceeded
@@ -82,3 +82,41 @@ def rate_limit(scope: str = "default"):
             )
 
     return _dependency
+
+
+def install_global_rate_limit_middleware(app: FastAPI) -> None:
+    @app.middleware("http")
+    async def global_rate_limit(request: Request, call_next):  # type: ignore[override]
+        if not settings.RATE_LIMIT_ENABLED:
+            return await call_next(request)
+
+        path = request.url.path or ""
+        # Skip documentation/static endpoints from global limiter.
+        if path.startswith("/docs") or path.startswith("/redoc") or path.startswith("/openapi.json"):
+            return await call_next(request)
+
+        scope = "default"
+        if path.startswith("/api/auth"):
+            scope = "auth"
+        elif path.startswith("/api/ai"):
+            scope = "ai"
+
+        limit = _scope_limit(scope)
+        key = _client_key(request, scope)
+        ok, remaining, retry_after = _limiter.hit(
+            key,
+            limit=limit,
+            window_seconds=settings.RATE_LIMIT_WINDOW_SECONDS,
+        )
+        if not ok:
+            raise RateLimitExceeded(
+                retry_after=retry_after,
+                limit=limit,
+                window_seconds=settings.RATE_LIMIT_WINDOW_SECONDS,
+            )
+
+        response = await call_next(request)
+        response.headers["X-RateLimit-Limit"] = str(limit)
+        response.headers["X-RateLimit-Remaining"] = str(max(remaining, 0))
+        response.headers["X-RateLimit-Window"] = str(settings.RATE_LIMIT_WINDOW_SECONDS)
+        return response

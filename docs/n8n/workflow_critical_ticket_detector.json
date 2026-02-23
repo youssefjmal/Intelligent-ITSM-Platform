@@ -1,0 +1,391 @@
+{
+  "name": "Critical Ticket Detector",
+  "nodes": [
+    {
+      "parameters": {
+        "width": 520,
+        "height": 180,
+        "content": "## Critical Ticket Detector\nPOST /webhook/critical-ticket-detected\nBody minimum: { ticket_id }\nWorkflow fetches ticket details and sends email alert."
+      },
+      "id": "ctd-note-webhook",
+      "name": "Note: Webhook",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        80,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "path": "critical-ticket-detected",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "ctd-webhook",
+      "name": "Critical Ticket Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body || $json || {};\nconst ticketId = body.ticket_id || body.id;\nif (!ticketId) {\n  return [{ json: { route: 'error', error: 'missing_ticket_id', raw: body } }];\n}\nreturn [{ json: { route: 'ok', ticket_id: String(ticketId), inbound_priority: body.priority || 'critical' } }];"
+      },
+      "id": "ctd-validate",
+      "name": "Validate Inbound Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ String($json.route || '').trim() }}",
+              "operation": "equals",
+              "value2": "ok"
+            }
+          ]
+        }
+      },
+      "id": "ctd-valid-if",
+      "name": "Payload Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        700,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "ctd-a1",
+              "name": "ticket_id",
+              "value": "={{ $json.ticket_id }}",
+              "type": "string"
+            },
+            {
+              "id": "ctd-a2",
+              "name": "inbound_priority",
+              "value": "={{ $json.inbound_priority }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ctd-store",
+      "name": "Store Inbound Context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        940,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ ($env.ITSM_BASE_URL || 'http://host.docker.internal:8000') + '/api/tickets/' + $json.ticket_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $env.ITSM_API_TOKEN }}"
+            },
+            {
+              "name": "X-Actor",
+              "value": "system:n8n"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "ctd-fetch-ticket",
+      "name": "Fetch Ticket from Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1180,
+        260
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $node['Store Inbound Context'].json;\nconst detail = $json || {};\nif (detail.error || detail.statusCode >= 400) {\n  return [{ json: { route: 'error', error: detail.error || 'ticket_fetch_failed', status: detail.statusCode, ticket_id: ctx.ticket_id } }];\n}\nreturn [{ json: { route: 'ok', ticket_id: ctx.ticket_id, title: detail.title || 'Critical Ticket', description: detail.description || detail.summary || 'No details provided.', priority: detail.priority || ctx.inbound_priority || 'critical', status: detail.status || 'open', assignee: detail.assignee || 'Unassigned', reporter: detail.reporter || 'N/A', created_at: detail.created_at || new Date().toISOString(), ticket_url: (($env.FRONTEND_BASE_URL || 'http://localhost:3000') + '/tickets/' + ctx.ticket_id) } }];"
+      },
+      "id": "ctd-merge",
+      "name": "Merge & Validate Ticket",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ String($json.route || '').trim() }}",
+              "operation": "equals",
+              "value2": "ok"
+            }
+          ]
+        }
+      },
+      "id": "ctd-enrich-if",
+      "name": "Enrichment OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $json;\nconst subject = `[ITSM][CRITICAL] ${String(d.priority || 'critical').toUpperCase()} - ${d.ticket_id}`;\nconst body = [\n  'Critical Ticket Notification',\n  '==========================================',\n  `Ticket ID   : ${d.ticket_id || 'N/A'}`,\n  `Title       : ${d.title || 'N/A'}`,\n  `Priority    : ${String(d.priority || 'critical').toUpperCase()}`,\n  `Status      : ${d.status || 'open'}`,\n  `Assignee    : ${d.assignee || 'Unassigned'}`,\n  `Reporter    : ${d.reporter || 'N/A'}`,\n  `Created At  : ${d.created_at || new Date().toISOString()}`,\n  '',\n  'Description',\n  '------------------------------------------',\n  d.description || 'No details provided.',\n  '',\n  'Open in ITSM:',\n  d.ticket_url || 'N/A'\n].join('\\n');\nreturn [{ json: { ...d, email_subject: subject, email_body: body } }];"
+      },
+      "id": "ctd-build-email",
+      "name": "Build Email Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1900,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.SMTP_FROM }}",
+        "toEmail": "={{ $env.CRITICAL_ALERT_EMAIL_TO || $env.ALERT_DEFAULT_EMAIL || $env.SLA_ALERT_EMAIL_TO }}",
+        "subject": "={{ $json.email_subject }}",
+        "emailType": "text",
+        "message": "={{ $json.email_body }}"
+      },
+      "id": "ctd-send-email",
+      "name": "Send Critical Ticket Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        2140,
+        260
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !!$json.error || (!!$json.rejected && $json.rejected.length > 0 && (!$json.accepted || $json.accepted.length === 0)) }}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "ctd-email-failed",
+      "name": "Email Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2360,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "width": 460,
+        "height": 120,
+        "content": "## Error Handling\nAny real failure routes here. Success responses are ignored."
+      },
+      "id": "ctd-note-error",
+      "name": "Note: Error",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        760,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "if ($json && $json.route === 'ok') { return []; }\nconst payload = { workflow: 'Critical Ticket Detector', timestamp: new Date().toISOString(), error: $json.error || $json.message || JSON.stringify($json), data: $json };\nconsole.error('[n8n][critical-ticket-detector][error]', JSON.stringify(payload));\nreturn [{ json: payload }];"
+      },
+      "id": "ctd-log-error",
+      "name": "Log Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        580
+      ]
+    }
+  ],
+  "connections": {
+    "Critical Ticket Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate Inbound Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Inbound Payload": {
+      "main": [
+        [
+          {
+            "node": "Payload Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Payload Valid?": {
+      "main": [
+        [
+          {
+            "node": "Store Inbound Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Inbound Context": {
+      "main": [
+        [
+          {
+            "node": "Fetch Ticket from Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Ticket from Backend": {
+      "main": [
+        [
+          {
+            "node": "Merge & Validate Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge & Validate Ticket": {
+      "main": [
+        [
+          {
+            "node": "Enrichment OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrichment OK?": {
+      "main": [
+        [
+          {
+            "node": "Build Email Content",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Email Content": {
+      "main": [
+        [
+          {
+            "node": "Send Critical Ticket Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Critical Ticket Email": {
+      "main": [
+        [
+          {
+            "node": "Email Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Failed?": {
+      "main": [
+        [
+          {
+            "node": "Log Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "versionId": "1",
+  "id": "workflow_critical_ticket_detector",
+  "tags": [
+    "itsm",
+    "critical",
+    "notifications",
+    "email"
+  ]
+}

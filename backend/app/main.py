@@ -5,17 +5,21 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.core.exceptions import ITSMGatekeeperException
+from app.core.rate_limit import install_global_rate_limit_middleware
+from app.core.security_headers import install_security_headers_middleware
 from app.integrations.jira.auto_reconcile import start_jira_auto_reconcile, stop_jira_auto_reconcile
 from app.routers import ai, assignees, auth, emails, integrations_jira, problems, recommendations, sla, tickets, users
 
 
 def create_app() -> FastAPI:
     setup_logging(settings.LOG_LEVEL)
+    settings.validate_runtime_security()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -33,6 +37,12 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=settings.allowed_hosts,
+    )
+    install_global_rate_limit_middleware(app)
+    install_security_headers_middleware(app, settings)
 
     app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
     app.include_router(users.router, prefix="/api/users", tags=["users"])
