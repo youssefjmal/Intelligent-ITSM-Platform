@@ -71,6 +71,30 @@ npm run build
 npm run start
 ```
 
+## Validation Commands
+Use this sequence when verifying frontend changes:
+
+```powershell
+cd C:\Users\kahla\Downloads\jira-ticket-managementv2\frontend
+npm install
+npm run build
+```
+
+Expected:
+- Next.js build completes successfully.
+- Routes are generated for dashboard, ticket, problem, auth, admin, and assistant pages.
+
 ## Troubleshooting
 - If you see 401 errors, confirm backend is running and cookies are allowed.
 - If pages are blank, verify `NEXT_PUBLIC_API_URL` points to `/api`.
+- If ticket/problem pages fail to load data, confirm backend URL in `.env.local` matches the running API host.
+
+## Safe Commit Practices
+- Do not commit `frontend/.env.local`.
+- Commit only `frontend/.env.local.example` when env keys change.
+- Before pushing:
+
+```powershell
+git diff --cached --name-only
+git diff --cached --name-only | rg "(^|/)\.env($|\.)"
+```

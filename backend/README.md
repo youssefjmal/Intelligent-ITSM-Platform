@@ -129,11 +129,26 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 - Auth: `/api/auth/*`
 - Users: `/api/users/*`
 - Tickets: `/api/tickets/*`
+- SLA: `/api/sla/*`
 - AI: `/api/ai/*`
 - Recommendations: `/api/recommendations/*`
+- Notifications: `/api/notifications/*`
 - Emails: `/api/emails/*`
 - Assignees: `/api/assignees`
 - Integrations: `/api/integrations/jira/*`
+
+## Validation Commands
+Use these commands to confirm backend integrity after changes:
+
+```powershell
+cd C:\Users\kahla\Downloads\jira-ticket-managementv2\backend
+python -m pip install -r requirements.txt
+python -m pytest -q
+```
+
+Expected:
+- All tests pass.
+- No import errors for optional integrations declared in `requirements.txt`.
 
 ## n8n Reverse Sync (Jira -> Backend)
 - n8n is the orchestrator only; source of truth remains Jira.
@@ -242,6 +257,18 @@ Examples:
 - Ensure PostgreSQL is running and `DATABASE_URL` is correct.
 - If auth fails, verify cookies are not blocked and `JWT_SECRET` is set.
 - If AI fails, check `OLLAMA_BASE_URL` or rely on rule-based fallback.
+- If Jira webhook calls are rejected, verify `JIRA_WEBHOOK_SECRET` and incoming headers (`X-Jira-Webhook-Secret` or `X-Signature`).
+- If reverse sync returns no results, verify `JIRA_PROJECT_KEY` and the `since` window used by `/api/integrations/jira/reconcile`.
+
+## Safe Commit Practices
+- Never commit runtime env files (`backend/.env`).
+- Only commit templates (`backend/.env.example`) when variables change.
+- Check staged files before pushing:
+
+```powershell
+git diff --cached --name-only
+git diff --cached --name-only | rg "(^|/)\.env($|\.)"
+```
 
 ## Intentional Constants
 The codebase keeps a small set of fixed constants by design:

@@ -58,6 +58,7 @@ Next.js Dashboard
 ## Detailed Docs
 - Backend: `backend/README.md`
 - Frontend: `frontend/README.md`
+- n8n integration: `docs/n8n/n8n_env_config.md`, `docs/n8n/backend_n8n_integration_checklist.md`
 
 ## Prerequisites
 - Python 3.11+
@@ -84,6 +85,25 @@ copy .env.local.example .env.local
 npm install
 npm run dev
 ```
+
+## Verification Checklist
+Run these checks after pulling changes:
+
+```powershell
+# Backend
+cd backend
+python -m pip install -r requirements.txt
+python -m pytest -q
+
+# Frontend
+cd ..\frontend
+npm install
+npm run build
+```
+
+Expected:
+- Backend tests complete successfully.
+- Frontend build completes without compile errors.
 
 ## Default Accounts
 - Admin: `admin@teamwill.com` / `admin123`
@@ -185,6 +205,17 @@ jira-ticket-managementv2/
 - Jira Service Management integration is available for inbound sync and outbound best-effort ticket push.
 - n8n orchestration is optional (webhooks and scheduled reconciliation).
 - Email sending is logged in the DB; configure SMTP to send real emails.
+
+## Git Safety (No `.env` Leaks)
+- `.env` patterns are ignored by `.gitignore` (`.env`, `.env.*`, `**/.env`, `**/.env.*`).
+- Keep secrets only in local env files (`backend/.env`, `frontend/.env.local`, `docs/n8n/.env`).
+- Before commit/push, run:
+
+```powershell
+git status --short
+git ls-files | rg "(^|/)\.env($|\.)"
+git diff --cached --name-only
+```
 
 ## API Docs
 Once the backend is running:

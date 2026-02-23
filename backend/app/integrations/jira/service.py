@@ -20,7 +20,9 @@ from app.integrations.jira.schemas import JiraReconcileRequest, JiraReconcileRes
 from app.models.enums import TicketCategory, TicketPriority, TicketStatus
 from app.models.jira_sync_state import JiraSyncState
 from app.models.ticket import Ticket, TicketComment
+from app.models.user import User
 from app.services.ai import classify_ticket
+from app.services.ai.llm import ollama_generate
 
 logger = logging.getLogger(__name__)
 
@@ -237,13 +239,115 @@ def _priority_name(issue: dict[str, Any]) -> str:
     return str(((fields.get("priority") or {}).get("name") or "")).strip().lower()
 
 
+def _text_from_adf(node: Any) -> str:
+    if node is None:
+        return ""
+    if isinstance(node, str):
+        return node
+    if isinstance(node, list):
+        return " ".join(part for part in (_text_from_adf(item) for item in node) if part)
+    if not isinstance(node, dict):
+        return str(node)
+    parts: list[str] = []
+    text = node.get("text")
+    if isinstance(text, str):
+        parts.append(text)
+    content = node.get("content")
+    if isinstance(content, list):
+        for child in content:
+            child_text = _text_from_adf(child)
+            if child_text:
+                parts.append(child_text)
+    return " ".join(part.strip() for part in parts if part and part.strip())
+
+
+def _normalize_text(raw_body: Any) -> str:
+    if isinstance(raw_body, str):
+        text = raw_body
+    else:
+        text = _text_from_adf(raw_body)
+    return " ".join(text.split()).strip()
+
+
+def _issue_description_missing(issue: dict[str, Any]) -> bool:
+    fields = issue.get("fields") or {}
+    description = fields.get("description")
+    return not bool(_normalize_text(description))
+
+
+def _resolve_assignee_specialization(db: Session, assignee_name: str) -> str:
+    target = str(assignee_name or "").strip()
+    if not target or target.lower() == "unassigned":
+        return "general support"
+    if not hasattr(db, "query"):
+        return "general support"
+    try:
+        user = db.query(User).filter(User.name.ilike(target)).first()
+    except Exception:  # noqa: BLE001
+        return "general support"
+    if not user:
+        return "general support"
+    specializations = [str(item).strip() for item in list(user.specializations or []) if str(item).strip()]
+    if not specializations:
+        return "general support"
+    return ", ".join(specializations[:3])
+
+
+def _enforce_generated_description_policy(text: str) -> str:
+    cleaned = " ".join(str(text or "").split()).strip()
+    if not cleaned:
+        cleaned = "Limited ticket details were provided. Initial triage should confirm scope, impact, and probable causes."
+    words = cleaned.split()
+    if len(words) > 120:
+        cleaned = " ".join(words[:120]).rstrip(".,;: ")
+    suffix = "This description was generated based on limited information."
+    if not cleaned.endswith(suffix):
+        cleaned = f"{cleaned.rstrip('. ')}. {suffix}"
+    return cleaned
+
+
+def _generate_missing_description(
+    *,
+    ticket_title: str,
+    severity: str,
+    assignee_specialization: str,
+) -> str:
+    prompt = (
+        "You are an IT service management assistant.\n\n"
+        "A Jira ticket has no description.\n\n"
+        "Available information:\n"
+        f'- Title: "{ticket_title}"\n'
+        f'- Severity: "{severity}"\n'
+        f'- Assignee specialization: "{assignee_specialization}"\n\n'
+        "Generate a realistic and concise technical description\n"
+        "that could plausibly explain this issue.\n\n"
+        "Rules:\n"
+        "- Do NOT invent specific IPs, systems, or user names.\n"
+        "- Do NOT claim facts that are not supported.\n"
+        "- Keep it generic but operationally useful.\n"
+        "- Max 120 words.\n"
+        "- Write in professional ITSM language.\n"
+        '- End with: "This description was generated based on limited information."\n\n'
+        "Return only the description."
+    )
+    try:
+        generated = ollama_generate(prompt, json_mode=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Missing-description generation failed, using fallback: %s", exc)
+        generated = (
+            f"Ticket reported with severity {severity}. The issue appears related to {ticket_title}. "
+            "Initial handling should validate impact scope, identify likely cause domains, and document mitigation steps."
+        )
+    return _enforce_generated_description_policy(generated)
+
+
 def _category_was_defaulted(issue: dict[str, Any], mapped_category: TicketCategory) -> bool:
     issue_type = _issue_type_name(issue)
     if not issue_type:
         return True
     if issue_type in KNOWN_JIRA_ISSUE_TYPES:
         return False
-    return mapped_category == TicketCategory.service_request
+    return True
 
 
 def _priority_was_defaulted(issue: dict[str, Any], mapped_priority: TicketPriority) -> bool:
@@ -300,6 +404,28 @@ def _should_update_ticket(existing: Ticket, incoming_updated: dt.datetime | None
 def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
     now = _utcnow()
     mapped = map_issue(issue)
+    specialization = _resolve_assignee_specialization(db, mapped.assignee)
+    if _issue_description_missing(issue):
+        mapped = mapped.__class__(
+            jira_key=mapped.jira_key,
+            jira_issue_id=mapped.jira_issue_id,
+            source=mapped.source,
+            title=mapped.title,
+            description=_generate_missing_description(
+                ticket_title=mapped.title,
+                severity=mapped.priority.value,
+                assignee_specialization=specialization,
+            ),
+            status=mapped.status,
+            priority=mapped.priority,
+            category=mapped.category,
+            assignee=mapped.assignee,
+            reporter=mapped.reporter,
+            tags=mapped.tags,
+            jira_created_at=mapped.jira_created_at,
+            jira_updated_at=mapped.jira_updated_at,
+            raw_payload=mapped.raw_payload,
+        )
     local_ticket_id = _extract_local_ticket_id(issue)
     ticket = _find_ticket_for_issue(
         db,
