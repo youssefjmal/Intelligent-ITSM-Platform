@@ -1,0 +1,1 @@
+{"problem_id":"PB-0002","title":"Mail outage","description":"Users cannot send emails","affected_tickets_count":5,"severity":"high"}  -X POST "http://localhost:5670/webhook/problem-detected" -H "Content-Type: application/json" --data-binary "@problem_payload.json"
