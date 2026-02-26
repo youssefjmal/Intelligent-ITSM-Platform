@@ -145,8 +145,6 @@ export default function SignUpPage() {
       setLoading(false)
     } else {
       const params = new URLSearchParams({ email })
-      if (result.verificationToken) params.set("token", result.verificationToken)
-      if (result.verificationCode) params.set("code", result.verificationCode)
       router.push(`/auth/signup-success?${params.toString()}`)
     }
   }

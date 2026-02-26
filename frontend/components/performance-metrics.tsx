@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Gauge, Shuffle, Clock3, CheckCircle2, Bot } from "lucide-react"
+import { Gauge, Shuffle, Clock3, CheckCircle2, Bot, AlertTriangle } from "lucide-react"
 import { useI18n } from "@/lib/i18n"
 import { fetchTicketPerformance, type TicketPerformancePayload } from "@/lib/tickets-api"
 import { type Ticket, type TicketCategory } from "@/lib/ticket-data"
@@ -132,13 +132,68 @@ function computeLocalPerformance(
       before: mttrBefore,
       after: mttrAfter,
     },
+    mttr_global_hours: avg(resolved.map((ticket) => durationHours(ticket.createdAt, ticket.resolvedAt || ticket.updatedAt))),
+    mttr_p90_hours: (() => {
+      const values = resolved
+        .map((ticket) => durationHours(ticket.createdAt, ticket.resolvedAt || ticket.updatedAt))
+        .sort((a, b) => a - b)
+      if (!values.length) return null
+      const pos = (values.length - 1) * 0.9
+      const low = Math.floor(pos)
+      const high = Math.min(low + 1, values.length - 1)
+      const weight = pos - low
+      return Number((values[low] * (1 - weight) + values[high] * weight).toFixed(2))
+    })(),
+    mttr_by_priority_hours: {},
+    mttr_by_category_hours: {},
+    throughput_resolved_per_week: resolved.filter((ticket) => {
+      const resolvedMs = toMs(ticket.resolvedAt || ticket.updatedAt)
+      if (resolvedMs === null) return false
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
+      return resolvedMs >= cutoff
+    }).length,
+    backlog_open_over_days: filtered.filter((ticket) => {
+      const active = new Set(["open", "in-progress", "waiting-for-customer", "waiting-for-support-vendor", "pending"])
+      if (!active.has(ticket.status)) return false
+      const createdMs = toMs(ticket.createdAt)
+      if (createdMs === null) return false
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
+      return createdMs < cutoff
+    }).length,
+    backlog_threshold_days: 7,
     reassignment_rate: reassignmentRate,
     reassigned_tickets: reassignedTickets,
     avg_time_to_first_action_hours: firstActionAvg,
+    median_time_to_first_action_hours: (() => {
+      const values = filtered
+        .filter((ticket) => Boolean(ticket.firstActionAt))
+        .map((ticket) => durationHours(ticket.createdAt, ticket.firstActionAt))
+        .sort((a, b) => a - b)
+      if (!values.length) return null
+      const n = values.length
+      const mid = Math.floor(n / 2)
+      if (n % 2 === 1) return Number(values[mid].toFixed(2))
+      return Number(((values[mid - 1] + values[mid]) / 2).toFixed(2))
+    })(),
     classification_accuracy_rate: classificationAccuracyRate,
     classification_samples: classificationSamples,
     auto_assignment_accuracy_rate: autoAssignmentAccuracyRate,
     auto_assignment_samples: autoAssignmentSamples,
+    auto_triage_no_correction_rate: autoAssignmentAccuracyRate,
+    auto_triage_no_correction_count: autoAssignmentCorrect,
+    auto_triage_samples: autoAssignmentSamples,
+    sla_breach_rate: null,
+    sla_breached_tickets: 0,
+    sla_tickets_with_due: 0,
+    first_response_sla_breach_rate: null,
+    first_response_sla_breached_count: 0,
+    first_response_sla_eligible: 0,
+    resolution_sla_breach_rate: null,
+    resolution_sla_breached_count: 0,
+    resolution_sla_eligible: 0,
+    reopen_rate: null,
+    first_contact_resolution_rate: null,
+    csat_score: null,
   }
 }
 
@@ -262,6 +317,19 @@ export function PerformanceMetrics({ performance: initialPerformance, assignees,
       icon: Clock3,
       iconColor: "text-blue-200",
       iconBg: "bg-blue-900/70",
+    },
+    {
+      title: isFr ? "Taux de breach SLA" : "SLA breach rate",
+      value: formatPercent(performance.sla_breach_rate),
+      subtitle:
+        performance.sla_tickets_with_due > 0
+          ? `${performance.sla_breached_tickets}/${performance.sla_tickets_with_due} ${isFr ? "tickets" : "tickets"}`
+          : isFr
+            ? "Aucune donnee SLA"
+            : "No SLA data",
+      icon: AlertTriangle,
+      iconColor: "text-rose-200",
+      iconBg: "bg-rose-900/70",
     },
     {
       title: isFr ? "Classification correcte" : "Correct classification",
@@ -399,8 +467,8 @@ export function PerformanceMetrics({ performance: initialPerformance, assignees,
       {error && <p className="text-xs text-destructive">{error}</p>}
 
       {loading ? (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          {Array.from({ length: 5 }).map((_, index) => (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
+          {Array.from({ length: 6 }).map((_, index) => (
             <div key={`perf-card-skeleton-${index}`} className="rounded-2xl border border-border/70 bg-card/70 p-3">
               <Skeleton className="h-3 w-24" />
               <Skeleton className="mt-2 h-7 w-16" />
@@ -409,7 +477,7 @@ export function PerformanceMetrics({ performance: initialPerformance, assignees,
           ))}
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
           {cards.map((card) => (
             <Card key={card.title} className="surface-card overflow-hidden rounded-2xl border-border/70">
               <CardContent className="p-3.5">

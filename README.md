@@ -59,6 +59,7 @@ Next.js Dashboard
 - Backend: `backend/README.md`
 - Frontend: `frontend/README.md`
 - n8n integration: `docs/n8n/n8n_env_config.md`, `docs/n8n/backend_n8n_integration_checklist.md`
+- Teammate Docker setup: `docs/TEAMMATE_SETUP_README.md`
 
 ## Prerequisites
 - Python 3.11+

@@ -793,22 +793,60 @@ Current local SLA status values used by API and sync flows:
 
 ---
 
-## 23. Current Checkpoint Update (2026-02-23)
+## 23. KPI framework and objective status (PFE reporting)
 
-Latest checkpoint work completed in this phase:
+### 23.1 Objective status (current)
 
-1. Extended backend domain for notifications and automation audit support:
-   - new models/schemas/router/service for notifications and automation events.
-2. Added AI SLA risk persistence and latest-read capability:
-   - risk evaluations stored and exposed for ticket-level visibility.
-3. Added Alembic migration chain `0021` to `0024`:
-   - notifications, ai_sla_risk_evaluations, automation_events, and `sla_at_risk`.
-4. Expanded n8n documentation/workflows:
-   - integration checklist, env guide, combined workflow export, and escalation/alert workflows.
-5. Frontend updates:
-   - app shell and ticket flows aligned with new notifications/SLA-risk behavior.
-6. Verification executed:
-   - backend tests: `36 passed`
-   - frontend production build: success.
-7. Git hygiene enforced during commit/push:
-   - `.env` files kept local-only and excluded from staged changes.
+1. `Ameliorer la performance operationnelle du help desk`: **Partiellement atteint**
+   - Functional enablers are implemented (automation, routing, analytics).
+   - Full validation requires stable pilot measurements in production-like usage.
+2. `Reduire le MTTR`: **Partiellement atteint**
+   - MTTR instrumentation is available (`before/after`, global, p90, by priority/category).
+   - Final claim depends on baseline-vs-after trend over a fixed time window.
+3. `Renforcer la qualite de service`: **Partiellement atteint**
+   - Service-quality indicators are now instrumented (including SLA breach KPIs).
+   - Business proof still requires periodic KPI review in operations.
+
+### 23.2 KPI set used for validation
+
+Operational performance:
+
+1. Throughput = resolved tickets per week.
+2. Backlog = active tickets older than threshold (`7` days by default).
+3. FRT = average and median time to first action.
+4. `% auto-triaged/auto-assigned without correction`.
+
+MTTR:
+
+1. MTTR global.
+2. MTTR by priority (`critical/high/medium/low`).
+3. MTTR by category (`infrastructure/network/security/application/service_request/hardware/email/problem`).
+4. P90 MTTR.
+
+Service quality:
+
+1. SLA breach rate = breached tickets / tickets with SLA due.
+2. First-response SLA breach rate.
+3. Resolution SLA breach rate.
+4. Placeholders for `reopen_rate`, `first_contact_resolution_rate`, `csat_score` (not yet reliably persisted in current model).
+
+### 23.3 Baseline vs after-deployment template
+
+Use this structure in the final PFE report (weekly or monthly cut):
+
+| KPI | Baseline (Before) | After Deployment | Delta | Target | Status |
+| --- | --- | --- | --- | --- | --- |
+| Throughput (resolved/week) |  |  |  |  |  |
+| Backlog (> 7 days) |  |  |  |  |  |
+| FRT avg (hours) |  |  |  |  |  |
+| FRT median (hours) |  |  |  |  |  |
+| MTTR global (hours) |  |  |  |  |  |
+| MTTR P90 (hours) |  |  |  |  |  |
+| SLA breach rate (%) |  |  |  |  |  |
+| First-response SLA breach rate (%) |  |  |  |  |  |
+| Resolution SLA breach rate (%) |  |  |  |  |  |
+| Auto-triage no-correction rate (%) |  |  |  |  |  |
+
+Interpretation rule:
+
+1. Keep objective status as `partiellement atteint` until at least one stable pilot window confirms sustained KPI improvement.

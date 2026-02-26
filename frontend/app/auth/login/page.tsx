@@ -41,8 +41,6 @@ export default function LoginPage() {
       setLoading(false)
     } else if (result.requiresVerification) {
       const params = new URLSearchParams({ email })
-      if (result.verificationToken) params.set("token", result.verificationToken)
-      if (result.verificationCode) params.set("code", result.verificationCode)
       router.push(`/auth/signup-success?${params.toString()}`)
     } else {
       router.push("/")

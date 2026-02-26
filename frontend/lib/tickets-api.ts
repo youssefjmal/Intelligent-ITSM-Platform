@@ -45,13 +45,36 @@ export type TicketPerformancePayload = {
     before: number | null
     after: number | null
   }
+  mttr_global_hours: number | null
+  mttr_p90_hours: number | null
+  mttr_by_priority_hours: Record<string, number | null>
+  mttr_by_category_hours: Record<string, number | null>
+  throughput_resolved_per_week: number
+  backlog_open_over_days: number
+  backlog_threshold_days: number
   reassignment_rate: number
   reassigned_tickets: number
   avg_time_to_first_action_hours: number | null
+  median_time_to_first_action_hours: number | null
   classification_accuracy_rate: number | null
   classification_samples: number
   auto_assignment_accuracy_rate: number | null
   auto_assignment_samples: number
+  auto_triage_no_correction_rate: number | null
+  auto_triage_no_correction_count: number
+  auto_triage_samples: number
+  sla_breach_rate: number | null
+  sla_breached_tickets: number
+  sla_tickets_with_due: number
+  first_response_sla_breach_rate: number | null
+  first_response_sla_breached_count: number
+  first_response_sla_eligible: number
+  resolution_sla_breach_rate: number | null
+  resolution_sla_breached_count: number
+  resolution_sla_eligible: number
+  reopen_rate: number | null
+  first_contact_resolution_rate: number | null
+  csat_score: number | null
 }
 
 function mapTicket(ticket: ApiTicket): Ticket {

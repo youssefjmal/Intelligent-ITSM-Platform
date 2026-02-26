@@ -110,7 +110,7 @@ python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 - Swagger UI: `http://127.0.0.1:8000/docs`
 
 ## Authentication Flow
-- `POST /api/auth/register` creates a user and returns a verification token (dev only).
+- `POST /api/auth/register` creates a user and sends verification by email.
 - `POST /api/auth/email-login` logs in verified users, and auto-creates + sends verification for unknown emails.
 - `POST /api/auth/forgot-password` sends a password reset link by email.
 - `POST /api/auth/reset-password` updates password using a reset token.

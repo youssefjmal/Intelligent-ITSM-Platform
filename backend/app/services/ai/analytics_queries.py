@@ -1,6 +1,6 @@
 """Structured ticket analytics query helpers for AI chat."""
 
-from __future__ import annotations
+from __future__ import annotations 
 
 import datetime as dt
 

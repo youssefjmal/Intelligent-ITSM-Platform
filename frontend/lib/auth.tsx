@@ -27,8 +27,8 @@ interface AuthContextType {
   continueWithEmail: (
     email: string,
     password: string
-  ) => Promise<{ error?: string; requiresVerification?: boolean; verificationToken?: string; verificationCode?: string }>
-  signUp: (data: { email: string; password: string; name: string; specializations: string[] }) => Promise<{ error?: string; verificationToken?: string; verificationCode?: string }>
+  ) => Promise<{ error?: string; requiresVerification?: boolean }>
+  signUp: (data: { email: string; password: string; name: string; specializations: string[] }) => Promise<{ error?: string }>
   signOut: () => Promise<void>
   getAllUsers: () => Promise<User[]>
   updateUserRole: (userId: string, role: UserRole) => Promise<void>
@@ -202,11 +202,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signUp = useCallback(
     async (data: { email: string; password: string; name: string; specializations: string[] }) => {
       try {
-        const result = await apiFetch<{ message: string; verification_token?: string; verification_code?: string }>("/auth/register", {
+        await apiFetch<{ message: string }>("/auth/register", {
           method: "POST",
           body: JSON.stringify(data),
         })
-        return { verificationToken: result.verification_token, verificationCode: result.verification_code }
+        return {}
       } catch (err) {
         if (err instanceof ApiError) {
           return { error: mapAuthError(err.detail) }
@@ -287,8 +287,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           max_concurrent_tickets: number
         }
         requires_verification?: boolean
-        verification_token?: string
-        verification_code?: string
       }>("/auth/email-login", {
         method: "POST",
         body: JSON.stringify({ email, password }),
@@ -300,8 +298,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       return {
         requiresVerification: result.requires_verification ?? false,
-        verificationToken: result.verification_token,
-        verificationCode: result.verification_code,
       }
     } catch (err) {
       if (err instanceof ApiError) {

@@ -11,15 +11,13 @@ import { useI18n } from "@/lib/i18n"
 import { LanguageSwitcher } from "@/components/language-switcher"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { apiFetch, ApiError } from "@/lib/api"
-import { CheckCircle2, Mail, LogIn, BadgeCheck, KeyRound, Loader2 } from "lucide-react"
+import { CheckCircle2, Mail, LogIn, KeyRound, Loader2 } from "lucide-react"
 
 export default function SignUpSuccessPage() {
   const { t } = useI18n()
   const params = useSearchParams()
-  const token = params.get("token") ?? ""
   const email = (params.get("email") ?? "").trim().toLowerCase()
-  const devCode = params.get("code") ?? ""
-  const [code, setCode] = useState(devCode.replace(/\D/g, "").slice(0, 6))
+  const [code, setCode] = useState("")
   const [codeStatus, setCodeStatus] = useState<"idle" | "loading" | "success" | "error">("idle")
   const [redirecting, setRedirecting] = useState(false)
   const [codeError, setCodeError] = useState("")
@@ -141,28 +139,6 @@ export default function SignUpSuccessPage() {
                     {codeStatus === "loading" ? t("auth.verifyingCode") : t("auth.verifyCodeBtn")}
                   </Button>
                 </form>
-              )}
-
-              {token && (
-                <div className="w-full space-y-2">
-                  <Link href={`/auth/verify?token=${token}`} className="w-full">
-                    <Button className="w-full bg-primary text-primary-foreground hover:bg-primary/90 gap-2">
-                      <BadgeCheck className="h-4 w-4" />
-                      {t("auth.verifyNow")}
-                    </Button>
-                  </Link>
-                  <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                    <span className="font-medium text-foreground">{t("auth.devToken")}:</span>{" "}
-                    <span className="font-mono break-all">{token}</span>
-                  </div>
-                </div>
-              )}
-
-              {devCode && (
-                <div className="w-full rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                  <span className="font-medium text-foreground">{t("auth.devCode")}:</span>{" "}
-                  <span className="font-mono">{devCode}</span>
-                </div>
               )}
 
               <Link href="/auth/login" className="w-full">

@@ -774,6 +774,31 @@ def _avg(values: list[float]) -> float | None:
     return round(sum(values) / len(values), 2)
 
 
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    n = len(ordered)
+    mid = n // 2
+    if n % 2 == 1:
+        return round(ordered[mid], 2)
+    return round((ordered[mid - 1] + ordered[mid]) / 2, 2)
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return round(ordered[0], 2)
+    position = (len(ordered) - 1) * percentile
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    interpolated = ordered[lower] * (1 - weight) + ordered[upper] * weight
+    return round(interpolated, 2)
+
+
 def _duration_hours(start: dt.datetime, end: dt.datetime) -> float:
     return max((_to_utc(end) - _to_utc(start)).total_seconds() / 3600, 0.0)
 
@@ -836,6 +861,7 @@ def compute_assignment_performance(
         scope=scope,
     )
     total = len(tickets)
+    now = dt.datetime.now(dt.timezone.utc)
     resolved_tickets = [t for t in tickets if t.status in RESOLVED_STATUSES]
 
     before_group = [t for t in resolved_tickets if not _is_ia_ticket(t)]
@@ -864,6 +890,7 @@ def compute_assignment_performance(
             continue
         first_action_values.append(_duration_hours(analytics_created_at(ticket), first_action))
     avg_first_action = _avg(first_action_values)
+    median_first_action = _median(first_action_values)
 
     auto_assigned = [t for t in tickets if _is_ia_ticket(t)]
     auto_assign_samples = len(auto_assigned)
@@ -901,6 +928,137 @@ def compute_assignment_performance(
         else None
     )
 
+    mttr_values = [
+        _duration_hours(analytics_created_at(t), analytics_resolved_at(t) or analytics_updated_at(t))
+        for t in resolved_tickets
+    ]
+    mttr_global = _avg(mttr_values)
+    mttr_p90 = _percentile(mttr_values, 0.9)
+
+    mttr_by_priority: dict[str, float | None] = {}
+    for priority in TicketPriority:
+        scoped = [
+            _duration_hours(analytics_created_at(t), analytics_resolved_at(t) or analytics_updated_at(t))
+            for t in resolved_tickets
+            if t.priority == priority
+        ]
+        mttr_by_priority[priority.value] = _avg(scoped)
+
+    mttr_by_category: dict[str, float | None] = {}
+    for category_value in TicketCategory:
+        scoped = [
+            _duration_hours(analytics_created_at(t), analytics_resolved_at(t) or analytics_updated_at(t))
+            for t in resolved_tickets
+            if t.category == category_value
+        ]
+        mttr_by_category[category_value.value] = _avg(scoped)
+
+    throughput_window_days = 7
+    throughput_cutoff = now - dt.timedelta(days=throughput_window_days)
+    throughput_resolved_7d = sum(
+        1
+        for t in resolved_tickets
+        if (analytics_resolved_at(t) or analytics_updated_at(t)) >= throughput_cutoff
+    )
+
+    backlog_threshold_days = 7
+    backlog_cutoff = now - dt.timedelta(days=backlog_threshold_days)
+    backlog_open_over_threshold = sum(
+        1
+        for t in tickets
+        if t.status in ACTIVE_STATUSES and analytics_created_at(t) < backlog_cutoff
+    )
+
+    auto_triage_samples = sum(1 for t in tickets if _is_ia_ticket(t))
+    auto_triage_no_correction_count = 0
+    for ticket in tickets:
+        if not _is_ia_ticket(ticket):
+            continue
+        assignment_ok = int(ticket.assignment_change_count or 0) == 0
+        predicted_checks = 0
+        predicted_matches = 0
+        if ticket.predicted_priority is not None:
+            predicted_checks += 1
+            if ticket.predicted_priority == ticket.priority:
+                predicted_matches += 1
+        if ticket.predicted_category is not None:
+            predicted_checks += 1
+            if ticket.predicted_category == ticket.category:
+                predicted_matches += 1
+        triage_ok = predicted_checks == 0 or predicted_checks == predicted_matches
+        if assignment_ok and triage_ok:
+            auto_triage_no_correction_count += 1
+    auto_triage_no_correction_rate = (
+        round((auto_triage_no_correction_count / auto_triage_samples) * 100, 2)
+        if auto_triage_samples
+        else None
+    )
+
+    sla_eligible = [
+        t
+        for t in tickets
+        if (
+            getattr(t, "sla_first_response_due_at", None) is not None
+            or getattr(t, "sla_resolution_due_at", None) is not None
+            or getattr(t, "sla_first_response_completed_at", None) is not None
+            or getattr(t, "sla_resolution_completed_at", None) is not None
+            or bool(getattr(t, "sla_first_response_breached", False))
+            or bool(getattr(t, "sla_resolution_breached", False))
+        )
+    ]
+    sla_tickets_with_due = len(sla_eligible)
+    sla_breached_tickets = sum(
+        1
+        for t in sla_eligible
+        if bool(getattr(t, "sla_first_response_breached", False))
+        or bool(getattr(t, "sla_resolution_breached", False))
+    )
+    sla_breach_rate = (
+        round((sla_breached_tickets / sla_tickets_with_due) * 100, 2)
+        if sla_tickets_with_due
+        else None
+    )
+
+    first_response_eligible = [
+        t
+        for t in tickets
+        if (
+            getattr(t, "sla_first_response_due_at", None) is not None
+            or getattr(t, "sla_first_response_completed_at", None) is not None
+            or bool(getattr(t, "sla_first_response_breached", False))
+        )
+    ]
+    first_response_sla_breached_count = sum(
+        1
+        for t in first_response_eligible
+        if bool(getattr(t, "sla_first_response_breached", False))
+    )
+    first_response_sla_breach_rate = (
+        round((first_response_sla_breached_count / len(first_response_eligible)) * 100, 2)
+        if first_response_eligible
+        else None
+    )
+
+    resolution_sla_eligible = [
+        t
+        for t in tickets
+        if (
+            getattr(t, "sla_resolution_due_at", None) is not None
+            or getattr(t, "sla_resolution_completed_at", None) is not None
+            or bool(getattr(t, "sla_resolution_breached", False))
+        )
+    ]
+    resolution_sla_breached_count = sum(
+        1
+        for t in resolution_sla_eligible
+        if bool(getattr(t, "sla_resolution_breached", False))
+    )
+    resolution_sla_breach_rate = (
+        round((resolution_sla_breached_count / len(resolution_sla_eligible)) * 100, 2)
+        if resolution_sla_eligible
+        else None
+    )
+
     return {
         "total_tickets": total,
         "resolved_tickets": len(resolved_tickets),
@@ -908,13 +1066,37 @@ def compute_assignment_performance(
             "before": mttr_before,
             "after": mttr_after,
         },
+        "mttr_global_hours": mttr_global,
+        "mttr_p90_hours": mttr_p90,
+        "mttr_by_priority_hours": mttr_by_priority,
+        "mttr_by_category_hours": mttr_by_category,
+        "throughput_resolved_per_week": throughput_resolved_7d,
+        "backlog_open_over_days": backlog_open_over_threshold,
+        "backlog_threshold_days": backlog_threshold_days,
         "reassignment_rate": reassignment_rate,
         "reassigned_tickets": reassigned_tickets,
         "avg_time_to_first_action_hours": avg_first_action,
+        "median_time_to_first_action_hours": median_first_action,
         "classification_accuracy_rate": classification_accuracy,
         "classification_samples": classification_samples,
         "auto_assignment_accuracy_rate": auto_assign_accuracy,
         "auto_assignment_samples": auto_assign_samples,
+        "auto_triage_no_correction_rate": auto_triage_no_correction_rate,
+        "auto_triage_no_correction_count": auto_triage_no_correction_count,
+        "auto_triage_samples": auto_triage_samples,
+        "sla_breach_rate": sla_breach_rate,
+        "sla_breached_tickets": sla_breached_tickets,
+        "sla_tickets_with_due": sla_tickets_with_due,
+        "first_response_sla_breach_rate": first_response_sla_breach_rate,
+        "first_response_sla_breached_count": first_response_sla_breached_count,
+        "first_response_sla_eligible": len(first_response_eligible),
+        "resolution_sla_breach_rate": resolution_sla_breach_rate,
+        "resolution_sla_breached_count": resolution_sla_breached_count,
+        "resolution_sla_eligible": len(resolution_sla_eligible),
+        # Not currently tracked as persisted lifecycle events in the ticket model.
+        "reopen_rate": None,
+        "first_contact_resolution_rate": None,
+        "csat_score": None,
     }
 
 

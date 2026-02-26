@@ -95,13 +95,10 @@ def _validate_credentials(db: Session, payload: UserLogin) -> User:
     return user
 
 
-def _send_verification_email(db: Session, user: User) -> tuple[str | None, str | None]:
+def _send_verification_email(db: Session, user: User) -> None:
     token = create_verification_token(db, user)
     subject, body, html_body = build_verification_email(user.name, token.token, token.code)
     log_email(db, user.email, subject, body, EmailKind.verification, html_body=html_body)
-    if settings.ENV == "development":
-        return token.token, token.code
-    return None, None
 
 
 def _oauth_is_configured() -> bool:
@@ -127,12 +124,8 @@ def register_user(payload: UserCreate, db: Session = Depends(get_db)) -> Registe
         raise ConflictError("email_exists", details={"email": payload.email.lower()})
 
     user = create_user(db, payload)
-    verification_token, verification_code = _send_verification_email(db, user)
-    return RegisterResponse(
-        message="verification_sent",
-        verification_token=verification_token,
-        verification_code=verification_code,
-    )
+    _send_verification_email(db, user)
+    return RegisterResponse(message="verification_sent")
 
 
 @router.post("/login", response_model=UserOut)
@@ -160,12 +153,10 @@ def email_login(payload: UserLogin, response: Response, db: Session = Depends(ge
             raise AuthenticationException("invalid_credentials", error_code="INVALID_CREDENTIALS", status_code=401)
 
         if not authenticated_user.is_verified:
-            verification_token, verification_code = _send_verification_email(db, authenticated_user)
+            _send_verification_email(db, authenticated_user)
             return EmailLoginResponse(
                 message="verification_sent",
                 requires_verification=True,
-                verification_token=verification_token,
-                verification_code=verification_code,
             )
 
         tokens = issue_auth_tokens(db, authenticated_user)
@@ -180,12 +171,10 @@ def email_login(payload: UserLogin, response: Response, db: Session = Depends(ge
         raise BadRequestError("password_too_short")
 
     created_user = create_user_from_email_password(db, payload.email, payload.password)
-    verification_token, verification_code = _send_verification_email(db, created_user)
+    _send_verification_email(db, created_user)
     return EmailLoginResponse(
         message="account_created_verification_sent",
         requires_verification=True,
-        verification_token=verification_token,
-        verification_code=verification_code,
     )
 
 
@@ -431,12 +420,8 @@ def resend_verification(payload: ResendVerificationRequest, db: Session = Depend
     if user.is_verified:
         raise ConflictError("already_verified", details={"email": payload.email.lower()})
 
-    verification_token, verification_code = _send_verification_email(db, user)
-    return RegisterResponse(
-        message="verification_sent",
-        verification_token=verification_token,
-        verification_code=verification_code,
-    )
+    _send_verification_email(db, user)
+    return RegisterResponse(message="verification_sent")
 
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)

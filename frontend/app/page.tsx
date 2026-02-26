@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { AppShell } from "@/components/app-shell"
 import { KPICards } from "@/components/kpi-cards"
 import { DashboardCharts } from "@/components/dashboard-charts"
@@ -10,9 +10,13 @@ import { ProblemInsights } from "@/components/problem-insights"
 import { PerformanceMetrics } from "@/components/performance-metrics"
 import { type Ticket, type TicketCategory } from "@/lib/ticket-data"
 import { useI18n } from "@/lib/i18n"
-import { fetchTicketInsights, fetchTicketStats, fetchTickets } from "@/lib/tickets-api"
+import { fetchTicketInsights, fetchTickets } from "@/lib/tickets-api"
 import { Separator } from "@/components/ui/separator"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 
 type Insights = {
   weekly: Array<{ week: string; opened: number; closed: number; pending: number }>
@@ -88,13 +92,36 @@ type Insights = {
       before: number | null
       after: number | null
     }
+    mttr_global_hours: number | null
+    mttr_p90_hours: number | null
+    mttr_by_priority_hours: Record<string, number | null>
+    mttr_by_category_hours: Record<string, number | null>
+    throughput_resolved_per_week: number
+    backlog_open_over_days: number
+    backlog_threshold_days: number
     reassignment_rate: number
     reassigned_tickets: number
     avg_time_to_first_action_hours: number | null
+    median_time_to_first_action_hours: number | null
     classification_accuracy_rate: number | null
     classification_samples: number
     auto_assignment_accuracy_rate: number | null
     auto_assignment_samples: number
+    auto_triage_no_correction_rate: number | null
+    auto_triage_no_correction_count: number
+    auto_triage_samples: number
+    sla_breach_rate: number | null
+    sla_breached_tickets: number
+    sla_tickets_with_due: number
+    first_response_sla_breach_rate: number | null
+    first_response_sla_breached_count: number
+    first_response_sla_eligible: number
+    resolution_sla_breach_rate: number | null
+    resolution_sla_breached_count: number
+    resolution_sla_eligible: number
+    reopen_rate: number | null
+    first_contact_resolution_rate: number | null
+    csat_score: number | null
   }
   problem_management?: {
     total: number
@@ -131,17 +158,6 @@ export default function DashboardPage() {
   const { t, locale } = useI18n()
   const [tickets, setTickets] = useState<Ticket[]>([])
   const [loading, setLoading] = useState(true)
-  const [stats, setStats] = useState({
-    total: 0,
-    open: 0,
-    inProgress: 0,
-    pending: 0,
-    resolved: 0,
-    closed: 0,
-    critical: 0,
-    resolutionRate: 0,
-    avgResolutionDays: 0,
-  })
   const [insights, setInsights] = useState<Insights>({
     weekly: [],
     category: [],
@@ -164,13 +180,36 @@ export default function DashboardPage() {
         before: null,
         after: null,
       },
+      mttr_global_hours: null,
+      mttr_p90_hours: null,
+      mttr_by_priority_hours: {},
+      mttr_by_category_hours: {},
+      throughput_resolved_per_week: 0,
+      backlog_open_over_days: 0,
+      backlog_threshold_days: 7,
       reassignment_rate: 0,
       reassigned_tickets: 0,
       avg_time_to_first_action_hours: null,
+      median_time_to_first_action_hours: null,
       classification_accuracy_rate: null,
       classification_samples: 0,
       auto_assignment_accuracy_rate: null,
       auto_assignment_samples: 0,
+      auto_triage_no_correction_rate: null,
+      auto_triage_no_correction_count: 0,
+      auto_triage_samples: 0,
+      sla_breach_rate: null,
+      sla_breached_tickets: 0,
+      sla_tickets_with_due: 0,
+      first_response_sla_breach_rate: null,
+      first_response_sla_breached_count: 0,
+      first_response_sla_eligible: 0,
+      resolution_sla_breach_rate: null,
+      resolution_sla_breached_count: 0,
+      resolution_sla_eligible: 0,
+      reopen_rate: null,
+      first_contact_resolution_rate: null,
+      csat_score: null,
     },
     problem_management: {
       total: 0,
@@ -188,14 +227,9 @@ export default function DashboardPage() {
     const load = async () => {
       setLoading(true)
       try {
-        const [ticketList, statsRes, insightsRes] = await Promise.all([
-          fetchTickets(),
-          fetchTicketStats(),
-          fetchTicketInsights(),
-        ])
+        const [ticketList, insightsRes] = await Promise.all([fetchTickets(), fetchTicketInsights()])
 
         setTickets(ticketList)
-        setStats(statsRes)
         setInsights(insightsRes)
       } finally {
         setLoading(false)
@@ -228,6 +262,78 @@ export default function DashboardPage() {
     ).slice(0, 3)
   const assigneeOptions = Array.from(new Set(tickets.map((ticket) => ticket.assignee).filter(Boolean))).sort()
   const isFr = locale === "fr"
+  const [globalScope, setGlobalScope] = useState<"all" | "active" | "resolved">("all")
+  const [globalCategory, setGlobalCategory] = useState<"all" | TicketCategory>("all")
+  const [globalAssignee, setGlobalAssignee] = useState("all")
+  const [globalDateFrom, setGlobalDateFrom] = useState("")
+  const [globalDateTo, setGlobalDateTo] = useState("")
+
+  const globalFilteredTickets = useMemo(() => {
+    const fromMs = globalDateFrom ? Date.parse(`${globalDateFrom}T00:00:00.000Z`) : null
+    const toMs = globalDateTo ? Date.parse(`${globalDateTo}T23:59:59.999Z`) : null
+    const assigneeFilter = globalAssignee === "all" ? "" : globalAssignee.trim().toLowerCase()
+    const activeStatuses = new Set(["open", "in-progress", "waiting-for-customer", "waiting-for-support-vendor", "pending"])
+    const resolvedStatuses = new Set(["resolved", "closed"])
+    return tickets.filter((ticket) => {
+      const createdMs = Date.parse(ticket.createdAt)
+      if (Number.isNaN(createdMs)) return false
+      if (fromMs !== null && createdMs < fromMs) return false
+      if (toMs !== null && createdMs > toMs) return false
+      if (globalCategory !== "all" && ticket.category !== globalCategory) return false
+      if (assigneeFilter && (ticket.assignee || "").trim().toLowerCase() !== assigneeFilter) return false
+      if (globalScope === "active" && !activeStatuses.has(ticket.status)) return false
+      if (globalScope === "resolved" && !resolvedStatuses.has(ticket.status)) return false
+      return true
+    })
+  }, [tickets, globalDateFrom, globalDateTo, globalCategory, globalAssignee, globalScope])
+
+  const globalStats = useMemo(() => {
+    const rows = globalFilteredTickets
+    const total = rows.length
+    const open = rows.filter((t) => t.status === "open").length
+    const inProgress = rows.filter((t) => t.status === "in-progress").length
+    const pending = rows.filter((t) => t.status === "pending" || t.status === "waiting-for-customer" || t.status === "waiting-for-support-vendor").length
+    const resolved = rows.filter((t) => t.status === "resolved").length
+    const closed = rows.filter((t) => t.status === "closed").length
+    const critical = rows.filter((t) => t.priority === "critical").length
+    const high = rows.filter((t) => t.priority === "high").length
+    const resolutionRate = total > 0 ? Math.round(((resolved + closed) / total) * 100) : 0
+    const resolvedRows = rows.filter((t) => t.status === "resolved" || t.status === "closed")
+    const avgResolutionDays = resolvedRows.length
+      ? Number(
+          (
+            resolvedRows.reduce((sum, ticket) => {
+              const createdMs = Date.parse(ticket.createdAt)
+              const resolvedMs = Date.parse(ticket.resolvedAt || ticket.updatedAt)
+              if (Number.isNaN(createdMs) || Number.isNaN(resolvedMs)) return sum
+              const days = Math.max((resolvedMs - createdMs) / 86400000, 0)
+              return sum + days
+            }, 0) / resolvedRows.length
+          ).toFixed(2),
+        )
+      : 0
+
+    return {
+      total,
+      open,
+      inProgress,
+      pending,
+      resolved,
+      closed,
+      critical,
+      high,
+      resolutionRate,
+      avgResolutionDays,
+    }
+  }, [globalFilteredTickets])
+
+  function resetGlobalFilters() {
+    setGlobalScope("all")
+    setGlobalCategory("all")
+    setGlobalAssignee("all")
+    setGlobalDateFrom("")
+    setGlobalDateTo("")
+  }
 
   return (
     <AppShell>
@@ -247,11 +353,95 @@ export default function DashboardPage() {
             <div>
               <h3 className="section-title">{isFr ? "Vue operationnelle" : "Operational snapshot"}</h3>
               <p className="section-subtitle">
-                {isFr ? "Ces KPI restent globaux et ne sont pas impactes par les filtres IA." : "These KPI remain global and are not impacted by AI filters."}
+                {isFr ? "Ces KPI utilisent des filtres dedies (independants de la section IA)." : "These KPIs use dedicated filters (independent from AI section)."}
               </p>
             </div>
           </div>
-          {loading ? <DashboardKpiSkeleton /> : <KPICards stats={stats} />}
+          {!loading && (
+            <div className="mt-3 rounded-xl border border-border/70 bg-muted/15 p-3">
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-6">
+                <Select value={globalScope} onValueChange={(value) => setGlobalScope(value as "all" | "active" | "resolved")}>
+                  <SelectTrigger className="h-10 rounded-xl bg-background/70">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">{isFr ? "Tous statuts" : "All statuses"}</SelectItem>
+                    <SelectItem value="active">{isFr ? "Actifs" : "Active"}</SelectItem>
+                    <SelectItem value="resolved">{isFr ? "Resolus/Fermes" : "Resolved/Closed"}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Input
+                  type="date"
+                  value={globalDateFrom}
+                  onChange={(e) => setGlobalDateFrom(e.target.value)}
+                  className="h-10 rounded-xl bg-background/70"
+                />
+                <Input
+                  type="date"
+                  value={globalDateTo}
+                  onChange={(e) => setGlobalDateTo(e.target.value)}
+                  className="h-10 rounded-xl bg-background/70"
+                />
+                <Select value={globalCategory} onValueChange={(value) => setGlobalCategory(value as "all" | TicketCategory)}>
+                  <SelectTrigger className="h-10 rounded-xl bg-background/70">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">{isFr ? "Toutes categories" : "All categories"}</SelectItem>
+                    <SelectItem value="infrastructure">{t("category.infrastructure")}</SelectItem>
+                    <SelectItem value="network">{t("category.network")}</SelectItem>
+                    <SelectItem value="security">{t("category.security")}</SelectItem>
+                    <SelectItem value="application">{t("category.application")}</SelectItem>
+                    <SelectItem value="service_request">{t("category.service_request")}</SelectItem>
+                    <SelectItem value="hardware">{t("category.hardware")}</SelectItem>
+                    <SelectItem value="email">{t("category.email")}</SelectItem>
+                    <SelectItem value="problem">{t("category.problem")}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={globalAssignee} onValueChange={setGlobalAssignee}>
+                  <SelectTrigger className="h-10 rounded-xl bg-background/70">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">{isFr ? "Tous assignees" : "All assignees"}</SelectItem>
+                    {assigneeOptions.map((name) => (
+                      <SelectItem key={name} value={name}>
+                        {name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" className="h-10 rounded-xl px-4" onClick={resetGlobalFilters}>
+                    {isFr ? "Reset" : "Reset"}
+                  </Button>
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {globalScope !== "all" && (
+                  <Badge variant="outline" className="border-border bg-background/70 text-[11px]">
+                    {isFr ? "Portee" : "Scope"}: {globalScope === "active" ? (isFr ? "Actifs" : "Active") : (isFr ? "Resolus/Fermes" : "Resolved/Closed")}
+                  </Badge>
+                )}
+                {globalCategory !== "all" && (
+                  <Badge variant="outline" className="border-border bg-background/70 text-[11px]">
+                    {isFr ? "Categorie" : "Category"}: {t(`category.${globalCategory}` as "category.application")}
+                  </Badge>
+                )}
+                {globalAssignee !== "all" && (
+                  <Badge variant="outline" className="border-border bg-background/70 text-[11px]">
+                    {isFr ? "Assigne" : "Assignee"}: {globalAssignee}
+                  </Badge>
+                )}
+                {(globalDateFrom || globalDateTo) && (
+                  <Badge variant="outline" className="border-border bg-background/70 text-[11px]">
+                    {isFr ? "Dates" : "Dates"}: {globalDateFrom || "..."} - {globalDateTo || "..."}
+                  </Badge>
+                )}
+              </div>
+            </div>
+          )}
+          {loading ? <DashboardKpiSkeleton /> : <KPICards stats={globalStats} />}
         </section>
 
         <Separator className="bg-border/60" />

@@ -62,16 +62,12 @@ class VerificationResponse(BaseModel):
 
 class RegisterResponse(BaseModel):
     message: str
-    verification_token: str | None = None
-    verification_code: str | None = None
 
 
 class EmailLoginResponse(BaseModel):
     message: str
     user: UserOut | None = None
     requires_verification: bool = False
-    verification_token: str | None = None
-    verification_code: str | None = None
 
 
 class ResendVerificationRequest(BaseModel):
