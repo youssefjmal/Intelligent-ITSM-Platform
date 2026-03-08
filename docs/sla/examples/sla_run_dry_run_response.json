@@ -1,0 +1,59 @@
+{
+  "processed": 3,
+  "synced": 2,
+  "escalated": 1,
+  "stale_notified": 0,
+  "skipped": 1,
+  "failed": 0,
+  "failures": [],
+  "escalations": [],
+  "dry_run": true,
+  "proposed_actions": [
+    {
+      "ticket_id": "TW-9100",
+      "jira_key": "HP-9100",
+      "action_type": "SYNC_SLA",
+      "details": {}
+    },
+    {
+      "ticket_id": "TW-9100",
+      "jira_key": "HP-9100",
+      "action_type": "SLA_AT_RISK",
+      "details": {
+        "remaining_minutes": 18
+      }
+    },
+    {
+      "ticket_id": "TW-9100",
+      "jira_key": "HP-9100",
+      "action_type": "ESCALATE_PRIORITY",
+      "details": {
+        "from_priority": "medium",
+        "to_priority": "high",
+        "reason": "jira_sla_remaining_le_10m"
+      }
+    }
+  ],
+  "dry_run_tickets": [
+    {
+      "ticket_id": "TW-9100",
+      "jira_key": "HP-9100",
+      "would_sync": true,
+      "would_escalate": true,
+      "would_stale_notify": false
+    },
+    {
+      "ticket_id": "TW-9101",
+      "jira_key": "HP-9101",
+      "would_sync": true,
+      "would_escalate": false,
+      "would_stale_notify": true
+    }
+  ],
+  "ai_risk_summary": {
+    "evaluated": 0,
+    "avg_risk_score": 0.0,
+    "high_risk_detected": 0,
+    "shadow_mode": true
+  }
+}

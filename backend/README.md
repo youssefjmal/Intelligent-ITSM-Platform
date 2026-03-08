@@ -211,3 +211,7 @@ This is intended for predictable frontend and automation integration behavior.
 git diff --cached --name-only
 git diff --cached --name-only | rg "(^|/)\.env($|\.)"
 ```
+
+## 18. SLA Deep-Dive Documentation
+- Full SLA lifecycle and examples: `../docs/SLA_README.md`
+- Ready-to-run SLA payload examples: `../docs/sla/examples/*`

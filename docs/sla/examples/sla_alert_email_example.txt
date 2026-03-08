@@ -1,0 +1,9 @@
+Subject: [ITSM][SLA] TW-9100 at_risk
+
+SLA alert for ticket TW-9100: "Intermittent VPN failure"
+is currently in status "in-progress" with priority "high"
+and SLA state "at_risk".
+Remaining SLA time is 18 minute(s).
+Assigned owner: agent@example.com.
+Context summary: VPN drops every hour for remote users.
+Source: n8n SLA Breach Alerting workflow.

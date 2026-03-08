@@ -1,0 +1,11 @@
+{
+  "limit": 3,
+  "status": [
+    "open",
+    "in-progress"
+  ],
+  "force": true,
+  "max_age_minutes": 10,
+  "stale_status_minutes": 120,
+  "dry_run": true
+}

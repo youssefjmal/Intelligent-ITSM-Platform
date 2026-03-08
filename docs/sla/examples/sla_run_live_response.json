@@ -1,0 +1,27 @@
+{
+  "processed": 2,
+  "synced": 2,
+  "escalated": 1,
+  "stale_notified": 2,
+  "skipped": 0,
+  "failed": 0,
+  "failures": [],
+  "escalations": [
+    {
+      "ticket_id": "TW-9100",
+      "jira_key": "HP-9100",
+      "from": "medium",
+      "to": "high",
+      "reason": "jira_sla_remaining_le_10m"
+    }
+  ],
+  "dry_run": false,
+  "proposed_actions": [],
+  "dry_run_tickets": [],
+  "ai_risk_summary": {
+    "evaluated": 2,
+    "avg_risk_score": 72.5,
+    "high_risk_detected": 1,
+    "shadow_mode": true
+  }
+}

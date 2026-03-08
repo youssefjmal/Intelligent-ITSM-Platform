@@ -1,0 +1,30 @@
+[
+  {
+    "id": "98d44c9d-4db4-4f07-8454-f1e8073ba823",
+    "user_id": "9cb0f52b-6502-41f6-bc4c-ce4e4cff427f",
+    "title": "SLA auto-escalation: TW-9100",
+    "body": "Priority escalated to high (jira_sla_remaining_le_10m).",
+    "severity": "high",
+    "link": "/tickets/TW-9100",
+    "source": "sla",
+    "metadata_json": null,
+    "action_type": null,
+    "action_payload": null,
+    "created_at": "2026-03-08T12:22:12+00:00",
+    "read_at": null
+  },
+  {
+    "id": "3063ef88-4c0e-4ba0-a8d9-f8df9ac40d18",
+    "user_id": "9cb0f52b-6502-41f6-bc4c-ce4e4cff427f",
+    "title": "Stale ticket status: TW-9101",
+    "body": "Ticket 'Intermittent VPN failure' has not changed status for ~2.0h. Current status: in-progress.",
+    "severity": "warning",
+    "link": "/tickets/TW-9101",
+    "source": "sla",
+    "metadata_json": null,
+    "action_type": null,
+    "action_payload": null,
+    "created_at": "2026-03-08T12:22:15+00:00",
+    "read_at": null
+  }
+]

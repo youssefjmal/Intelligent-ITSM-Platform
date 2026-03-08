@@ -1,0 +1,18 @@
+{
+  "ticket_id": "TW-9100",
+  "jira_key": "HP-9100",
+  "priority": "high",
+  "sla_status": "at_risk",
+  "sla_first_response_due_at": "2026-03-08T12:40:00+00:00",
+  "sla_resolution_due_at": "2026-03-08T14:40:00+00:00",
+  "sla_first_response_breached": false,
+  "sla_resolution_breached": false,
+  "sla_first_response_completed_at": null,
+  "sla_resolution_completed_at": null,
+  "sla_remaining_minutes": 18,
+  "sla_elapsed_minutes": 102,
+  "sla_last_synced_at": "2026-03-08T12:22:11+00:00",
+  "priority_auto_escalated": true,
+  "priority_escalation_reason": "jira_sla_remaining_le_10m",
+  "priority_escalated_at": "2026-03-08T12:22:12+00:00"
+}

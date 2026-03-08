@@ -152,6 +152,7 @@ npm run build
 ## 14. Documentation Index
 - Backend deep-dive: `backend/README.md`
 - Frontend deep-dive: `frontend/README.md`
+- SLA deep-dive: `docs/SLA_README.md`
 - Docker teammate setup: `docs/TEAMMATE_SETUP_README.md`
 - n8n setup/checklists: `docs/n8n/n8n_env_config.md`, `docs/n8n/backend_n8n_integration_checklist.md`
 - Scrum artifacts: `docs/scrum/README.md`

@@ -1,0 +1,10 @@
+{
+  "ticket_id": "TW-9100",
+  "risk_score": 84,
+  "confidence": 0.72,
+  "suggested_priority": "High",
+  "reasoning_summary": "Elevated risk because status has remained unchanged and remaining SLA time is low.",
+  "model_version": "gemma:3b",
+  "decision_source": "shadow",
+  "created_at": "2026-03-08T12:22:13+00:00"
+}
