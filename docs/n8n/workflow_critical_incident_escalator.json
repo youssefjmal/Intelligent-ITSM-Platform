@@ -40,8 +40,8 @@
         "headerParameters": {
           "parameters": [
             {
-              "name": "Authorization",
-              "value": "={{'Bearer ' + $env.ITSM_API_TOKEN}}"
+              "name": "X-Automation-Secret",
+              "value": "={{ $env.AUTOMATION_SECRET }}"
             },
             {
               "name": "X-Actor",
@@ -110,7 +110,8 @@
         "fromEmail": "={{$env.SMTP_FROM}}",
         "toEmail": "={{$json.body.assignee_email + ',' + $json.body.team_lead_email}}",
         "subject": "=[ITSM][CRITICAL] Escalation {{$json.body.ticket_id}}",
-        "message": "=Critical escalation triggered for ticket {{$json.body.ticket_id}}.\\nPriority: {{$json.body.priority || 'critical'}}\\nDescription: {{$json.body.description || $json.body.title || 'N/A'}}\\nActor: system:n8n\\n\\nPlease acknowledge immediately."
+        "emailType": "text",
+        "message": "=Critical escalation has been triggered for ticket {{$json.body.ticket_id}}. The ticket is currently marked with priority \"{{$json.body.priority || 'critical'}}\" and has been routed for immediate acknowledgement by the assignee and team lead. Ticket context: {{$json.body.description || $json.body.title || 'N/A'}}. Source actor: system:n8n. Please acknowledge this escalation immediately."
       },
       "id": "crit-email-primary",
       "name": "Send Escalation Email",
@@ -144,8 +145,8 @@
         "headerParameters": {
           "parameters": [
             {
-              "name": "Authorization",
-              "value": "={{'Bearer ' + $env.ITSM_API_TOKEN}}"
+              "name": "X-Automation-Secret",
+              "value": "={{ $env.AUTOMATION_SECRET }}"
             },
             {
               "name": "X-Actor",
@@ -209,7 +210,8 @@
         "fromEmail": "={{$env.SMTP_FROM}}",
         "toEmail": "={{$node['Critical Incident Webhook'].json.body.assignee_email + ',' + $node['Critical Incident Webhook'].json.body.team_lead_email}}",
         "subject": "=[ITSM][FOLLOW-UP][CRITICAL] {{$node['Critical Incident Webhook'].json.body.ticket_id}} still unacknowledged",
-        "message": "=Follow-up escalation triggered 5 minutes after initial alert.\\nTicket: {{$node['Critical Incident Webhook'].json.body.ticket_id}}\\nDescription: {{$node['Critical Incident Webhook'].json.body.description || $node['Critical Incident Webhook'].json.body.title || 'N/A'}}\\nStatus: {{$json.status || 'unknown'}}\\nReason: {{$json.reason}}"
+        "emailType": "text",
+        "message": "=Follow-up escalation: ticket {{$node['Critical Incident Webhook'].json.body.ticket_id}} is still unacknowledged 5 minutes after the initial critical alert. Current ticket status is \"{{$json.status || 'unknown'}}\" with follow-up reason \"{{$json.reason}}\". Ticket context: {{$node['Critical Incident Webhook'].json.body.description || $node['Critical Incident Webhook'].json.body.title || 'N/A'}}. Source actor: system:n8n."
       },
       "id": "crit-email-followup",
       "name": "Send Follow-up Email",
@@ -437,3 +439,5 @@
   "id": "workflow_critical_incident_escalator",
   "tags": []
 }
+
+

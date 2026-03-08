@@ -119,8 +119,8 @@
                                          "headerParameters":  {
                                                                   "parameters":  [
                                                                                      {
-                                                                                         "name":  "Authorization",
-                                                                                         "value":  "={{ \u0027Bearer \u0027 + $env.ITSM_API_TOKEN }}"
+                                                                                         "name":  "X-Automation-Secret",
+                                                                                         "value":  "={{ $env.AUTOMATION_SECRET }}"
                                                                                      },
                                                                                      {
                                                                                          "name":  "X-Actor",
@@ -194,7 +194,7 @@
                   },
                   {
                       "parameters":  {
-                                         "jsCode":  "const d = $json;\nconst subject = `[ITSM][CRITICAL] ${String(d.priority || \u0027critical\u0027).toUpperCase()} - ${d.ticket_id} - ${d.title || \u0027Critical Ticket\u0027}`;\nconst body = [\n  \u0027Critical Ticket Notification\u0027,\n  \u0027==========================================\u0027,\n  `Trace ID   : ${d.trace_id || \u0027N/A\u0027}`,\n  `Run ID     : ${d.run_id || \u0027N/A\u0027}`,\n  `Ticket ID  : ${d.ticket_id || \u0027N/A\u0027}`,\n  `Title      : ${d.title || \u0027N/A\u0027}`,\n  `Priority   : ${String(d.priority || \u0027critical\u0027).toUpperCase()}`,\n  `Status     : ${d.status || \u0027open\u0027}`,\n  `Assignee   : ${d.assignee || \u0027Unassigned\u0027}`,\n  `Reporter   : ${d.reporter || \u0027N/A\u0027}`,\n  `Created At : ${d.created_at || new Date().toISOString()}`,\n  \u0027\u0027,\n  \u0027Description\u0027,\n  \u0027------------------------------------------\u0027,\n  d.description || \u0027No details provided.\u0027,\n  \u0027\u0027,\n  \u0027Open in ITSM:\u0027,\n  d.ticket_url || \u0027N/A\u0027\n].join(\u0027\\n\u0027);\nreturn [{ json: { ...d, stage: \u0027build_email\u0027, email_subject: subject, email_body: body } }];"
+                                         "jsCode":  "const d = $json;\nconst priority = String(d.priority || \u0027critical\u0027).toUpperCase();\nconst subject = `[ITSM][CRITICAL] ${priority} - ${d.ticket_id} - ${d.title || \u0027Critical Ticket\u0027}`;\nconst description = d.description || d.summary || d.body || \u0027No details provided.\u0027;\nconst body = `Critical ticket ${d.ticket_id || \u0027N/A\u0027} requires immediate attention. The ticket titled \"${d.title || \u0027N/A\u0027}\" is currently in status \"${d.status || \u0027open\u0027}\" with priority \"${priority}\", assigned to ${d.assignee || \u0027Unassigned\u0027} and reported by ${d.reporter || \u0027N/A\u0027}. Description summary: ${description}. The ticket was created at ${d.created_at || new Date().toISOString()} and can be opened here: ${d.ticket_url || \u0027N/A\u0027}. Trace reference: ${d.trace_id || \u0027N/A\u0027}; workflow run: ${d.run_id || \u0027N/A\u0027}. Source: system:n8n.`;\nreturn [{ json: { ...d, stage: \u0027build_email\u0027, email_subject: subject, email_body: body } }];"
                                      },
                       "id":  "ctd-build-email",
                       "name":  "Build Email Content",
@@ -426,3 +426,4 @@
 
                 }
 }
+

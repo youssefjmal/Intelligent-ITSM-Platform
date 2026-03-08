@@ -6,7 +6,7 @@ import datetime as dt
 import logging
 import re
 from collections import Counter
-from typing import Literal
+from typing import Any, Literal
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -19,11 +19,14 @@ from app.integrations.jira.outbound import (
     sync_jira_issue_for_ticket,
 )
 from app.integrations.jira.sla_sync import sync_ticket_sla
+from app.models.automation_event import AutomationEvent
 from app.models.ticket import Ticket, TicketComment
 from app.models.user import User
 from app.models.enums import SeniorityLevel, TicketCategory, TicketPriority, TicketStatus, UserRole
 from app.schemas.ticket import TicketCreate, TicketTriageUpdate
 from app.services.sla.auto_escalation import apply_escalation
+from app.services.notifications_service import create_notifications_for_users, resolve_ticket_recipients
+from app.services.automation_webhooks import trigger_critical_ticket_detected
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,11 @@ PROBLEM_TRIGGER_WINDOW_DAYS = 7
 PROBLEM_TRIGGER_COUNT_WINDOW = 5
 PROBLEM_TRIGGER_COUNT_DAY = 4
 MODEL_VERSION_MAX_LEN = 40
+HISTORY_EVENT_CREATE = "TICKET_CREATED"
+HISTORY_EVENT_STATUS = "TICKET_STATUS_UPDATED"
+HISTORY_EVENT_TRIAGE = "TICKET_TRIAGE_UPDATED"
+HISTORY_EVENT_NOTE = "TICKET_NOTE_ADDED"
+HISTORY_EVENT_JIRA_ALIGN = "TICKET_STATUS_ALIGNED_FROM_JIRA"
 
 SIGNATURE_STOPWORDS = {
     "the",
@@ -272,6 +280,89 @@ def _normalize_model_version(value: str | None, *, default: str) -> str:
     return cleaned[:MODEL_VERSION_MAX_LEN]
 
 
+def _enum_value(value: Any) -> Any:
+    if hasattr(value, "value"):
+        return value.value
+    return value
+
+
+def _history_snapshot(ticket: Ticket) -> dict[str, Any]:
+    return {
+        "status": _enum_value(ticket.status),
+        "priority": _enum_value(ticket.priority),
+        "category": _enum_value(ticket.category),
+        "assignee": ticket.assignee,
+        "problem_id": ticket.problem_id,
+        "resolution": ticket.resolution,
+        "tags": list(ticket.tags or []),
+        "assignment_change_count": int(ticket.assignment_change_count or 0),
+    }
+
+
+def _history_changes(
+    before_snapshot: dict[str, Any] | None,
+    after_snapshot: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not before_snapshot or not after_snapshot:
+        return []
+    keys = sorted(set(before_snapshot.keys()).union(set(after_snapshot.keys())))
+    changes: list[dict[str, Any]] = []
+    for key in keys:
+        before = before_snapshot.get(key)
+        after = after_snapshot.get(key)
+        if before == after:
+            continue
+        changes.append(
+            {
+                "field": key,
+                "before": before,
+                "after": after,
+            }
+        )
+    return changes
+
+
+def _normalize_actor(actor: str | None) -> str:
+    cleaned = (actor or "").strip()
+    if not cleaned:
+        return "System"
+    return cleaned[:64]
+
+
+def _record_ticket_history(
+    db: Session,
+    *,
+    ticket_id: str,
+    event_type: str,
+    actor: str | None,
+    before_snapshot: dict[str, Any] | None = None,
+    after_snapshot: dict[str, Any] | None = None,
+    meta: dict[str, Any] | None = None,
+) -> None:
+    db.add(
+        AutomationEvent(
+            ticket_id=ticket_id,
+            event_type=event_type,
+            actor=_normalize_actor(actor),
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            meta=meta,
+        )
+    )
+
+
+def list_ticket_history_events(
+    db: Session,
+    *,
+    ticket_id: str | None = None,
+    limit: int = 100,
+) -> list[AutomationEvent]:
+    query = db.query(AutomationEvent)
+    if ticket_id:
+        query = query.filter(AutomationEvent.ticket_id == ticket_id)
+    return query.order_by(AutomationEvent.created_at.desc()).limit(max(1, limit)).all()
+
+
 def _is_waiting_status(status: TicketStatus) -> bool:
     return status in {
         TicketStatus.waiting_for_customer,
@@ -298,6 +389,7 @@ def _align_ticket_status_with_jira(db: Session, ticket: Ticket) -> bool:
     if ticket.status == jira_status:
         return False
 
+    before_snapshot = _history_snapshot(ticket)
     ticket.status = jira_status
     now = dt.datetime.now(dt.timezone.utc)
     ticket.updated_at = now
@@ -305,6 +397,20 @@ def _align_ticket_status_with_jira(db: Session, ticket: Ticket) -> bool:
         ticket.resolved_at = ticket.resolved_at or now
     elif ticket.resolved_at is not None:
         ticket.resolved_at = None
+    after_snapshot = _history_snapshot(ticket)
+    changes = _history_changes(before_snapshot, after_snapshot)
+    _record_ticket_history(
+        db,
+        ticket_id=ticket.id,
+        event_type=HISTORY_EVENT_JIRA_ALIGN,
+        actor="Jira Sync",
+        before_snapshot=before_snapshot,
+        after_snapshot=after_snapshot,
+        meta={
+            "action": "status_aligned_from_jira",
+            "changes": changes,
+        },
+    )
     db.add(ticket)
     db.commit()
     db.refresh(ticket)
@@ -483,7 +589,15 @@ def _should_promote_to_problem(db: Session, ticket: Ticket, resolution_comment: 
     )
 
 
-def create_ticket(db: Session, data: TicketCreate, *, reporter_id: str | None = None) -> Ticket:
+def create_ticket(
+    db: Session,
+    data: TicketCreate,
+    *,
+    reporter_id: str | None = None,
+    actor: str | None = None,
+    actor_id: str | None = None,
+    actor_role: str | None = None,
+) -> Ticket:
     from app.services.problems import link_ticket_to_problem
     from app.services.ai import classify_ticket
 
@@ -553,12 +667,49 @@ def create_ticket(db: Session, data: TicketCreate, *, reporter_id: str | None = 
     db.add(ticket)
     db.flush()
     link_ticket_to_problem(db, ticket)
+    after_snapshot = _history_snapshot(ticket)
+    _record_ticket_history(
+        db,
+        ticket_id=ticket.id,
+        event_type=HISTORY_EVENT_CREATE,
+        actor=actor or data.reporter,
+        after_snapshot=after_snapshot,
+        meta={
+            "action": "created",
+            "actor_id": actor_id or reporter_id,
+            "actor_role": actor_role,
+            "changes": [
+                {
+                    "field": field,
+                    "before": None,
+                    "after": value,
+                }
+                for field, value in after_snapshot.items()
+            ],
+        },
+    )
     db.commit()
     db.refresh(ticket)
+
+    if ticket.priority == TicketPriority.critical:
+        recipients = resolve_ticket_recipients(db, ticket=ticket, include_admins=True)
+        create_notifications_for_users(
+            db,
+            users=recipients,
+            title=f"Critical ticket detected: {ticket.id}",
+            body=ticket.title,
+            severity="critical",
+            link=f"/tickets/{ticket.id}",
+            source="n8n",
+            cooldown_minutes=20,
+        )
+        db.commit()
 
     # Best-effort outbound sync: local creation succeeds even if Jira push fails.
     if not ticket.external_id:
         ensure_jira_link_for_ticket(db, ticket)
+
+    trigger_critical_ticket_detected(db, ticket)
 
     logger.info("Ticket created: %s", ticket.id)
     return ticket
@@ -570,6 +721,8 @@ def update_status(
     status: TicketStatus,
     *,
     actor: str,
+    actor_id: str | None = None,
+    actor_role: str | None = None,
     resolution_comment: str | None = None,
 ) -> Ticket | None:
     from app.services.problems import link_ticket_to_problem
@@ -578,9 +731,11 @@ def update_status(
     if not ticket:
         logger.warning("Ticket status update failed (not found): %s", ticket_id)
         return None
+    before_snapshot = _history_snapshot(ticket)
     now = dt.datetime.now(dt.timezone.utc)
     normalized_comment = (resolution_comment or "").strip()
     has_resolution = bool((ticket.resolution or "").strip())
+    previous_status = ticket.status
 
     if status == TicketStatus.resolved and not normalized_comment:
         raise ValueError("resolution_comment_required")
@@ -588,6 +743,7 @@ def update_status(
         raise ValueError("resolution_comment_required")
 
     comment_to_sync = ""
+    comment_id: str | None = None
     if normalized_comment:
         comment = TicketComment(
             id=_next_comment_id(db),
@@ -599,6 +755,7 @@ def update_status(
         db.add(comment)
         ticket.resolution = normalized_comment
         comment_to_sync = normalized_comment
+        comment_id = comment.id
 
     promotion_source = normalized_comment or (ticket.resolution or "")
     if status in {TicketStatus.resolved, TicketStatus.closed} and promotion_source:
@@ -622,6 +779,33 @@ def update_status(
     db.add(ticket)
     db.flush()
     link_ticket_to_problem(db, ticket)
+    after_snapshot = _history_snapshot(ticket)
+    changes = _history_changes(before_snapshot, after_snapshot)
+    status_changed = previous_status != ticket.status
+    event_type = HISTORY_EVENT_STATUS if status_changed else HISTORY_EVENT_NOTE
+    action = "status_changed" if status_changed else "comment_added"
+    if status_changed and ticket.status == TicketStatus.resolved:
+        action = "resolved"
+    elif status_changed and ticket.status == TicketStatus.closed:
+        action = "closed"
+
+    if changes or normalized_comment:
+        _record_ticket_history(
+            db,
+            ticket_id=ticket.id,
+            event_type=event_type,
+            actor=actor,
+            before_snapshot=before_snapshot,
+            after_snapshot=after_snapshot,
+            meta={
+                "action": action,
+                "actor_id": actor_id,
+                "actor_role": actor_role,
+                "comment_added": bool(normalized_comment),
+                "comment_id": comment_id,
+                "changes": changes,
+            },
+        )
     db.commit()
     db.refresh(ticket)
     jira_ready = bool(str(ticket.jira_key or "").strip()) or ensure_jira_link_for_ticket(db, ticket)
@@ -656,6 +840,8 @@ def update_ticket_triage(
     payload: TicketTriageUpdate,
     *,
     actor: str,
+    actor_id: str | None = None,
+    actor_role: str | None = None,
 ) -> Ticket | None:
     from app.services.problems import link_ticket_to_problem
 
@@ -664,6 +850,7 @@ def update_ticket_triage(
         logger.warning("Ticket triage update failed (not found): %s", ticket_id)
         return None
 
+    before_snapshot = _history_snapshot(ticket)
     now = dt.datetime.now(dt.timezone.utc)
     has_changes = False
 
@@ -682,6 +869,7 @@ def update_ticket_triage(
 
     note = (payload.comment or "").strip()
     comment_to_sync = ""
+    comment_id: str | None = None
     if note:
         comment = TicketComment(
             id=_next_comment_id(db),
@@ -693,6 +881,7 @@ def update_ticket_triage(
         db.add(comment)
         has_changes = True
         comment_to_sync = note
+        comment_id = comment.id
 
     if not has_changes:
         return ticket
@@ -703,6 +892,26 @@ def update_ticket_triage(
     db.add(ticket)
     db.flush()
     link_ticket_to_problem(db, ticket)
+    after_snapshot = _history_snapshot(ticket)
+    changes = _history_changes(before_snapshot, after_snapshot)
+    event_type = HISTORY_EVENT_TRIAGE if changes else HISTORY_EVENT_NOTE
+    action = "triage_updated" if changes else "comment_added"
+    _record_ticket_history(
+        db,
+        ticket_id=ticket.id,
+        event_type=event_type,
+        actor=actor,
+        before_snapshot=before_snapshot,
+        after_snapshot=after_snapshot,
+        meta={
+            "action": action,
+            "actor_id": actor_id,
+            "actor_role": actor_role,
+            "comment_added": bool(note),
+            "comment_id": comment_id,
+            "changes": changes,
+        },
+    )
     db.commit()
     db.refresh(ticket)
     jira_ready = bool(str(ticket.jira_key or "").strip()) or ensure_jira_link_for_ticket(db, ticket)

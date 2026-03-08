@@ -10,6 +10,9 @@ from app.models.password_reset_token import PasswordResetToken
 from app.models.jira_sync_state import JiraSyncState  # noqa: F401
 from app.models.problem import Problem
 from app.models.notification import Notification
+from app.models.notification_preference import NotificationPreference
+from app.models.notification_delivery_event import NotificationDeliveryEvent
+from app.models.ai_solution_feedback import AiSolutionFeedback
 from app.models.ai_sla_risk_evaluation import AiSlaRiskEvaluation
 from app.models.automation_event import AutomationEvent
 

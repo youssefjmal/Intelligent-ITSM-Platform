@@ -47,6 +47,7 @@ export interface Ticket {
   firstActionAt?: string
   resolvedAt?: string
   slaStatus?: SlaStatus | null
+  slaRemainingMinutes?: number | null
   createdAt: string
   updatedAt: string
   resolution?: string

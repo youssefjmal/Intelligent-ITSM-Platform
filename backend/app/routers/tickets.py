@@ -13,10 +13,12 @@ from app.core.rbac import can_edit_ticket_triage, can_resolve_ticket
 from app.core.rate_limit import rate_limit
 from app.core.exceptions import BadRequestError, InsufficientPermissionsError, NotFoundError
 from app.db.session import get_db
-from app.models.enums import TicketCategory
+from app.models.enums import TicketCategory, UserRole
 from app.models.user import User
 from app.schemas.ticket import (
     TicketCreate,
+    TicketHistoryChange,
+    TicketHistoryOut,
     TicketOut,
     TicketPerformanceOut,
     TicketSimilarOut,
@@ -36,7 +38,7 @@ from app.services.tickets import (
     create_ticket,
     get_ticket,
     get_ticket_for_user,
-    list_tickets,
+    list_ticket_history_events,
     list_tickets_for_user,
     update_ticket_triage,
     update_status,
@@ -46,6 +48,46 @@ from app.services.problems import find_similar_tickets
 
 router = APIRouter(dependencies=[Depends(rate_limit()), Depends(get_current_user)])
 _ALLOWED_SLA_STATUS_FILTERS = {"ok", "at_risk", "breached", "paused", "completed", "unknown"}
+
+
+def _parse_history_changes(meta: dict | None) -> list[TicketHistoryChange]:
+    if not isinstance(meta, dict):
+        return []
+    raw = meta.get("changes")
+    if not isinstance(raw, list):
+        return []
+    changes: list[TicketHistoryChange] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        field = str(item.get("field") or "").strip()
+        if not field:
+            continue
+        changes.append(
+            TicketHistoryChange(
+                field=field,
+                before=item.get("before"),
+                after=item.get("after"),
+            )
+        )
+    return changes
+
+
+def _to_ticket_history_out(event) -> TicketHistoryOut:
+    meta = event.meta if isinstance(event.meta, dict) else {}
+    return TicketHistoryOut(
+        id=str(event.id),
+        ticket_id=event.ticket_id,
+        event_type=event.event_type,
+        action=str(meta.get("action")) if meta.get("action") is not None else None,
+        actor=event.actor,
+        actor_id=str(meta.get("actor_id")) if meta.get("actor_id") is not None else None,
+        actor_role=str(meta.get("actor_role")) if meta.get("actor_role") is not None else None,
+        comment_added=bool(meta.get("comment_added", False)),
+        comment_id=str(meta.get("comment_id")) if meta.get("comment_id") is not None else None,
+        created_at=event.created_at,
+        changes=_parse_history_changes(meta),
+    )
 
 
 @router.get("/", response_model=list[TicketOut])
@@ -116,6 +158,18 @@ def get_performance_metrics(
     return TicketPerformanceOut(**metrics)
 
 
+@router.get("/history", response_model=list[TicketHistoryOut])
+def get_ticket_history_feed(
+    limit: int = Query(default=120, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[TicketHistoryOut]:
+    if current_user.role != UserRole.admin:
+        raise InsufficientPermissionsError("forbidden")
+    events = list_ticket_history_events(db, limit=limit)
+    return [_to_ticket_history_out(event) for event in events]
+
+
 @router.post("/", response_model=TicketOut, status_code=status.HTTP_201_CREATED)
 def create_new_ticket(
     payload: TicketCreate,
@@ -123,7 +177,14 @@ def create_new_ticket(
     current_user: User = Depends(get_current_user),
 ) -> TicketOut:
     payload.reporter = current_user.name
-    ticket = create_ticket(db, payload, reporter_id=str(current_user.id))
+    ticket = create_ticket(
+        db,
+        payload,
+        reporter_id=str(current_user.id),
+        actor=current_user.name,
+        actor_id=str(current_user.id),
+        actor_role=current_user.role.value,
+    )
     return TicketOut.model_validate(ticket)
 
 
@@ -157,6 +218,7 @@ def get_similar_tickets(
         candidates=visible_tickets,
         limit=limit,
         min_score=min_score,
+        require_semantic=True,
     )
     return TicketSimilarResponse(
         ticket_id=ticket.id,
@@ -179,6 +241,22 @@ def get_similar_tickets(
     )
 
 
+@router.get("/{ticket_id}/history", response_model=list[TicketHistoryOut])
+def get_ticket_history_by_id(
+    ticket_id: str = Path(..., min_length=3, max_length=32),
+    limit: int = Query(default=120, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[TicketHistoryOut]:
+    ticket = get_ticket(db, ticket_id)
+    if not ticket:
+        raise NotFoundError("ticket_not_found", details={"ticket_id": ticket_id})
+    if current_user.role != UserRole.admin:
+        raise InsufficientPermissionsError("forbidden")
+    events = list_ticket_history_events(db, ticket_id=ticket_id, limit=limit)
+    return [_to_ticket_history_out(event) for event in events]
+
+
 @router.patch("/{ticket_id}", response_model=TicketOut)
 def update_ticket_status(
     ticket_id: str = Path(..., min_length=3, max_length=32),
@@ -197,6 +275,8 @@ def update_ticket_status(
             ticket_id,
             payload.status,
             actor=current_user.name,
+            actor_id=str(current_user.id),
+            actor_role=current_user.role.value,
             resolution_comment=payload.comment,
         )
     except ValueError as exc:
@@ -221,5 +301,7 @@ def update_ticket_triage_data(
         ticket_id,
         payload,
         actor=current_user.name,
+        actor_id=str(current_user.id),
+        actor_role=current_user.role.value,
     )
     return TicketOut.model_validate(ticket)

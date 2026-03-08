@@ -143,14 +143,23 @@ export default function LoginPage() {
               <Button
                 type="submit"
                 disabled={loading || !email || !password}
+                aria-busy={loading}
                 className="w-full bg-primary text-primary-foreground hover:bg-primary/90 gap-2"
               >
-                {loading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <LogIn className="h-4 w-4" />
-                )}
-                {loading ? t("auth.signingIn") : t("auth.signInBtn")}
+                <span className="relative inline-flex h-4 w-4 items-center justify-center">
+                  <Loader2
+                    className={`absolute h-4 w-4 animate-spin transition-opacity ${
+                      loading ? "opacity-100" : "opacity-0"
+                    }`}
+                  />
+                  <LogIn
+                    className={`absolute h-4 w-4 transition-opacity ${
+                      loading ? "opacity-0" : "opacity-100"
+                    }`}
+                  />
+                </span>
+                <span className={loading ? "hidden" : "inline"}>{t("auth.signInBtn")}</span>
+                <span className={loading ? "inline" : "hidden"}>{t("auth.signingIn")}</span>
               </Button>
 
               <p className="text-sm text-center text-muted-foreground">

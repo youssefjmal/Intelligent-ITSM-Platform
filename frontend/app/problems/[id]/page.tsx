@@ -17,6 +17,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { ApiError } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 import { useI18n } from "@/lib/i18n"
@@ -27,6 +37,7 @@ import {
   fetchProblem,
   fetchProblemAISuggestions,
   resolveProblemLinkedTickets,
+  scoreProblemSuggestions,
   updateProblem,
   type ProblemAISuggestions,
   type ProblemAssigneeOption,
@@ -42,9 +53,70 @@ const PROBLEM_STATUS_CONFIG: Record<ProblemStatus, { color: string; labelFr: str
   closed: { color: "border border-slate-200 bg-slate-100 text-slate-700", labelFr: "Ferme", labelEn: "Closed" },
 }
 
+const PROBLEM_STATUSES: ProblemStatus[] = ["open", "investigating", "known_error", "resolved", "closed"]
+const ASSIGNMENT_MODE_AUTO = "auto"
+const ASSIGNMENT_MODE_MANUAL = "manual"
+const ASSIGNMENT_MODE_MANUAL_PREFIX = "manual:"
+const CURRENT_ASSIGNEE_OPTION_ID = "current-assignee"
+type PendingAssignmentValue = typeof ASSIGNMENT_MODE_AUTO | `${typeof ASSIGNMENT_MODE_MANUAL_PREFIX}${string}`
+
+const PROBLEM_API_ERROR_DETAIL = {
+  resolutionCommentRequired: "resolution_comment_required",
+  resolutionNeedsAnalysis: "problem_resolution_requires_root_cause_and_permanent_fix",
+  invalidStatusTransition: "invalid_problem_status_transition",
+  assigneeRequiredForManualMode: "assignee_required_for_manual_mode",
+  assigneeNotAssignable: "assignee_not_assignable",
+  assigneeUnavailable: "assignee_unavailable",
+} as const
+
 function statusLabel(status: ProblemStatus, locale: string): string {
   const config = PROBLEM_STATUS_CONFIG[status]
   return locale === "fr" ? config.labelFr : config.labelEn
+}
+
+function toManualAssignmentValue(assigneeId: string): PendingAssignmentValue {
+  return `${ASSIGNMENT_MODE_MANUAL_PREFIX}${assigneeId}` as PendingAssignmentValue
+}
+
+function getManualAssigneeId(selection: PendingAssignmentValue): string | undefined {
+  if (selection === ASSIGNMENT_MODE_AUTO) return undefined
+  return selection.slice(ASSIGNMENT_MODE_MANUAL_PREFIX.length)
+}
+
+function getStatusUpdateErrorMessage(detail: string | undefined, locale: string): string {
+  if (detail === PROBLEM_API_ERROR_DETAIL.resolutionCommentRequired) {
+    return locale === "fr"
+      ? "Un commentaire est obligatoire pour resoudre ou fermer un probleme."
+      : "A comment is required to resolve or close a problem."
+  }
+  if (detail === PROBLEM_API_ERROR_DETAIL.resolutionNeedsAnalysis) {
+    return locale === "fr"
+      ? "La cause racine et le correctif permanent sont requis avant la resolution."
+      : "Root cause and permanent fix are required before resolving."
+  }
+  if (detail === PROBLEM_API_ERROR_DETAIL.invalidStatusTransition) {
+    return locale === "fr" ? "Transition de statut invalide." : "Invalid status transition."
+  }
+  return locale === "fr" ? "Impossible de mettre a jour le statut." : "Could not update status."
+}
+
+function getAssignmentUpdateErrorMessage(detail: string | undefined, locale: string): string {
+  if (detail === PROBLEM_API_ERROR_DETAIL.assigneeRequiredForManualMode) {
+    return locale === "fr" ? "Selectionnez un assigne manuel." : "Select a manual assignee."
+  }
+  if (detail === PROBLEM_API_ERROR_DETAIL.assigneeNotAssignable) {
+    return locale === "fr" ? "Assigne non disponible." : "Selected assignee is not available."
+  }
+  if (detail === PROBLEM_API_ERROR_DETAIL.assigneeUnavailable) {
+    return locale === "fr" ? "Aucun assigne auto disponible." : "No auto-assignee available."
+  }
+  return locale === "fr" ? "Impossible de mettre a jour l'affectation." : "Could not update assignment."
+}
+
+type ConfirmationDialogState = {
+  title: string
+  description: string
+  onConfirm: () => void
 }
 
 export default function ProblemDetailPage() {
@@ -77,19 +149,25 @@ export default function ProblemDetailPage() {
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState(false)
   const [assigneeOptions, setAssigneeOptions] = useState<ProblemAssigneeOption[]>([])
-  const [pendingAssignment, setPendingAssignment] = useState("auto")
+  const [pendingAssignment, setPendingAssignment] = useState<PendingAssignmentValue>(ASSIGNMENT_MODE_AUTO)
   const [assignmentUpdating, setAssignmentUpdating] = useState(false)
   const [assignmentError, setAssignmentError] = useState<string | null>(null)
+  const [confirmationDialog, setConfirmationDialog] = useState<ConfirmationDialogState | null>(null)
 
   const canResolve = hasPermission("resolve_ticket")
   const canEditProblem = hasPermission("edit_ticket_triage")
   const localeCode = locale === "fr" ? "fr-FR" : "en-US"
   const assigneeLabel = problem?.assignee || (locale === "fr" ? "Non assigne" : "Unassigned")
+  const isMutating = statusUpdating || analysisSaving || assignmentUpdating
   const assigneeSelectOptions = (() => {
     if (!problem?.assignee) return assigneeOptions
     if (assigneeOptions.some((member) => member.name === problem.assignee)) return assigneeOptions
-    return [{ id: "current-assignee", name: problem.assignee, role: "current" }, ...assigneeOptions]
+    return [{ id: CURRENT_ASSIGNEE_OPTION_ID, name: problem.assignee, role: "current" }, ...assigneeOptions]
   })()
+
+  function openConfirmationDialog(params: ConfirmationDialogState) {
+    setConfirmationDialog(params)
+  }
 
   const refreshProblem = useCallback(
     async (showLoader = false) => {
@@ -102,14 +180,7 @@ export default function ProblemDetailPage() {
         setRootCause(data.rootCause || "")
         setWorkaround(data.workaround || "")
         setPermanentFix(data.permanentFix || "")
-        setAiSuggestions(
-          (data.aiSuggestions || [])
-            .map((text, index) => ({
-              text: String(text || "").trim(),
-              confidence: Math.max(55, 82 - index * 6),
-            }))
-            .filter((item) => item.text.length > 0),
-        )
+        setAiSuggestions(scoreProblemSuggestions(data.aiSuggestions || []))
         setStatusError(null)
         setAnalysisError(null)
         setAssignmentError(null)
@@ -172,15 +243,15 @@ export default function ProblemDetailPage() {
   useEffect(() => {
     if (!problem) return
     if (!problem.assignee) {
-      setPendingAssignment("auto")
+      setPendingAssignment(ASSIGNMENT_MODE_AUTO)
       return
     }
     const matched = assigneeOptions.find((member) => member.name === problem.assignee)
     if (matched) {
-      setPendingAssignment(`manual:${matched.id}`)
+      setPendingAssignment(toManualAssignmentValue(matched.id))
       return
     }
-    setPendingAssignment("manual:current-assignee")
+    setPendingAssignment(toManualAssignmentValue(CURRENT_ASSIGNEE_OPTION_ID))
   }, [problem, assigneeOptions])
 
   useEffect(() => {
@@ -188,7 +259,7 @@ export default function ProblemDetailPage() {
   }, [loadAiSuggestions])
 
   async function handleSaveAnalysis() {
-    if (!problem || !canEditProblem || assignmentUpdating) return
+    if (!problem || !canEditProblem || isMutating) return
     setAnalysisSaving(true)
     try {
       await updateProblem(problem.id, {
@@ -205,23 +276,12 @@ export default function ProblemDetailPage() {
     }
   }
 
-  async function handleStatusUpdate() {
-    if (!problem || !canResolve || pendingStatus === problem.status || assignmentUpdating) return
-    const comment = statusComment.trim()
-    const requiresComment = pendingStatus === "resolved" || pendingStatus === "closed"
-    if (requiresComment && !comment) {
-      setStatusError(
-        locale === "fr"
-          ? "Un commentaire est obligatoire pour resoudre ou fermer un probleme."
-          : "A comment is required to resolve or close a problem.",
-      )
-      return
-    }
-
+  async function applyStatusUpdate(statusToApply: ProblemStatus, comment: string, requiresComment: boolean) {
+    if (!problem) return
     setStatusUpdating(true)
     try {
       await updateProblem(problem.id, {
-        status: pendingStatus,
+        status: statusToApply,
         rootCause,
         workaround,
         permanentFix,
@@ -236,72 +296,91 @@ export default function ProblemDetailPage() {
       setStatusError(null)
     } catch (error) {
       if (error instanceof ApiError) {
-        if (error.detail === "resolution_comment_required") {
-          setStatusError(
-            locale === "fr"
-              ? "Un commentaire est obligatoire pour resoudre ou fermer un probleme."
-              : "A comment is required to resolve or close a problem.",
-          )
-        } else if (error.detail === "problem_resolution_requires_root_cause_and_permanent_fix") {
-          setStatusError(
-            locale === "fr"
-              ? "La cause racine et le correctif permanent sont requis avant la resolution."
-              : "Root cause and permanent fix are required before resolving.",
-          )
-        } else if (error.detail === "invalid_problem_status_transition") {
-          setStatusError(locale === "fr" ? "Transition de statut invalide." : "Invalid status transition.")
-        } else {
-          setStatusError(locale === "fr" ? "Impossible de mettre a jour le statut." : "Could not update status.")
-        }
+        setStatusError(getStatusUpdateErrorMessage(error.detail, locale))
       } else {
-        setStatusError(locale === "fr" ? "Impossible de mettre a jour le statut." : "Could not update status.")
+        setStatusError(getStatusUpdateErrorMessage(undefined, locale))
       }
     } finally {
       setStatusUpdating(false)
     }
   }
 
-  async function handleAssignmentUpdate() {
-    if (!problem || !canEditProblem) return
+  function handleStatusUpdate() {
+    if (!problem || !canResolve || pendingStatus === problem.status || isMutating) return
+    const comment = statusComment.trim()
+    const requiresComment = pendingStatus === "resolved" || pendingStatus === "closed"
+    if (requiresComment && !comment) {
+      setStatusError(getStatusUpdateErrorMessage(PROBLEM_API_ERROR_DETAIL.resolutionCommentRequired, locale))
+      return
+    }
+
+    const statusToApply = pendingStatus
+    openConfirmationDialog({
+      title: locale === "fr" ? "Confirmer le changement de statut" : "Confirm status change",
+      description:
+        locale === "fr"
+          ? `Voulez-vous vraiment changer le statut du probleme vers "${statusLabel(statusToApply, locale)}" ?`
+          : `Are you sure you want to change the problem status to "${statusLabel(statusToApply, locale)}"?`,
+      onConfirm: () => {
+        void applyStatusUpdate(statusToApply, comment, requiresComment)
+      },
+    })
+  }
+
+  async function applyAssignmentUpdate(manualAssignee: string | undefined) {
+    if (!problem) return
     setAssignmentUpdating(true)
     setAssignmentError(null)
     try {
-      if (pendingAssignment === "auto") {
-        await assignProblemAssignee(problem.id, { mode: "auto" })
+      if (!manualAssignee) {
+        await assignProblemAssignee(problem.id, { mode: ASSIGNMENT_MODE_AUTO })
       } else {
-        const assigneeKey = pendingAssignment.replace("manual:", "")
-        const selectedAssignee =
-          assigneeKey === "current-assignee"
-            ? problem.assignee
-            : assigneeOptions.find((member) => member.id === assigneeKey)?.name
-        if (!selectedAssignee) {
-          setAssignmentError(
-            locale === "fr" ? "Selection d'assigne invalide." : "Invalid assignee selection.",
-          )
-          return
-        }
-        await assignProblemAssignee(problem.id, { mode: "manual", assignee: selectedAssignee })
+        await assignProblemAssignee(problem.id, { mode: ASSIGNMENT_MODE_MANUAL, assignee: manualAssignee })
       }
       await refreshProblem()
       await loadAiSuggestions(true)
       setAssignmentError(null)
     } catch (error) {
       if (error instanceof ApiError) {
-        if (error.detail === "assignee_required_for_manual_mode") {
-          setAssignmentError(locale === "fr" ? "Selectionnez un assigne manuel." : "Select a manual assignee.")
-        } else if (error.detail === "assignee_not_assignable") {
-          setAssignmentError(locale === "fr" ? "Assigne non disponible." : "Selected assignee is not available.")
-        } else if (error.detail === "assignee_unavailable") {
-          setAssignmentError(locale === "fr" ? "Aucun assigne auto disponible." : "No auto-assignee available.")
-        } else {
-          setAssignmentError(locale === "fr" ? "Impossible de mettre a jour l'affectation." : "Could not update assignment.")
-        }
+        setAssignmentError(getAssignmentUpdateErrorMessage(error.detail, locale))
       } else {
-        setAssignmentError(locale === "fr" ? "Impossible de mettre a jour l'affectation." : "Could not update assignment.")
+        setAssignmentError(getAssignmentUpdateErrorMessage(undefined, locale))
       }
     } finally {
       setAssignmentUpdating(false)
     }
+  }
+
+  function handleAssignmentUpdate() {
+    if (!problem || !canEditProblem) return
+    let manualAssignee: string | undefined
+    if (pendingAssignment !== ASSIGNMENT_MODE_AUTO) {
+      const assigneeKey = getManualAssigneeId(pendingAssignment)
+      manualAssignee =
+        assigneeKey === CURRENT_ASSIGNEE_OPTION_ID
+          ? problem.assignee
+          : assigneeOptions.find((member) => member.id === assigneeKey)?.name
+      if (!manualAssignee) {
+        setAssignmentError(
+          locale === "fr" ? "Selection d'assigne invalide." : "Invalid assignee selection.",
+        )
+        return
+      }
+    }
+
+    openConfirmationDialog({
+      title: locale === "fr" ? "Confirmer l'affectation" : "Confirm assignment",
+      description: !manualAssignee
+        ? locale === "fr"
+          ? "Voulez-vous vraiment appliquer l'affectation automatique (IA) ?"
+          : "Are you sure you want to apply auto-assignment (AI)?"
+        : locale === "fr"
+          ? `Voulez-vous vraiment affecter ce probleme a "${manualAssignee}" ?`
+          : `Are you sure you want to assign this problem to "${manualAssignee}"?`,
+      onConfirm: () => {
+        void applyAssignmentUpdate(manualAssignee)
+      },
+    })
   }
 
   if (loading) {
@@ -321,7 +400,9 @@ export default function ProblemDetailPage() {
       <AppShell>
         <div className="page-shell">
           <div className="surface-card rounded-2xl border-dashed p-8 text-center">
-            <p className="text-lg font-semibold text-foreground">Problem not found.</p>
+            <p className="text-lg font-semibold text-foreground">
+              {locale === "fr" ? "Probleme introuvable." : "Problem not found."}
+            </p>
           </div>
         </div>
       </AppShell>
@@ -386,7 +467,7 @@ export default function ProblemDetailPage() {
                       fieldSuggestions.rootCause ||
                       (locale === "fr" ? "Decrire la cause racine..." : "Describe the root cause...")
                     }
-                    disabled={!canEditProblem || analysisSaving || statusUpdating || assignmentUpdating}
+                    disabled={!canEditProblem || isMutating}
                   />
                   <FieldSuggestionRow
                     label={locale === "fr" ? "Suggestion IA" : "AI suggestion"}
@@ -397,7 +478,7 @@ export default function ProblemDetailPage() {
                       setRootCause(fieldSuggestions.rootCause)
                     }}
                     applyLabel={locale === "fr" ? "Appliquer" : "Apply"}
-                    disabled={!canEditProblem || analysisSaving || statusUpdating || assignmentUpdating}
+                    disabled={!canEditProblem || isMutating}
                   />
                 </div>
                 <div className="rounded-xl border border-border/70 bg-background/50 p-3">
@@ -412,7 +493,7 @@ export default function ProblemDetailPage() {
                       fieldSuggestions.workaround ||
                       (locale === "fr" ? "Decrire le contournement..." : "Describe a workaround...")
                     }
-                    disabled={!canEditProblem || analysisSaving || statusUpdating || assignmentUpdating}
+                    disabled={!canEditProblem || isMutating}
                   />
                   <FieldSuggestionRow
                     label={locale === "fr" ? "Suggestion IA" : "AI suggestion"}
@@ -423,7 +504,7 @@ export default function ProblemDetailPage() {
                       setWorkaround(fieldSuggestions.workaround)
                     }}
                     applyLabel={locale === "fr" ? "Appliquer" : "Apply"}
-                    disabled={!canEditProblem || analysisSaving || statusUpdating || assignmentUpdating}
+                    disabled={!canEditProblem || isMutating}
                   />
                 </div>
                 <div className="rounded-xl border border-border/70 bg-background/50 p-3">
@@ -438,7 +519,7 @@ export default function ProblemDetailPage() {
                       fieldSuggestions.permanentFix ||
                       (locale === "fr" ? "Decrire le correctif permanent..." : "Describe the permanent fix...")
                     }
-                    disabled={!canEditProblem || analysisSaving || statusUpdating || assignmentUpdating}
+                    disabled={!canEditProblem || isMutating}
                   />
                   <FieldSuggestionRow
                     label={locale === "fr" ? "Suggestion IA" : "AI suggestion"}
@@ -449,7 +530,7 @@ export default function ProblemDetailPage() {
                       setPermanentFix(fieldSuggestions.permanentFix)
                     }}
                     applyLabel={locale === "fr" ? "Appliquer" : "Apply"}
-                    disabled={!canEditProblem || analysisSaving || statusUpdating || assignmentUpdating}
+                    disabled={!canEditProblem || isMutating}
                   />
                 </div>
 
@@ -460,7 +541,7 @@ export default function ProblemDetailPage() {
                     variant="outline"
                     size="sm"
                     onClick={handleSaveAnalysis}
-                    disabled={analysisSaving || statusUpdating || assignmentUpdating}
+                    disabled={isMutating}
                   >
                     {analysisSaving ? (locale === "fr" ? "Enregistrement..." : "Saving...") : (locale === "fr" ? "Enregistrer l'analyse" : "Save analysis")}
                   </Button>
@@ -592,17 +673,17 @@ export default function ProblemDetailPage() {
                       setPendingStatus(value as ProblemStatus)
                       setStatusError(null)
                     }}
-                    disabled={!canResolve || statusUpdating || analysisSaving || assignmentUpdating}
+                    disabled={!canResolve || isMutating}
                   >
                     <SelectTrigger className="h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="open">{statusLabel("open", locale)}</SelectItem>
-                      <SelectItem value="investigating">{statusLabel("investigating", locale)}</SelectItem>
-                      <SelectItem value="known_error">{statusLabel("known_error", locale)}</SelectItem>
-                      <SelectItem value="resolved">{statusLabel("resolved", locale)}</SelectItem>
-                      <SelectItem value="closed">{statusLabel("closed", locale)}</SelectItem>
+                      {PROBLEM_STATUSES.map((status) => (
+                        <SelectItem key={status} value={status}>
+                          {statusLabel(status, locale)}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -616,7 +697,7 @@ export default function ProblemDetailPage() {
                     onChange={(event) => setStatusComment(event.target.value)}
                     className="min-h-[96px] text-sm"
                     placeholder={locale === "fr" ? "Obligatoire pour Resolu/Ferme" : "Required for Resolved/Closed"}
-                    disabled={!canResolve || statusUpdating || analysisSaving || assignmentUpdating}
+                    disabled={!canResolve || isMutating}
                   />
                   <p className="text-[11px] text-muted-foreground">
                     {locale === "fr"
@@ -632,7 +713,7 @@ export default function ProblemDetailPage() {
                   size="sm"
                   className="w-full"
                   onClick={handleStatusUpdate}
-                  disabled={!canResolve || statusUpdating || analysisSaving || assignmentUpdating || pendingStatus === problem.status}
+                  disabled={!canResolve || isMutating || pendingStatus === problem.status}
                 >
                   {statusUpdating
                     ? locale === "fr"
@@ -647,16 +728,16 @@ export default function ProblemDetailPage() {
                   <p className="text-xs font-medium text-muted-foreground">{locale === "fr" ? "Affectation" : "Assignment"}</p>
                   <Select
                     value={pendingAssignment}
-                    onValueChange={setPendingAssignment}
-                    disabled={!canEditProblem || statusUpdating || analysisSaving || assignmentUpdating}
+                    onValueChange={(value) => setPendingAssignment(value as PendingAssignmentValue)}
+                    disabled={!canEditProblem || isMutating}
                   >
                     <SelectTrigger className="h-8 text-sm">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="auto">{locale === "fr" ? "Auto (IA)" : "Auto (AI)"}</SelectItem>
+                      <SelectItem value={ASSIGNMENT_MODE_AUTO}>{locale === "fr" ? "Auto (IA)" : "Auto (AI)"}</SelectItem>
                       {assigneeSelectOptions.map((member) => (
-                        <SelectItem key={member.id} value={`manual:${member.id}`}>
+                        <SelectItem key={member.id} value={toManualAssignmentValue(member.id)}>
                           {member.name}
                         </SelectItem>
                       ))}
@@ -675,7 +756,7 @@ export default function ProblemDetailPage() {
                   variant="outline"
                   className="w-full"
                   onClick={handleAssignmentUpdate}
-                  disabled={!canEditProblem || assignmentUpdating || statusUpdating || analysisSaving}
+                  disabled={!canEditProblem || isMutating}
                 >
                   {assignmentUpdating
                     ? locale === "fr"
@@ -695,6 +776,32 @@ export default function ProblemDetailPage() {
             </Card>
           </div>
         </div>
+
+        <AlertDialog
+          open={Boolean(confirmationDialog)}
+          onOpenChange={(open) => {
+            if (!open) setConfirmationDialog(null)
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{confirmationDialog?.title}</AlertDialogTitle>
+              <AlertDialogDescription>{confirmationDialog?.description}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>{t("form.cancel")}</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  const action = confirmationDialog?.onConfirm
+                  setConfirmationDialog(null)
+                  action?.()
+                }}
+              >
+                {t("general.confirm")}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </AppShell>
   )

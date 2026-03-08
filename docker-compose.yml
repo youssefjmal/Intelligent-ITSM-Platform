@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_DB: jira_tickets
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     ports:
       - "55432:5432"
     volumes:
@@ -30,13 +30,13 @@ services:
       && python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
     environment:
       ENV: development
-      DATABASE_URL: postgresql+psycopg://postgres:postgres@db:5432/jira_tickets?connect_timeout=10&sslmode=prefer
-      JWT_SECRET: change-me
-      FRONTEND_BASE_URL: http://localhost:3000
-      CORS_ORIGINS: http://localhost:3000
-      ALLOWED_HOSTS: localhost,127.0.0.1,backend
-      OLLAMA_BASE_URL: http://host.docker.internal:11434
-      OLLAMA_MODEL: llama3.1
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/jira_tickets?connect_timeout=10&sslmode=prefer}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in your local .env}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:3000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,backend}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1}
     ports:
       - "8000:8000"
     volumes:
@@ -54,7 +54,7 @@ services:
     working_dir: /app
     command: npm run dev -- --hostname 0.0.0.0 --port 3000
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000/api
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api}
     ports:
       - "3000:3000"
     volumes:

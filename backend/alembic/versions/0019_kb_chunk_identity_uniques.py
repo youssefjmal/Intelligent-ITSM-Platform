@@ -1,7 +1,7 @@
 """align kb_chunks uniqueness with jira identities
 
 Revision ID: 0019_kb_chunk_identity_uniques
-Revises: 0018_add_unique_jira_comment_identity
+Revises: 0018_jira_comment_identity_uq
 Create Date: 2026-02-18 13:30:00.000000
 """
 
@@ -12,7 +12,7 @@ from alembic import op
 
 
 revision = "0019_kb_chunk_identity_uniques"
-down_revision = "0018_add_unique_jira_comment_identity"
+down_revision = "0018_jira_comment_identity_uq"
 branch_labels = None
 depends_on = None
 

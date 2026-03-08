@@ -1,6 +1,6 @@
 """add unique jira comment identity index on kb_chunks
 
-Revision ID: 0018_add_unique_jira_comment_identity
+Revision ID: 0018_jira_comment_identity_uq
 Revises: 0017_add_ticket_sla_fields
 Create Date: 2026-02-18 00:40:00.000000
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "0018_add_unique_jira_comment_identity"
+revision = "0018_jira_comment_identity_uq"
 down_revision = "0017_add_ticket_sla_fields"
 branch_labels = None
 depends_on = None

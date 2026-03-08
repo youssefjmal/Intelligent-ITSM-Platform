@@ -16,6 +16,16 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
   ArrowLeft,
   Calendar,
   User,
@@ -26,6 +36,7 @@ import {
   Sparkles,
   Loader2,
   RefreshCw,
+  History,
 } from "lucide-react"
 import {
   type Ticket,
@@ -41,8 +52,10 @@ import {
   fetchTicket,
   fetchTicketAiSlaRiskLatest,
   fetchTicketAIRecommendations,
+  fetchTicketHistory,
   fetchSimilarTickets,
   type SimilarTicket,
+  type TicketHistoryEvent,
   type TicketAiSlaRiskLatest,
   type TicketAIRecommendationsPayload,
 } from "@/lib/tickets-api"
@@ -57,6 +70,12 @@ type Assignee = {
   id: string
   name: string
   role: string
+}
+
+type ConfirmationDialogState = {
+  title: string
+  description: string
+  onConfirm: () => void
 }
 
 export function TicketDetail({ ticket }: TicketDetailProps) {
@@ -81,6 +100,10 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
   const [similarTickets, setSimilarTickets] = useState<SimilarTicket[]>([])
   const [similarTicketsLoading, setSimilarTicketsLoading] = useState(false)
   const [similarTicketsError, setSimilarTicketsError] = useState(false)
+  const [historyEvents, setHistoryEvents] = useState<TicketHistoryEvent[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState(false)
+  const [confirmationDialog, setConfirmationDialog] = useState<ConfirmationDialogState | null>(null)
   const localeCode = locale === "fr" ? "fr-FR" : "en-US"
 
   const assigneeOptions = (() => {
@@ -116,8 +139,21 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
     updateFailed: locale === "fr" ? "Mise a jour triage impossible." : "Could not update triage.",
   }
 
+  const historyLabels = {
+    title: locale === "fr" ? "Historique des modifications" : "Change history",
+    subtitle:
+      locale === "fr"
+        ? "Journal admin: qui a fait quoi sur ce ticket."
+        : "Admin audit log: who changed what on this ticket.",
+    empty: locale === "fr" ? "Aucun changement enregistre." : "No tracked changes yet.",
+    error: locale === "fr" ? "Impossible de charger l'historique." : "Could not load history.",
+    loading: locale === "fr" ? "Chargement de l'historique..." : "Loading change history...",
+    by: locale === "fr" ? "Par" : "By",
+  }
+
   const canResolve = hasPermission("resolve_ticket")
   const canEditTriage = hasPermission("edit_ticket_triage")
+  const canViewHistory = hasPermission("view_admin")
 
   useEffect(() => {
     setTicketData(ticket)
@@ -142,6 +178,30 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
       mounted = false
     }
   }, [])
+
+  const loadTicketHistory = useCallback(async (ticketId: string) => {
+    if (!canViewHistory) {
+      setHistoryEvents([])
+      setHistoryLoading(false)
+      setHistoryError(false)
+      return
+    }
+    setHistoryLoading(true)
+    setHistoryError(false)
+    try {
+      const rows = await fetchTicketHistory({ ticketId, limit: 120 })
+      setHistoryEvents(rows)
+    } catch {
+      setHistoryEvents([])
+      setHistoryError(true)
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [canViewHistory])
+
+  useEffect(() => {
+    loadTicketHistory(ticketData.id).catch(() => {})
+  }, [ticketData.id, loadTicketHistory])
 
   const loadAiRecommendations = useCallback(async (force = false) => {
     setAiLoading(true)
@@ -224,19 +284,47 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
     return t("status.closed")
   }
 
-  async function handleStatusChange(newStatus: string) {
-    if (newStatus === status) return
+  function historyActionLabel(event: TicketHistoryEvent): string {
+    const action = (event.action || "").toLowerCase()
+    if (action === "created") return locale === "fr" ? "Ticket cree" : "Ticket created"
+    if (action === "resolved") return locale === "fr" ? "Ticket resolu" : "Ticket resolved"
+    if (action === "closed") return locale === "fr" ? "Ticket cloture" : "Ticket closed"
+    if (action === "status_changed") return locale === "fr" ? "Statut modifie" : "Status changed"
+    if (action === "triage_updated") return locale === "fr" ? "Triage mis a jour" : "Triage updated"
+    if (action === "comment_added") return locale === "fr" ? "Commentaire ajoute" : "Comment added"
+    if (action === "status_aligned_from_jira") return locale === "fr" ? "Statut aligne Jira" : "Status aligned from Jira"
+    return event.eventType.replace(/_/g, " ").toLowerCase()
+  }
 
-    const comment = statusComment.trim()
-    if (newStatus === "resolved" && !comment) {
-      setStatusError(triageLabels.resolutionCommentRequired)
-      return
+  function historyFieldLabel(field: string): string {
+    const labels: Record<string, string> = {
+      status: locale === "fr" ? "Statut" : "Status",
+      priority: locale === "fr" ? "Priorite" : "Priority",
+      category: locale === "fr" ? "Categorie" : "Category",
+      assignee: locale === "fr" ? "Assigne" : "Assignee",
+      problem_id: locale === "fr" ? "Probleme" : "Problem",
+      resolution: locale === "fr" ? "Resolution" : "Resolution",
+      tags: "Tags",
+      assignment_change_count: locale === "fr" ? "Reaffectations" : "Reassignments",
     }
-    if (newStatus === "closed" && !ticketData.resolution && !comment) {
-      setStatusError(triageLabels.closureCommentRequired)
-      return
-    }
+    return labels[field] || field.replace(/_/g, " ")
+  }
 
+  function historyValue(value: unknown): string {
+    if (value === null || value === undefined || value === "") {
+      return triageLabels.notAvailable
+    }
+    if (Array.isArray(value)) {
+      return value.map((item) => String(item)).join(", ")
+    }
+    return String(value)
+  }
+
+  function openConfirmationDialog(params: ConfirmationDialogState) {
+    setConfirmationDialog(params)
+  }
+
+  async function applyStatusChange(newStatus: TicketStatus, comment: string) {
     setUpdating(true)
     try {
       const payload: { status: string; comment?: string } = { status: newStatus }
@@ -252,6 +340,7 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
       setStatus(refreshed.status)
       setStatusError(null)
       setStatusComment("")
+      loadTicketHistory(refreshed.id).catch(() => {})
     } catch (error) {
       if (error instanceof ApiError) {
         if (error.status === 400 && error.detail === "resolution_comment_required") {
@@ -281,6 +370,32 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
     }
   }
 
+  function handleStatusChange(newStatus: string) {
+    if (newStatus === status) return
+
+    const comment = statusComment.trim()
+    const castedStatus = newStatus as TicketStatus
+    if (newStatus === "resolved" && !comment) {
+      setStatusError(triageLabels.resolutionCommentRequired)
+      return
+    }
+    if (newStatus === "closed" && !ticketData.resolution && !comment) {
+      setStatusError(triageLabels.closureCommentRequired)
+      return
+    }
+
+    openConfirmationDialog({
+      title: locale === "fr" ? "Confirmer le changement de statut" : "Confirm status change",
+      description:
+        locale === "fr"
+          ? `Voulez-vous vraiment changer le statut vers "${statusLabelForRow(castedStatus)}" ?`
+          : `Are you sure you want to change the status to "${statusLabelForRow(castedStatus)}"?`,
+      onConfirm: () => {
+        void applyStatusChange(castedStatus, comment)
+      },
+    })
+  }
+
   async function updateTriage(payload: {
     assignee?: string
     priority?: TicketPriority
@@ -299,6 +414,7 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
       setSelectedCategory(refreshed.category)
       setStatus(refreshed.status)
       setTriageError(null)
+      loadTicketHistory(refreshed.id).catch(() => {})
     } catch {
       setTriageError(triageLabels.updateFailed)
     } finally {
@@ -308,22 +424,48 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
 
   function handleAssigneeChange(newAssignee: string) {
     if (!newAssignee || newAssignee === selectedAssignee) return
-    setSelectedAssignee(newAssignee)
-    updateTriage({ assignee: newAssignee }).catch(() => {})
+    openConfirmationDialog({
+      title: locale === "fr" ? "Confirmer l'affectation" : "Confirm assignment",
+      description:
+        locale === "fr"
+          ? `Voulez-vous vraiment reaffecter ce ticket a "${newAssignee}" ?`
+          : `Are you sure you want to reassign this ticket to "${newAssignee}"?`,
+      onConfirm: () => {
+        updateTriage({ assignee: newAssignee }).catch(() => {})
+      },
+    })
   }
 
   function handlePriorityChange(newPriority: string) {
     const casted = newPriority as TicketPriority
     if (casted === selectedPriority) return
-    setSelectedPriority(casted)
-    updateTriage({ priority: casted }).catch(() => {})
+    const priorityLabel = t(`priority.${casted}` as "priority.medium")
+    openConfirmationDialog({
+      title: locale === "fr" ? "Confirmer le changement de priorite" : "Confirm priority change",
+      description:
+        locale === "fr"
+          ? `Voulez-vous vraiment changer la priorite en "${priorityLabel}" ?`
+          : `Are you sure you want to change the priority to "${priorityLabel}"?`,
+      onConfirm: () => {
+        updateTriage({ priority: casted }).catch(() => {})
+      },
+    })
   }
 
   function handleCategoryChange(newCategory: string) {
     const casted = newCategory as TicketCategory
     if (casted === selectedCategory) return
-    setSelectedCategory(casted)
-    updateTriage({ category: casted }).catch(() => {})
+    const categoryLabel = t(`category.${casted}` as "category.application")
+    openConfirmationDialog({
+      title: locale === "fr" ? "Confirmer le changement de categorie" : "Confirm category change",
+      description:
+        locale === "fr"
+          ? `Voulez-vous vraiment changer la categorie en "${categoryLabel}" ?`
+          : `Are you sure you want to change the category to "${categoryLabel}"?`,
+      onConfirm: () => {
+        updateTriage({ category: casted }).catch(() => {})
+      },
+    })
   }
 
   return (
@@ -645,7 +787,7 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                     {aiSlaRisk.reasoningSummary}
                   </p>
                   <p className="text-[11px] text-muted-foreground">
-                    {new Date(aiSlaRisk.createdAt).toLocaleString(localeCode)} · {aiSlaRisk.modelVersion}
+                    {new Date(aiSlaRisk.createdAt).toLocaleString(localeCode)} - {aiSlaRisk.modelVersion}
                   </p>
                 </>
               ) : null}
@@ -779,8 +921,85 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
               )}
             </CardContent>
           </Card>
+
+          {canViewHistory && (
+            <Card className="surface-card rounded-2xl">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                  <History className="h-4 w-4 text-primary" />
+                  {historyLabels.title}
+                </CardTitle>
+                <p className="text-xs text-muted-foreground">{historyLabels.subtitle}</p>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {historyLoading && (
+                  <div className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    {historyLabels.loading}
+                  </div>
+                )}
+
+                {!historyLoading && historyError && (
+                  <p className="text-xs text-destructive">{historyLabels.error}</p>
+                )}
+
+                {!historyLoading && !historyError && historyEvents.length === 0 && (
+                  <p className="text-xs text-muted-foreground">{historyLabels.empty}</p>
+                )}
+
+                {!historyLoading && !historyError && historyEvents.length > 0 && (
+                  <div className="max-h-[360px] space-y-2 overflow-auto pr-1">
+                    {historyEvents.map((event) => (
+                      <div key={event.id} className="rounded-xl border border-border/70 bg-background/60 p-3">
+                        <p className="text-xs font-semibold text-foreground">{historyActionLabel(event)}</p>
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          {historyLabels.by} {event.actor} - {new Date(event.createdAt).toLocaleString(localeCode)}
+                        </p>
+                        {event.changes.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            {event.changes.slice(0, 5).map((change, index) => (
+                              <p key={`${event.id}-${change.field}-${index}`} className="text-[11px] text-muted-foreground">
+                                <span className="font-medium text-foreground">{historyFieldLabel(change.field)}</span>:{" "}
+                                {historyValue(change.before)} {"->"} {historyValue(change.after)}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
+
+      <AlertDialog
+        open={Boolean(confirmationDialog)}
+        onOpenChange={(open) => {
+          if (!open) setConfirmationDialog(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmationDialog?.title}</AlertDialogTitle>
+            <AlertDialogDescription>{confirmationDialog?.description}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("form.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const action = confirmationDialog?.onConfirm
+                setConfirmationDialog(null)
+                action?.()
+              }}
+            >
+              {t("general.confirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

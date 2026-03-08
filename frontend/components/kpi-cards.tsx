@@ -10,8 +10,10 @@ import {
   TrendingUp,
   Loader2,
   FolderOpen,
+  AlertOctagon,
 } from "lucide-react"
 import { useI18n } from "@/lib/i18n"
+import { type TicketStatus } from "@/lib/ticket-data"
 
 interface KPICardsProps {
   stats: {
@@ -25,6 +27,25 @@ interface KPICardsProps {
     resolutionRate: number
     avgResolutionDays: number
   }
+  criticalTop?: Array<{
+    id: string
+    title: string
+    assignee: string
+    status: TicketStatus
+    inactiveDays: number
+  }>
+  problemSummary?: {
+    totalProblems: number
+    linkedTickets: number
+    activeProblemTickets: number
+    criticalLinkedTickets: number
+    topProblems: Array<{
+      id: string
+      title: string
+      linkedTicketCount: number
+      criticalTicketCount: number
+    }>
+  }
 }
 
 type KPIDetail = {
@@ -33,6 +54,7 @@ type KPIDetail = {
 }
 
 type KPIItem = {
+  key: "total" | "in-progress" | "resolved" | "critical" | "avg-time" | "resolution-rate" | "problems"
   title: string
   value: string | number
   icon: React.ComponentType<{ className?: string }>
@@ -44,14 +66,32 @@ type KPIItem = {
   details: KPIDetail[]
 }
 
-export function KPICards({ stats }: KPICardsProps) {
+const STATUS_LABEL: Record<TicketStatus, { fr: string; en: string }> = {
+  open: { fr: "Ouvert", en: "Open" },
+  "in-progress": { fr: "En cours", en: "In progress" },
+  "waiting-for-customer": { fr: "Attente client", en: "Waiting customer" },
+  "waiting-for-support-vendor": { fr: "Attente support", en: "Waiting support/vendor" },
+  pending: { fr: "En attente", en: "Pending" },
+  resolved: { fr: "Resolu", en: "Resolved" },
+  closed: { fr: "Ferme", en: "Closed" },
+}
+
+export function KPICards({ stats, criticalTop = [], problemSummary }: KPICardsProps) {
   const { t, locale } = useI18n()
   const resolvedClosed = stats.resolved + stats.closed
   const activeBacklog = stats.open + stats.inProgress + stats.pending
   const criticalShare = stats.total > 0 ? Math.round((stats.critical / stats.total) * 100) : 0
+  const problems = problemSummary ?? {
+    totalProblems: 0,
+    linkedTickets: 0,
+    activeProblemTickets: 0,
+    criticalLinkedTickets: 0,
+    topProblems: [],
+  }
 
   const kpis: KPIItem[] = [
     {
+      key: "total",
       title: t("kpi.totalTickets"),
       value: stats.total,
       icon: FolderOpen,
@@ -67,6 +107,7 @@ export function KPICards({ stats }: KPICardsProps) {
       ],
     },
     {
+      key: "in-progress",
       title: t("kpi.inProgress"),
       value: stats.inProgress,
       icon: Loader2,
@@ -82,6 +123,7 @@ export function KPICards({ stats }: KPICardsProps) {
       ],
     },
     {
+      key: "resolved",
       title: t("kpi.resolvedClosed"),
       value: resolvedClosed,
       icon: TicketCheck,
@@ -97,6 +139,7 @@ export function KPICards({ stats }: KPICardsProps) {
       ],
     },
     {
+      key: "critical",
       title: t("kpi.critical"),
       value: stats.critical,
       icon: AlertTriangle,
@@ -112,6 +155,7 @@ export function KPICards({ stats }: KPICardsProps) {
       ],
     },
     {
+      key: "avg-time",
       title: t("kpi.avgTime"),
       value: `${stats.avgResolutionDays}j`,
       icon: Clock,
@@ -127,6 +171,7 @@ export function KPICards({ stats }: KPICardsProps) {
       ],
     },
     {
+      key: "resolution-rate",
       title: t("kpi.resolutionRate"),
       value: `${stats.resolutionRate}%`,
       icon: TrendingUp,
@@ -141,10 +186,29 @@ export function KPICards({ stats }: KPICardsProps) {
         { label: locale === "fr" ? "Backlog actif" : "Active backlog", value: activeBacklog },
       ],
     },
+    {
+      key: "problems",
+      title: locale === "fr" ? "Problemes" : "Problems",
+      value: problems.totalProblems,
+      icon: AlertOctagon,
+      description:
+        locale === "fr"
+          ? `${problems.activeProblemTickets} tickets actifs lies`
+          : `${problems.activeProblemTickets} active linked tickets`,
+      iconBg: "bg-red-50 dark:bg-red-500/20",
+      iconColor: "text-red-600 dark:text-red-300",
+      href: "/problems",
+      accent: "from-red-300/30 via-red-200/20 to-transparent",
+      details: [
+        { label: locale === "fr" ? "Tickets lies" : "Linked tickets", value: problems.linkedTickets },
+        { label: locale === "fr" ? "Actifs lies" : "Active linked", value: problems.activeProblemTickets },
+        { label: locale === "fr" ? "Critiques lies" : "Critical linked", value: problems.criticalLinkedTickets },
+      ],
+    },
   ]
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
       {kpis.map((kpi) => (
         <HoverCard key={kpi.title} openDelay={120} closeDelay={100}>
           <HoverCardTrigger asChild>
@@ -169,7 +233,7 @@ export function KPICards({ stats }: KPICardsProps) {
               </Card>
             </Link>
           </HoverCardTrigger>
-          <HoverCardContent className="w-72 border-border/80 bg-background/95 p-0 shadow-xl backdrop-blur">
+          <HoverCardContent className="w-80 border-border/80 bg-background/95 p-0 shadow-xl backdrop-blur">
             <div className="rounded-lg border border-border/60 p-3">
               <div className="mb-3 flex items-center justify-between">
                 <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{kpi.title}</p>
@@ -183,6 +247,70 @@ export function KPICards({ stats }: KPICardsProps) {
                   </div>
                 ))}
               </div>
+              {kpi.key === "critical" && (
+                <div className="mt-3 rounded-md border border-border/60 bg-muted/25 p-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    {locale === "fr"
+                      ? "Top 5 critiques (inactivite)"
+                      : "Top 5 critical (inactivity)"}
+                  </p>
+                  {criticalTop.length === 0 ? (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {locale === "fr" ? "Aucun ticket critique actif." : "No active critical ticket."}
+                    </p>
+                  ) : (
+                    <div className="mt-1.5 space-y-1">
+                      {criticalTop.map((ticket) => (
+                        <Link
+                          key={`${kpi.key}-${ticket.id}`}
+                          href={`/tickets/${ticket.id}`}
+                          className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11px] transition-colors hover:bg-primary/10"
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate font-mono text-foreground">{ticket.id}</span>
+                            <span className="block truncate text-[10px] text-muted-foreground">{ticket.title}</span>
+                          </span>
+                          <span className="ml-2 shrink-0 text-muted-foreground">
+                            {locale === "fr" ? `${ticket.inactiveDays}j` : `${ticket.inactiveDays}d`} -{" "}
+                            {locale === "fr" ? STATUS_LABEL[ticket.status].fr : STATUS_LABEL[ticket.status].en} -{" "}
+                            {ticket.assignee}
+                          </span>
+                        </Link>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {kpi.key === "problems" && (
+                <div className="mt-3 rounded-md border border-border/60 bg-muted/25 p-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    {locale === "fr" ? "Top problemes lies" : "Top linked problems"}
+                  </p>
+                  {problems.topProblems.length === 0 ? (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {locale === "fr" ? "Aucun probleme lie sur ce scope." : "No linked problem in this scope."}
+                    </p>
+                  ) : (
+                    <div className="mt-1.5 space-y-1">
+                      {problems.topProblems.slice(0, 5).map((problem) => (
+                        <Link
+                          key={`${kpi.key}-${problem.id}`}
+                          href={`/problems/${problem.id}`}
+                          className="flex items-center justify-between gap-2 rounded-md border border-border/60 bg-background/70 px-2 py-1 text-[11px] transition-colors hover:bg-primary/10"
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate font-mono text-foreground">{problem.id}</span>
+                            <span className="block truncate text-[10px] text-muted-foreground">{problem.title}</span>
+                          </span>
+                          <span className="ml-2 shrink-0 text-muted-foreground">
+                            {problem.linkedTicketCount} - {locale === "fr" ? "critiques" : "critical"} {problem.criticalTicketCount}
+                          </span>
+                        </Link>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               <p className="mt-3 text-[11px] text-muted-foreground">
                 {locale === "fr" ? "Cliquez pour ouvrir le detail filtre." : "Click to open filtered details."}
               </p>

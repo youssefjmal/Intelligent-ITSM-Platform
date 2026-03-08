@@ -9,7 +9,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import { ApiError, apiFetch } from "@/lib/api"
-import { Send, Bot, User, Sparkles, RotateCcw, Ticket, CheckCircle2 } from "lucide-react"
+import { Send, Bot, User, Sparkles, RotateCcw, Ticket, CheckCircle2, Lightbulb, AlertCircle, BookOpen, ThumbsUp, ThumbsDown } from "lucide-react"
 import { useI18n } from "@/lib/i18n"
 import { useAuth } from "@/lib/auth"
 import { useRouter } from "next/navigation"
@@ -21,6 +21,10 @@ type ChatMessage = {
   createdAt: string
   ticketDraft?: TicketDraft
   ticketAction?: string | null
+  ragGrounding?: boolean
+  suggestions?: SuggestionBundle
+  draftContext?: DraftContext | null
+  actions?: string[]
 }
 
 type TicketDraft = {
@@ -38,6 +42,58 @@ type TicketDigestRow = {
   priority: string
   status: string
   assignee: string
+}
+
+type SuggestionTicket = {
+  id: string
+  title: string
+  similarity_score: number
+  status: string
+  resolution_snippet?: string | null
+}
+
+type SuggestionProblem = {
+  id: string
+  title: string
+  match_reason: string
+  root_cause?: string | null
+  affected_tickets?: number | null
+}
+
+type SuggestionKb = {
+  id: string
+  title: string
+  excerpt: string
+  similarity_score: number
+  source_type?: string | null
+}
+
+type SolutionRecommendation = {
+  text: string
+  source: string
+  source_id?: string | null
+  evidence_snippet?: string | null
+  quality_score: number
+  confidence: number
+  helpful_votes?: number
+  not_helpful_votes?: number
+  reason?: string | null
+}
+
+type SuggestionBundle = {
+  tickets: SuggestionTicket[]
+  problems: SuggestionProblem[]
+  kb_articles: SuggestionKb[]
+  solution_recommendations?: SolutionRecommendation[]
+  confidence: number
+  source: "embedding" | "hybrid" | "llm_fallback" | string
+}
+
+type DraftContext = {
+  pre_filled_description: string
+  suggested_priority?: string | null
+  related_tickets: string[]
+  confidence: number
 }
 
 const MAX_CHAT_MESSAGES = 40
@@ -152,6 +208,69 @@ function extractMoreCount(extra: string | null): number {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+function hasSuggestions(bundle?: SuggestionBundle): boolean {
+  if (!bundle) return false
+  return (
+    bundle.tickets.length > 0 ||
+    bundle.problems.length > 0 ||
+    bundle.kb_articles.length > 0 ||
+    (bundle.solution_recommendations || []).length > 0
+  )
+}
+
+type AssistantTextBlock =
+  | { kind: "paragraph"; text: string }
+  | { kind: "list"; ordered: boolean; items: string[] }
+
+function parseAssistantTextBlocks(content: string): AssistantTextBlock[] {
+  const lines = String(content || "").replace(/\r/g, "").split("\n")
+  const blocks: AssistantTextBlock[] = []
+  let i = 0
+
+  const bulletPattern = /^[-*\u2022]\s+(.+)$/
+  const orderedPattern = /^\d+[\.\)]\s+(.+)$/
+
+  while (i < lines.length) {
+    const line = lines[i].trim()
+    if (!line) {
+      i += 1
+      continue
+    }
+
+    const bulletMatch = line.match(bulletPattern)
+    const orderedMatch = line.match(orderedPattern)
+    if (bulletMatch || orderedMatch) {
+      const ordered = Boolean(orderedMatch)
+      const items: string[] = []
+      while (i < lines.length) {
+        const current = lines[i].trim()
+        const match = ordered ? current.match(orderedPattern) : current.match(bulletPattern)
+        if (!match) break
+        const value = String(match[1] || "").trim()
+        if (value) items.push(value)
+        i += 1
+      }
+      if (items.length) {
+        blocks.push({ kind: "list", ordered, items })
+      }
+      continue
+    }
+
+    const paragraphLines: string[] = [line]
+    i += 1
+    while (i < lines.length) {
+      const current = lines[i].trim()
+      if (!current) break
+      if (bulletPattern.test(current) || orderedPattern.test(current)) break
+      paragraphLines.push(current)
+      i += 1
+    }
+    blocks.push({ kind: "paragraph", text: paragraphLines.join(" ") })
+  }
+
+  return blocks
+}
+
 export function TicketChatbot() {
   const { t, locale } = useI18n()
   const { user, hasPermission } = useAuth()
@@ -163,6 +282,7 @@ export function TicketChatbot() {
   const [criticalOverflowRows, setCriticalOverflowRows] = useState<TicketDigestRow[]>([])
   const [criticalOverflowLoaded, setCriticalOverflowLoaded] = useState(false)
   const [criticalOverflowLoading, setCriticalOverflowLoading] = useState(false)
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState<Record<string, boolean>>({})
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const quickPrompts = [
@@ -238,6 +358,32 @@ export function TicketChatbot() {
     }
   }
 
+  function handleApplySuggestion(messageId: string, solution: string, sourceId: string) {
+    const normalized = solution.trim()
+    if (!normalized) return
+    setMessages((prev) =>
+      prev.map((item) => {
+        if (item.id !== messageId) return item
+        if (item.ticketDraft) {
+          const marker = `Suggested fix (from ${sourceId}):`
+          if (item.ticketDraft.description.includes(marker)) return item
+          return {
+            ...item,
+            ticketDraft: {
+              ...item.ticketDraft,
+              description: `${item.ticketDraft.description}\n\n${marker}\n${normalized}`.trim(),
+            },
+          }
+        }
+        return item
+      }),
+    )
+    setInput((current) => {
+      if (current.trim()) return current
+      return `Create a ticket for this issue. Suggested fix: ${normalized}`
+    })
+  }
+
   function getChatErrorMessage(error: unknown): string {
     if (error instanceof ApiError) {
       if (error.status === 401) {
@@ -250,6 +396,54 @@ export function TicketChatbot() {
       }
     }
     return t("chat.errorReply")
+  }
+
+  async function submitSolutionFeedback(
+    messageId: string,
+    recommendation: SolutionRecommendation,
+    vote: "helpful" | "not_helpful",
+    query: string,
+  ) {
+    const key = `${messageId}-${recommendation.source}-${recommendation.source_id || recommendation.text.slice(0, 24)}-${vote}`
+    if (feedbackSubmitting[key]) return
+    setFeedbackSubmitting((prev) => ({ ...prev, [key]: true }))
+    try {
+      await apiFetch("/ai/feedback", {
+        method: "POST",
+        body: JSON.stringify({
+          query,
+          recommendation_text: recommendation.text,
+          source: recommendation.source,
+          source_id: recommendation.source_id || null,
+          vote,
+          context: {
+            ui: "ticket_chatbot",
+            quality_score: recommendation.quality_score,
+            confidence: recommendation.confidence,
+          },
+        }),
+      })
+      setMessages((prev) =>
+        prev.map((msg) => {
+          if (msg.id !== messageId || !msg.suggestions?.solution_recommendations) return msg
+          const nextRows = msg.suggestions.solution_recommendations.map((row) => {
+            if (row.text !== recommendation.text || row.source !== recommendation.source || (row.source_id || "") !== (recommendation.source_id || "")) {
+              return row
+            }
+            return {
+              ...row,
+              helpful_votes: (row.helpful_votes || 0) + (vote === "helpful" ? 1 : 0),
+              not_helpful_votes: (row.not_helpful_votes || 0) + (vote === "not_helpful" ? 1 : 0),
+            }
+          })
+          return { ...msg, suggestions: { ...msg.suggestions, solution_recommendations: nextRows } }
+        }),
+      )
+    } catch {
+      // no-op
+    } finally {
+      setFeedbackSubmitting((prev) => ({ ...prev, [key]: false }))
+    }
   }
 
   function renderAssistantMessage(message: ChatMessage) {
@@ -350,7 +544,43 @@ export function TicketChatbot() {
         )
       }
     }
-    return <div className="whitespace-pre-wrap">{message.content}</div>
+    const blocks = parseAssistantTextBlocks(message.content)
+    if (!blocks.length) {
+      return <div className="whitespace-pre-wrap">{message.content}</div>
+    }
+    return (
+      <div className="space-y-2.5 break-words text-[13px] leading-6">
+        {blocks.map((block, index) => {
+          if (block.kind === "list") {
+            if (block.ordered) {
+              return (
+                <ol key={`assistant-block-ordered-${index}`} className="list-decimal space-y-1.5 pl-5 text-foreground/95">
+                  {block.items.map((item, itemIndex) => (
+                    <li key={`assistant-block-ordered-item-${index}-${itemIndex}`}>{item}</li>
+                  ))}
+                </ol>
+              )
+            }
+            return (
+              <ul key={`assistant-block-bullet-${index}`} className="list-disc space-y-1.5 pl-5 text-foreground/95">
+                {block.items.map((item, itemIndex) => (
+                  <li key={`assistant-block-bullet-item-${index}-${itemIndex}`}>{item}</li>
+                ))}
+              </ul>
+            )
+          }
+          const isHeadingLine = block.text.endsWith(":")
+          return (
+            <p
+              key={`assistant-block-paragraph-${index}`}
+              className={isHeadingLine ? "font-semibold text-foreground" : "text-foreground/95"}
+            >
+              {block.text}
+            </p>
+          )
+        })}
+      </div>
+    )
   }
 
   useEffect(() => {
@@ -382,23 +612,41 @@ export function TicketChatbot() {
       const payloadMessages = nextMessages
         .slice(-MAX_CHAT_MESSAGES)
         .map((m) => ({ role: m.role, content: m.content.slice(0, MAX_CHAT_CONTENT_LEN) }))
-      const result = await apiFetch<{ reply: string; action?: string; ticket?: TicketDraft }>("/ai/chat", {
+      const result = await apiFetch<{
+        reply: string
+        message?: string
+        action?: string
+        ticket?: TicketDraft
+        rag_grounding?: boolean
+        suggestions?: SuggestionBundle
+        draft_context?: DraftContext | null
+        actions?: string[]
+      }>("/ai/chat", {
         method: "POST",
         body: JSON.stringify({
           messages: payloadMessages,
           locale,
         }),
       })
-      const ticketDraft = result.ticket ? result.ticket : undefined
+      const ticketDraft = result.ticket
+        ? {
+            ...result.ticket,
+            description: result.draft_context?.pre_filled_description || result.ticket.description,
+          }
+        : undefined
       setMessages((prev) => [
         ...prev,
         {
           id: `m-${Date.now()}-bot`,
           role: "assistant",
-          content: normalizeAssistantReply(result.reply, locale),
+          content: normalizeAssistantReply(result.message || result.reply, locale),
           createdAt: new Date().toISOString(),
           ticketDraft,
           ticketAction: result.action ?? null,
+          ragGrounding: Boolean(result.rag_grounding),
+          suggestions: result.suggestions,
+          draftContext: result.draft_context ?? null,
+          actions: result.actions || [],
         },
       ])
     } catch (error) {
@@ -543,12 +791,12 @@ export function TicketChatbot() {
                         </div>
                       )}
 
-                      <div className={`flex max-w-[85%] flex-col ${isUser ? "items-end" : "items-start"}`}>
+                      <div className={`flex max-w-[88%] flex-col sm:max-w-[82%] ${isUser ? "items-end" : "items-start"}`}>
                         <div
-                          className={`rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed shadow-sm ${
+                          className={`break-words rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed shadow-sm ${
                             isUser
                               ? "bg-gradient-to-br from-primary to-emerald-700 text-primary-foreground"
-                              : `border border-border/70 bg-card/90 text-foreground ${criticalResponse ? "cursor-pointer hover:border-primary/40 hover:bg-card" : ""}`
+                              : `border border-border/70 bg-gradient-to-br from-card via-card to-muted/30 text-foreground ${criticalResponse ? "cursor-pointer hover:border-primary/40 hover:bg-card" : ""}`
                           }`}
                           onClick={() => {
                             if (criticalResponse) {
@@ -569,6 +817,155 @@ export function TicketChatbot() {
                         </div>
                         {timestamp && (
                           <p className="mt-1 px-1 text-[10px] text-muted-foreground">{timestamp}</p>
+                        )}
+                        {!isUser && hasSuggestions(message.suggestions) && (
+                          <div className="mt-2 w-full space-y-2 rounded-xl border border-border/70 bg-card/80 p-2.5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant="outline" className="text-[10px]">
+                                {message.ragGrounding ? "RAG grounded" : "Related suggestions"}
+                              </Badge>
+                              {message.suggestions?.confidence !== undefined && (
+                                <Badge variant="outline" className="text-[10px]">
+                                  Confidence {Math.round((message.suggestions.confidence || 0) * 100)}%
+                                </Badge>
+                              )}
+                              {message.suggestions?.tickets?.length ? (
+                                <div className="flex flex-wrap gap-1.5">
+                                  {message.suggestions.tickets.slice(0, 3).map((row) => (
+                                    <HoverCard key={`chip-${message.id}-${row.id}`} openDelay={80} closeDelay={80}>
+                                      <HoverCardTrigger asChild>
+                                        <button
+                                          type="button"
+                                          className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] text-foreground hover:border-primary/50"
+                                          onClick={() => router.push(`/tickets/${row.id}`)}
+                                        >
+                                          #{row.id}
+                                        </button>
+                                      </HoverCardTrigger>
+                                      <HoverCardContent className="w-80 space-y-1 p-3">
+                                        <p className="text-xs font-semibold">{row.title}</p>
+                                        <p className="text-xs text-muted-foreground">{row.resolution_snippet || "No resolution snippet available."}</p>
+                                      </HoverCardContent>
+                                    </HoverCard>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+
+                            {message.suggestions?.tickets?.slice(0, 2).map((row) => (
+                              <div key={`ticket-sug-${message.id}-${row.id}`} className="rounded-lg border border-border bg-background/70 p-2.5">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <p className="truncate text-xs font-semibold text-foreground">
+                                      <Lightbulb className="mr-1 inline h-3.5 w-3.5 text-amber-500" />
+                                      {row.id} - {row.title}
+                                    </p>
+                                    <p className="mt-1 text-[11px] text-muted-foreground">{row.resolution_snippet || "No resolution summary."}</p>
+                                  </div>
+                                  <div className="flex shrink-0 gap-1.5">
+                                    <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => router.push(`/tickets/${row.id}`)}>
+                                      Open
+                                    </Button>
+                                    {row.resolution_snippet ? (
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        className="h-7 px-2 text-[10px]"
+                                        onClick={() => handleApplySuggestion(message.id, row.resolution_snippet || "", row.id)}
+                                      >
+                                        Apply
+                                      </Button>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+
+                            {(message.suggestions?.solution_recommendations || []).slice(0, 2).map((rec, idx) => {
+                              const userQuery = [...messages].reverse().find((m) => m.role === "user")?.content || ""
+                              const upKey = `${message.id}-${rec.source}-${rec.source_id || rec.text.slice(0, 24)}-helpful`
+                              const downKey = `${message.id}-${rec.source}-${rec.source_id || rec.text.slice(0, 24)}-not_helpful`
+                              return (
+                                <div key={`solution-rec-${message.id}-${idx}`} className="rounded-lg border border-border bg-background/70 p-2.5">
+                                  <p className="text-xs font-semibold text-foreground">
+                                    <Lightbulb className="mr-1 inline h-3.5 w-3.5 text-amber-500" />
+                                    {locale === "fr" ? "Recommendation de solution" : "Solution recommendation"}
+                                  </p>
+                                  <p className="mt-1 text-[11px] text-muted-foreground">{rec.text}</p>
+                                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                                    <Badge variant="outline" className="text-[10px]">{rec.source}</Badge>
+                                    <Badge variant="outline" className="text-[10px]">Q {Math.round((rec.quality_score || 0) * 100)}%</Badge>
+                                    <Badge variant="outline" className="text-[10px]">C {Math.round((rec.confidence || 0) * 100)}%</Badge>
+                                    <Badge variant="outline" className="text-[10px]">
+                                      {rec.helpful_votes || 0} / {rec.not_helpful_votes || 0}
+                                    </Badge>
+                                  </div>
+                                  <div className="mt-2 flex gap-1.5">
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2 text-[10px]"
+                                      disabled={feedbackSubmitting[upKey]}
+                                      onClick={() => submitSolutionFeedback(message.id, rec, "helpful", userQuery)}
+                                    >
+                                      <ThumbsUp className="mr-1 h-3.5 w-3.5" />
+                                      Helpful
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-7 px-2 text-[10px]"
+                                      disabled={feedbackSubmitting[downKey]}
+                                      onClick={() => submitSolutionFeedback(message.id, rec, "not_helpful", userQuery)}
+                                    >
+                                      <ThumbsDown className="mr-1 h-3.5 w-3.5" />
+                                      Not helpful
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      className="h-7 px-2 text-[10px]"
+                                      onClick={() => handleApplySuggestion(message.id, rec.text, rec.source_id || rec.source)}
+                                    >
+                                      Apply
+                                    </Button>
+                                  </div>
+                                </div>
+                              )
+                            })}
+
+                            {message.suggestions?.problems?.slice(0, 1).map((problem) => (
+                              <div key={`problem-sug-${message.id}-${problem.id}`} className="rounded-lg border border-border bg-background/70 p-2.5">
+                                <p className="text-xs font-semibold text-foreground">
+                                  <AlertCircle className="mr-1 inline h-3.5 w-3.5 text-orange-500" />
+                                  {problem.id} - {problem.title}
+                                </p>
+                                <p className="mt-1 text-[11px] text-muted-foreground">{problem.match_reason}</p>
+                                <div className="mt-2">
+                                  <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => router.push("/problems")}>
+                                    View Problem
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+
+                            {message.suggestions?.kb_articles?.slice(0, 1).map((kb) => (
+                              <div key={`kb-sug-${message.id}-${kb.id}`} className="rounded-lg border border-border bg-background/70 p-2.5">
+                                <p className="text-xs font-semibold text-foreground">
+                                  <BookOpen className="mr-1 inline h-3.5 w-3.5 text-blue-500" />
+                                  {kb.title}
+                                </p>
+                                <p className="mt-1 text-[11px] text-muted-foreground">{kb.excerpt}</p>
+                                <div className="mt-2 flex gap-1.5">
+                                  <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => setInput(`Use this KB guidance: ${kb.excerpt}`)}>
+                                    Use This Solution
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
                         )}
                       </div>
 

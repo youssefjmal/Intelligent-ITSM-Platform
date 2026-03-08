@@ -13,6 +13,7 @@ MAX_CHAT_CONTENT_LEN = 4000
 MAX_TITLE_LEN = 120
 MAX_DESCRIPTION_LEN = 4000
 ALLOWED_CHAT_ROLES = {"user", "assistant", "system", "tool"}
+ALLOWED_SOLUTION_QUALITY = {"low", "medium", "high"}
 
 
 class ChatMessage(BaseModel):
@@ -36,12 +37,21 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1, max_length=MAX_CHAT_MESSAGES)
     locale: str | None = Field(default=None, max_length=16)
+    solution_quality: str = Field(default="medium", max_length=16)
 
     @field_validator("locale", mode="before")
     @classmethod
     def normalize_locale(cls, value: str | None) -> str | None:
         cleaned = clean_single_line(value)
         return cleaned or None
+
+    @field_validator("solution_quality", mode="before")
+    @classmethod
+    def normalize_solution_quality(cls, value: str | None) -> str:
+        cleaned = (clean_single_line(value) or "medium").lower()
+        if cleaned not in ALLOWED_SOLUTION_QUALITY:
+            raise ValueError("invalid_solution_quality")
+        return cleaned
 
 
 class TicketDraft(BaseModel):
@@ -74,12 +84,6 @@ class TicketDraft(BaseModel):
         return cleaned or None
 
 
-class ChatResponse(BaseModel):
-    reply: str
-    action: str | None = None
-    ticket: TicketDraft | None = None
-
-
 class ClassificationRequest(BaseModel):
     title: str = Field(min_length=3, max_length=MAX_TITLE_LEN)
     description: str = Field(default="", max_length=MAX_DESCRIPTION_LEN)
@@ -105,6 +109,137 @@ class ClassificationRequest(BaseModel):
 class AIRecommendationOut(BaseModel):
     text: str
     confidence: int = Field(ge=0, le=100)
+
+
+class AISuggestedTicket(BaseModel):
+    id: str
+    title: str
+    similarity_score: float = Field(ge=0.0, le=1.0)
+    status: str
+    resolution_snippet: str | None = None
+
+
+class AISuggestedProblem(BaseModel):
+    id: str
+    title: str
+    match_reason: str
+    root_cause: str | None = None
+    affected_tickets: int | None = None
+
+
+class AISuggestedKBArticle(BaseModel):
+    id: str
+    title: str
+    excerpt: str
+    similarity_score: float = Field(ge=0.0, le=1.0)
+    source_type: str | None = None
+
+
+class AISolutionRecommendation(BaseModel):
+    text: str
+    source: str
+    source_id: str | None = None
+    evidence_snippet: str | None = None
+    quality_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    helpful_votes: int = 0
+    not_helpful_votes: int = 0
+    reason: str | None = None
+
+
+class AISuggestionBundle(BaseModel):
+    tickets: list[AISuggestedTicket] = Field(default_factory=list)
+    problems: list[AISuggestedProblem] = Field(default_factory=list)
+    kb_articles: list[AISuggestedKBArticle] = Field(default_factory=list)
+    solution_recommendations: list[AISolutionRecommendation] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    source: str = "llm_fallback"
+
+
+class AIDraftContext(BaseModel):
+    pre_filled_description: str
+    suggested_priority: str | None = None
+    related_tickets: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    message: str | None = None
+    action: str | None = None
+    ticket: TicketDraft | None = None
+    rag_grounding: bool = False
+    suggestions: AISuggestionBundle = Field(default_factory=AISuggestionBundle)
+    draft_context: AIDraftContext | None = None
+    actions: list[str] = Field(default_factory=list)
+
+
+class SuggestRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=MAX_CHAT_CONTENT_LEN)
+    locale: str | None = Field(default=None, max_length=16)
+    solution_quality: str = Field(default="medium", max_length=16)
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def normalize_query(cls, value: str) -> str:
+        return clean_multiline(value)
+
+    @field_validator("locale", mode="before")
+    @classmethod
+    def normalize_suggest_locale(cls, value: str | None) -> str | None:
+        cleaned = clean_single_line(value)
+        return cleaned or None
+
+    @field_validator("solution_quality", mode="before")
+    @classmethod
+    def normalize_suggest_solution_quality(cls, value: str | None) -> str:
+        cleaned = (clean_single_line(value) or "medium").lower()
+        if cleaned not in ALLOWED_SOLUTION_QUALITY:
+            raise ValueError("invalid_solution_quality")
+        return cleaned
+
+
+class SuggestResponse(BaseModel):
+    rag_grounding: bool = False
+    suggestions: AISuggestionBundle = Field(default_factory=AISuggestionBundle)
+    actions: list[str] = Field(default_factory=list)
+
+
+class AIFeedbackRequest(BaseModel):
+    query: str | None = Field(default=None, max_length=MAX_CHAT_CONTENT_LEN)
+    recommendation_text: str = Field(min_length=1, max_length=MAX_CHAT_CONTENT_LEN)
+    source: str = Field(min_length=1, max_length=32)
+    source_id: str | None = Field(default=None, max_length=120)
+    vote: str = Field(min_length=1, max_length=16)
+    context: dict[str, str | int | float | bool | None] | None = None
+
+    @field_validator("query", "recommendation_text", mode="before")
+    @classmethod
+    def normalize_feedback_body_fields(cls, value: str | None) -> str | None:
+        cleaned = clean_multiline(value) if value is not None else None
+        return cleaned or None
+
+    @field_validator("source", "source_id", mode="before")
+    @classmethod
+    def normalize_feedback_identity_fields(cls, value: str | None) -> str | None:
+        cleaned = clean_single_line(value) if value is not None else None
+        return cleaned or None
+
+    @field_validator("vote", mode="before")
+    @classmethod
+    def normalize_feedback_vote(cls, value: str) -> str:
+        cleaned = clean_single_line(value).lower()
+        if cleaned not in {"helpful", "not_helpful"}:
+            raise ValueError("invalid_vote")
+        return cleaned
+
+
+class AIFeedbackResponse(BaseModel):
+    status: str
+    source: str
+    source_id: str | None = None
+    helpful_votes: int = 0
+    not_helpful_votes: int = 0
 
 
 class ClassificationResponse(BaseModel):

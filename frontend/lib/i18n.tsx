@@ -12,6 +12,7 @@ const translations = {
   "nav.chat": { fr: "Assistant IA", en: "AI Assistant" },
   "nav.recommendations": { fr: "Recommandations", en: "Recommendations" },
   "nav.problems": { fr: "Problemes", en: "Problems" },
+  "nav.notifications": { fr: "Notifications", en: "Notifications" },
   "nav.settings": { fr: "Parametres", en: "Settings" },
   "nav.collapse": { fr: "Reduire", en: "Collapse" },
   "nav.admin": { fr: "Administration", en: "Administration" },

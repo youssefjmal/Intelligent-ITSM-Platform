@@ -327,6 +327,77 @@ export default function DashboardPage() {
     }
   }, [globalFilteredTickets])
 
+  const topCriticalTickets = useMemo(() => {
+    const activeStatuses = new Set(["open", "in-progress", "waiting-for-customer", "waiting-for-support-vendor", "pending"])
+    const now = Date.now()
+    return globalFilteredTickets
+      .filter((ticket) => ticket.priority === "critical" && activeStatuses.has(ticket.status))
+      .map((ticket) => {
+        const updatedAtMs = Date.parse(ticket.updatedAt)
+        const inactiveDays = Number.isNaN(updatedAtMs)
+          ? 0
+          : Math.max(0, Math.floor((now - updatedAtMs) / 86400000))
+        return {
+          id: ticket.id,
+          title: ticket.title,
+          assignee: ticket.assignee,
+          status: ticket.status,
+          inactiveDays,
+          updatedAtMs: Number.isNaN(updatedAtMs) ? 0 : updatedAtMs,
+        }
+      })
+      .sort((a, b) => (b.inactiveDays - a.inactiveDays) || (a.updatedAtMs - b.updatedAtMs))
+      .slice(0, 5)
+      .map(({ updatedAtMs: _updatedAtMs, ...ticket }) => ticket)
+  }, [globalFilteredTickets])
+
+  const problemKpiSummary = useMemo(() => {
+    const activeStatuses = new Set(["open", "in-progress", "waiting-for-customer", "waiting-for-support-vendor", "pending"])
+    const linkedTickets = globalFilteredTickets.filter((ticket) => Boolean(ticket.problemId))
+    const problemIdSet = new Set(linkedTickets.map((ticket) => ticket.problemId!).filter(Boolean))
+    const metaById = new Map((insights.problem_management?.top || []).map((problem) => [problem.id, problem]))
+    const agg: Record<string, { id: string; title: string; linkedTicketCount: number; criticalTicketCount: number; activeTicketCount: number }> = {}
+    for (const ticket of linkedTickets) {
+      const problemId = ticket.problemId
+      if (!problemId) continue
+      if (!agg[problemId]) {
+        const meta = metaById.get(problemId)
+        agg[problemId] = {
+          id: problemId,
+          title: meta?.title || problemId,
+          linkedTicketCount: 0,
+          criticalTicketCount: 0,
+          activeTicketCount: 0,
+        }
+      }
+      agg[problemId].linkedTicketCount += 1
+      if (ticket.priority === "critical") agg[problemId].criticalTicketCount += 1
+      if (activeStatuses.has(ticket.status)) agg[problemId].activeTicketCount += 1
+    }
+
+    const topProblems = Object.values(agg)
+      .sort((a, b) =>
+        (b.criticalTicketCount - a.criticalTicketCount) ||
+        (b.activeTicketCount - a.activeTicketCount) ||
+        (b.linkedTicketCount - a.linkedTicketCount)
+      )
+      .slice(0, 5)
+      .map(({ id, title, linkedTicketCount, criticalTicketCount }) => ({
+        id,
+        title,
+        linkedTicketCount,
+        criticalTicketCount,
+      }))
+
+    return {
+      totalProblems: problemIdSet.size,
+      linkedTickets: linkedTickets.length,
+      activeProblemTickets: linkedTickets.filter((ticket) => activeStatuses.has(ticket.status)).length,
+      criticalLinkedTickets: linkedTickets.filter((ticket) => ticket.priority === "critical").length,
+      topProblems,
+    }
+  }, [globalFilteredTickets, insights.problem_management?.top])
+
   function resetGlobalFilters() {
     setGlobalScope("all")
     setGlobalCategory("all")
@@ -441,7 +512,11 @@ export default function DashboardPage() {
               </div>
             </div>
           )}
-          {loading ? <DashboardKpiSkeleton /> : <KPICards stats={globalStats} />}
+          {loading ? (
+            <DashboardKpiSkeleton />
+          ) : (
+            <KPICards stats={globalStats} criticalTop={topCriticalTickets} problemSummary={problemKpiSummary} />
+          )}
         </section>
 
         <Separator className="bg-border/60" />
@@ -515,8 +590,8 @@ export default function DashboardPage() {
 
 function DashboardKpiSkeleton() {
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-      {Array.from({ length: 6 }).map((_, index) => (
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
+      {Array.from({ length: 7 }).map((_, index) => (
         <div key={`kpi-skeleton-${index}`} className="surface-card rounded-2xl p-4">
           <div className="flex items-start justify-between gap-3">
             <div className="space-y-2">

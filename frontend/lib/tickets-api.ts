@@ -10,6 +10,26 @@ type ApiComment = {
   created_at: string
 }
 
+type ApiTicketHistoryChange = {
+  field: string
+  before?: unknown
+  after?: unknown
+}
+
+type ApiTicketHistoryEvent = {
+  id: string
+  ticket_id: string
+  event_type: string
+  action?: string | null
+  actor: string
+  actor_id?: string | null
+  actor_role?: string | null
+  comment_added?: boolean
+  comment_id?: string | null
+  created_at: string
+  changes: ApiTicketHistoryChange[]
+}
+
 type ApiTicket = {
   id: string
   problem_id?: string | null
@@ -98,6 +118,7 @@ function mapTicket(ticket: ApiTicket): Ticket {
     firstActionAt: ticket.first_action_at || undefined,
     resolvedAt: ticket.resolved_at || undefined,
     slaStatus: ticket.sla_status ?? null,
+    slaRemainingMinutes: ticket.sla_remaining_minutes ?? null,
     createdAt: ticket.created_at,
     updatedAt: ticket.updated_at,
     resolution: ticket.resolution || undefined,
@@ -314,6 +335,26 @@ export type SimilarTicket = {
   similarityScore: number
 }
 
+export type TicketHistoryChange = {
+  field: string
+  before?: unknown
+  after?: unknown
+}
+
+export type TicketHistoryEvent = {
+  id: string
+  ticketId: string
+  eventType: string
+  action?: string | null
+  actor: string
+  actorId?: string | null
+  actorRole?: string | null
+  commentAdded: boolean
+  commentId?: string | null
+  createdAt: string
+  changes: TicketHistoryChange[]
+}
+
 const ticketAIRecommendationsCache = new Map<string, TicketAIRecommendationsPayload>()
 
 function isActionableRecommendation(text: string): boolean {
@@ -492,4 +533,36 @@ export async function fetchSimilarTickets(
     updatedAt: item.updated_at,
     similarityScore: item.similarity_score,
   }))
+}
+
+function mapHistoryEvent(item: ApiTicketHistoryEvent): TicketHistoryEvent {
+  return {
+    id: item.id,
+    ticketId: item.ticket_id,
+    eventType: item.event_type,
+    action: item.action ?? null,
+    actor: item.actor,
+    actorId: item.actor_id ?? null,
+    actorRole: item.actor_role ?? null,
+    commentAdded: Boolean(item.comment_added),
+    commentId: item.comment_id ?? null,
+    createdAt: item.created_at,
+    changes: (item.changes || []).map((change) => ({
+      field: change.field,
+      before: change.before,
+      after: change.after,
+    })),
+  }
+}
+
+export async function fetchTicketHistory(options: { ticketId?: string; limit?: number } = {}): Promise<TicketHistoryEvent[]> {
+  const params = new URLSearchParams()
+  if (Number.isFinite(options.limit)) {
+    params.set("limit", String(options.limit))
+  }
+  const query = params.toString()
+  const basePath = options.ticketId ? `/tickets/${options.ticketId}/history` : "/tickets/history"
+  const path = query ? `${basePath}?${query}` : basePath
+  const data = await apiFetch<ApiTicketHistoryEvent[]>(path)
+  return data.map(mapHistoryEvent)
 }

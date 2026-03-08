@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "postgresql+psycopg://postgres@localhost:5432/jira_tickets"
 
-    JWT_SECRET: str = "change-me"
+    JWT_SECRET: str = ""
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
     COOKIE_NAME: str = "tw_access"
@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:3000"
     ALLOWED_HOSTS: str = "localhost,127.0.0.1"
     AUTOMATION_SECRET: str = ""
+    N8N_WEBHOOK_BASE_URL: str = ""
     #google login using oauth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""

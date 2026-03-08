@@ -6,6 +6,7 @@ import datetime as dt
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, ForeignKey, Index, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -28,5 +29,8 @@ class Notification(Base):
     severity: Mapped[str] = mapped_column(String(16), default="info", nullable=False)
     link: Mapped[str | None] = mapped_column(String(512), nullable=True)
     source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    action_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    action_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     read_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

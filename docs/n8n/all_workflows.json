@@ -136,8 +136,8 @@
           "headerParameters": {
             "parameters": [
               {
-                "name": "Authorization",
-                "value": "={{ 'Bearer ' + $env.ITSM_API_TOKEN }}"
+                "name": "X-Automation-Secret",
+                "value": "={{ $env.AUTOMATION_SECRET }}"
               },
               {
                 "name": "X-Actor",
@@ -525,8 +525,8 @@
           "headerParameters": {
             "parameters": [
               {
-                "name": "Authorization",
-                "value": "={{'Bearer ' + $env.ITSM_API_TOKEN}}"
+                "name": "X-Automation-Secret",
+                "value": "={{ $env.AUTOMATION_SECRET }}"
               },
               {
                 "name": "X-Actor",
@@ -637,8 +637,8 @@
           "headerParameters": {
             "parameters": [
               {
-                "name": "Authorization",
-                "value": "={{'Bearer ' + $env.ITSM_API_TOKEN}}"
+                "name": "X-Automation-Secret",
+                "value": "={{ $env.AUTOMATION_SECRET }}"
               },
               {
                 "name": "X-Actor",
@@ -1073,8 +1073,8 @@
           "headerParameters": {
             "parameters": [
               {
-                "name": "Authorization",
-                "value": "={{ 'Bearer ' + $env.ITSM_API_TOKEN }}"
+                "name": "X-Automation-Secret",
+                "value": "={{ $env.AUTOMATION_SECRET }}"
               },
               {
                 "name": "X-Actor",
@@ -1535,8 +1535,8 @@
           "headerParameters": {
             "parameters": [
               {
-                "name": "Authorization",
-                "value": "={{ 'Bearer ' + $env.ITSM_API_TOKEN }}"
+                "name": "X-Automation-Secret",
+                "value": "={{ $env.AUTOMATION_SECRET }}"
               },
               {
                 "name": "X-Actor",
@@ -2024,8 +2024,8 @@
           "headerParameters": {
             "parameters": [
               {
-                "name": "Authorization",
-                "value": "={{ 'Bearer ' + $env.ITSM_API_TOKEN }}"
+                "name": "X-Automation-Secret",
+                "value": "={{ $env.AUTOMATION_SECRET }}"
               },
               {
                 "name": "X-Actor",

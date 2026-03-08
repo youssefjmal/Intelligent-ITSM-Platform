@@ -45,8 +45,8 @@
         "headerParameters": {
           "parameters": [
             {
-              "name": "Authorization",
-              "value": "={{'Bearer ' + $env.ITSM_API_TOKEN}}"
+              "name": "X-Automation-Secret",
+              "value": "={{$env.AUTOMATION_SECRET}}"
             },
             {
               "name": "X-Actor",
@@ -99,21 +99,13 @@
       "parameters": {
         "method": "GET",
         "url": "={{$env.ITSM_BASE_URL + '/api/tickets'}}",
-        "sendQuery": true,
-        "queryParameters": {
-          "parameters": [
-            {
-              "name": "sla_status",
-              "value": "breached,at_risk"
-            }
-          ]
-        },
+        "sendQuery": false,
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
-              "name": "Authorization",
-              "value": "={{'Bearer ' + $env.ITSM_API_TOKEN}}"
+              "name": "X-Automation-Secret",
+              "value": "={{$env.AUTOMATION_SECRET}}"
             },
             {
               "name": "X-Actor",
@@ -161,7 +153,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const payload = $json;\nconst rows = Array.isArray(payload)\n  ? payload\n  : Array.isArray(payload.items)\n    ? payload.items\n    : Array.isArray(payload.tickets)\n      ? payload.tickets\n      : [];\n\nreturn rows.map((ticket) => ({ json: ticket }));"
+        "jsCode": "const payload = $json;\nconst rows = Array.isArray(payload)\n  ? payload\n  : Array.isArray(payload.items)\n    ? payload.items\n    : Array.isArray(payload.tickets)\n      ? payload.tickets\n      : [];\n\nconst filtered = rows.filter((ticket) => {\n  const status = String(ticket?.sla_status || '').trim().toLowerCase();\n  return status === 'breached' || status === 'at_risk';\n});\n\nreturn filtered.map((ticket) => ({ json: ticket }));"
       },
       "id": "sla-normalize",
       "name": "Normalize Ticket Items",
@@ -192,7 +184,8 @@
         "fromEmail": "={{$env.SMTP_FROM}}",
         "toEmail": "={{$env.SLA_ALERT_EMAIL_TO}}",
         "subject": "=[ITSM][SLA] {{$json.id || $json.ticket_id || 'Ticket'}} {{$json.sla_status || 'at_risk'}}",
-        "message": "=Ticket: {{$json.id || $json.ticket_id}}\\nTitle: {{$json.title || 'N/A'}}\\nDescription: {{$json.description || $json.summary || $json.body || 'N/A'}}\\nPriority: {{$json.priority || 'N/A'}}\\nStatus: {{$json.status || 'N/A'}}\\nSLA Status: {{$json.sla_status || 'N/A'}}\\nAssignee: {{$json.assignee || 'Unassigned'}}\\n\\nSource: n8n SLA Breach Alerting workflow."
+        "emailType": "text",
+        "message": "=SLA alert for ticket {{$json.id || $json.ticket_id || 'N/A'}}: \"{{$json.title || 'N/A'}}\" is currently in status \"{{$json.status || 'N/A'}}\" with priority \"{{$json.priority || 'N/A'}}\" and SLA state \"{{$json.sla_status || 'N/A'}}\". Remaining SLA time is {{$json.sla_remaining_human || ($json.sla_remaining_minutes !== undefined ? ($json.sla_remaining_minutes + ' minute(s)') : ($json.sla_due_at ? ('until ' + $json.sla_due_at) : 'N/A'))}}. Assigned owner: {{$json.assignee || 'Unassigned'}}. Context summary: {{$json.description || $json.summary || $json.body || 'N/A'}}. Source: n8n SLA Breach Alerting workflow."
       },
       "id": "sla-email",
       "name": "Send SLA Email",

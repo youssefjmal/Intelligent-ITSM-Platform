@@ -1,7 +1,7 @@
 """add notifications table
 
 Revision ID: 0021_add_notifications
-Revises: 0020_add_jira_native_waiting_statuses
+Revises: 0020_jira_waiting_statuses
 Create Date: 2026-02-23 00:00:00.000000
 """
 
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision = "0021_add_notifications"
-down_revision = "0020_add_jira_native_waiting_statuses"
+down_revision = "0020_jira_waiting_statuses"
 branch_labels = None
 depends_on = None
 
@@ -42,4 +42,3 @@ def downgrade() -> None:
     op.drop_index("ix_notifications_user_id_read_at", table_name="notifications")
     op.drop_index(op.f("ix_notifications_user_id"), table_name="notifications")
     op.drop_table("notifications")
-

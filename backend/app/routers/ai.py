@@ -10,9 +10,19 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_current_user
 from app.core.rate_limit import rate_limit
 from app.db.session import get_db
-from app.schemas.ai import ChatRequest, ChatResponse, ClassificationRequest, ClassificationResponse
+from app.schemas.ai import (
+    AIFeedbackRequest,
+    AIFeedbackResponse,
+    ChatRequest,
+    ChatResponse,
+    ClassificationRequest,
+    ClassificationResponse,
+    SuggestRequest,
+    SuggestResponse,
+)
+from app.services.ai.feedback import aggregate_feedback_counts, record_feedback
 from app.services.embeddings import search_kb
-from app.services.ai.orchestrator import handle_chat, handle_classify
+from app.services.ai.orchestrator import handle_chat, handle_classify, handle_suggest
 
 router = APIRouter(dependencies=[Depends(rate_limit("ai")), Depends(get_current_user)])
 
@@ -29,6 +39,61 @@ def chat(
     current_user=Depends(get_current_user),
 ) -> ChatResponse:
     return handle_chat(payload, db, current_user)
+
+
+@router.post("/suggest", response_model=SuggestResponse)
+def suggest(
+    payload: SuggestRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> SuggestResponse:
+    return handle_suggest(payload, db, current_user)
+
+
+@router.post("/feedback", response_model=AIFeedbackResponse)
+def submit_feedback(
+    payload: AIFeedbackRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> AIFeedbackResponse:
+    source = str(payload.source or "").strip().lower()
+    source_id = str(payload.source_id or "").strip() or None
+    row = record_feedback(
+        db,
+        user_id=getattr(current_user, "id", None),
+        query=payload.query,
+        recommendation_text=payload.recommendation_text,
+        source=source,
+        source_id=source_id,
+        vote=payload.vote,
+        context=payload.context,
+    )
+    counts = aggregate_feedback_counts(db, source=source, source_id=source_id)
+    return AIFeedbackResponse(
+        status="recorded",
+        source=row.source,
+        source_id=row.source_id,
+        helpful_votes=int(counts["helpful"]),
+        not_helpful_votes=int(counts["not_helpful"]),
+    )
+
+
+@router.get("/feedback/stats", response_model=AIFeedbackResponse)
+def feedback_stats(
+    source: str = Query(..., min_length=1, max_length=32),
+    source_id: str | None = Query(default=None, max_length=120),
+    db: Session = Depends(get_db),
+) -> AIFeedbackResponse:
+    normalized_source = source.strip().lower()
+    normalized_source_id = (source_id or "").strip() or None
+    counts = aggregate_feedback_counts(db, source=normalized_source, source_id=normalized_source_id)
+    return AIFeedbackResponse(
+        status="ok",
+        source=normalized_source,
+        source_id=normalized_source_id,
+        helpful_votes=int(counts["helpful"]),
+        not_helpful_votes=int(counts["not_helpful"]),
+    )
 
 
 @router.get("/kb/search")

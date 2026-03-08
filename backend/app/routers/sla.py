@@ -25,6 +25,7 @@ from app.models.enums import TicketStatus, UserRole
 from app.models.ticket import Ticket
 from app.models.user import User
 from app.services.ai.ai_sla_risk import evaluate_sla_risk
+from app.services.notifications_service import create_notifications_for_users, resolve_ticket_recipients
 from app.services.sla.auto_escalation import apply_escalation, compute_escalation
 from app.services.tickets import get_ticket_for_user
 
@@ -271,6 +272,21 @@ def _create_stale_status_notifications(
     return created
 
 
+def _create_escalation_notifications(db: Session, *, ticket: Ticket) -> int:
+    recipients = resolve_ticket_recipients(db, ticket=ticket, include_admins=True)
+    created = create_notifications_for_users(
+        db,
+        users=recipients,
+        title=f"SLA auto-escalation: {ticket.id}",
+        body=f"Priority escalated to {_priority_value(ticket.priority)} ({ticket.priority_escalation_reason or 'sla_policy'}).",
+        severity="high",
+        link=f"/tickets/{ticket.id}",
+        source="sla",
+        cooldown_minutes=30,
+    )
+    return len(created)
+
+
 def _resolve_ai_sla_mode() -> str:
     mode = str(settings.AI_SLA_RISK_MODE or "shadow").strip().lower()
     return mode if mode in {"shadow", "assist"} else "shadow"
@@ -403,6 +419,7 @@ def sync_ticket_sla_snapshot(
         )
         escalated = apply_escalation(db, ticket, actor=f"user:{current_user.id}")
         if escalated:
+            notified = _create_escalation_notifications(db, ticket=ticket)
             _record_automation_event(
                 db,
                 ticket_id=ticket.id,
@@ -410,7 +427,11 @@ def sync_ticket_sla_snapshot(
                 actor=f"user:{current_user.id}",
                 before_snapshot=before_snapshot,
                 after_snapshot=_snapshot(ticket),
-                meta={"reason": ticket.priority_escalation_reason, "to_priority": _priority_value(ticket.priority)},
+                meta={
+                    "reason": ticket.priority_escalation_reason,
+                    "to_priority": _priority_value(ticket.priority),
+                    "notified": notified,
+                },
             )
         db.commit()
     except Exception as exc:  # noqa: BLE001
@@ -676,6 +697,7 @@ def run_sla_batch(
                 escalated_now = apply_escalation(db, ticket, actor="system:n8n")
                 if escalated_now:
                     escalation_data = _serialize_escalation(ticket, from_priority=from_priority)
+                    escalation_notified = _create_escalation_notifications(db, ticket=ticket)
                     _record_automation_event(
                         db,
                         ticket_id=ticket.id,
@@ -683,7 +705,11 @@ def run_sla_batch(
                         actor="system:n8n",
                         before_snapshot=before_snapshot,
                         after_snapshot=_snapshot(ticket),
-                        meta={"reason": ticket.priority_escalation_reason, "to_priority": _priority_value(ticket.priority)},
+                        meta={
+                            "reason": ticket.priority_escalation_reason,
+                            "to_priority": _priority_value(ticket.priority),
+                            "notified": escalation_notified,
+                        },
                     )
                 if _status_change_stale(ticket, stale_before=stale_status_before):
                     stale_notified = _create_stale_status_notifications(

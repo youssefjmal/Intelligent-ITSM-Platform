@@ -11,6 +11,7 @@ import {
   MessageSquareText,
   BrainCircuit,
   AlertOctagon,
+  Bell,
   Shield,
   ChevronLeft,
   ChevronRight,
@@ -33,6 +34,7 @@ const navigation: NavItem[] = [
   { nameKey: "nav.chat", href: "/chat", icon: MessageSquareText, permission: "use_chat" },
   { nameKey: "nav.recommendations", href: "/recommendations", icon: BrainCircuit, permission: "view_recommendations" },
   { nameKey: "nav.problems", href: "/problems", icon: AlertOctagon, permission: "view_tickets" },
+  { nameKey: "nav.notifications", href: "/notifications", icon: Bell, permission: "view_tickets" },
   { nameKey: "nav.admin", href: "/admin", icon: Shield, permission: "view_admin" },
 ]
 

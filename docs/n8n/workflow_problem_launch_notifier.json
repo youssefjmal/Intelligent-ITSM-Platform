@@ -142,8 +142,8 @@
         "headerParameters": {
           "parameters": [
             {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.ITSM_API_TOKEN }}"
+              "name": "X-Automation-Secret",
+              "value": "={{ $env.AUTOMATION_SECRET }}"
             },
             {
               "name": "X-Actor",
@@ -232,7 +232,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const d = $json;\nconst sep = '------------------------------------------';\n\nconst rawPriority = d.priority || d.raw_detail?.priority || d.inbound_priority || d.raw_detail?.severity || 'high';\nconst pri = String(rawPriority).trim() || 'high';\n\nconst tickets = Array.isArray(d.raw_detail?.tickets) ? d.raw_detail.tickets : [];\nconst topTickets = tickets.slice(0, 5);\n\nconst summaryBits = [];\nsummaryBits.push(`${d.title || 'Problem detected'} is currently ${d.status || 'open'}.`);\nsummaryBits.push(`Impact priority is ${pri.toUpperCase()} with ${d.affected_tickets_count ?? tickets.length ?? 0} related ticket(s).`);\n\nif (topTickets.length) {\n  const statuses = [...new Set(topTickets.map(t => t.status).filter(Boolean))];\n  if (statuses.length) summaryBits.push(`Linked ticket statuses: ${statuses.join(', ')}.`);\n  const sample = topTickets.map(t => t.title).filter(Boolean).slice(0,2).join(' | ');\n  if (sample) summaryBits.push(`Observed symptoms: ${sample}.`);\n}\n\nif (d.root_cause && d.root_cause !== 'Under investigation') {\n  summaryBits.push(`Likely root cause: ${d.root_cause}.`);\n} else {\n  summaryBits.push('Root cause is still under investigation.');\n}\n\nif (d.workaround && d.workaround !== 'None yet.') {\n  summaryBits.push(`Current workaround: ${d.workaround}.`);\n}\n\nconst generatedSummary = summaryBits.join(' ');\n\nconst ticketLines = topTickets.length\n  ? topTickets.map(t => `- ${t.id || 'N/A'} | ${t.title || 'Untitled'} | ${t.status || 'unknown'} | ${t.assignee || '-'}`).join('\\n')\n  : '- None listed';\n\nconst subject = `[ITSM Problem] ${pri.toUpperCase()} - ${d.title || 'Problem Detected'}`;\n\nconst body = [\n  'ITSM Platform - Problem Notification',\n  '==========================================',\n  '',\n  `Trace ID     : ${d.trace_id || 'N/A'}`,\n  `Run ID       : ${d.run_id || 'N/A'}`,\n  `Problem ID   : ${d.problem_id || 'N/A'}`,\n  `Title        : ${d.title || 'N/A'}`,\n  `Priority     : ${pri.toUpperCase()}`,\n  `Status       : ${d.status || 'open'}`,\n  `Affected     : ${d.affected_tickets_count ?? 0} ticket(s)`,\n  `Detected at  : ${d.created_at || new Date().toISOString()}`,\n  '',\n  sep,\n  'Problem Summary',\n  sep,\n  generatedSummary,\n  '',\n  sep,\n  'Root Cause',\n  sep,\n  d.root_cause || 'Under investigation.',\n  '',\n  sep,\n  'Workaround',\n  sep,\n  d.workaround || 'None yet.',\n  '',\n  sep,\n  'Permanent Fix',\n  sep,\n  d.permanent_fix || 'None yet.',\n  '',\n  sep,\n  'Linked Tickets (top 5)',\n  sep,\n  ticketLines,\n  '',\n  sep,\n  'View in ITSM Platform:',\n  d.problem_url || 'N/A',\n  sep,\n  '',\n  'This message was generated automatically by the ITSM n8n automation layer.',\n  'Actor: system:n8n'\n].join('\\n');\n\nreturn [{ json: { ...d, stage: 'build_email', priority: pri, email_subject: subject, email_body: body, generated_summary: generatedSummary } }];"
+        "jsCode": "const d = $json;\nconst rawPriority = d.priority || d.raw_detail?.priority || d.inbound_priority || d.raw_detail?.severity || 'high';\nconst pri = String(rawPriority).trim() || 'high';\nconst tickets = Array.isArray(d.raw_detail?.tickets) ? d.raw_detail.tickets : [];\nconst topTickets = tickets.slice(0, 3).map(t => t.title).filter(Boolean);\n\nconst summaryBits = [];\nsummaryBits.push(`${d.title || 'Problem detected'} is currently ${d.status || 'open'}.`);\nsummaryBits.push(`Impact priority is ${pri.toUpperCase()} with ${d.affected_tickets_count ?? tickets.length ?? 0} related ticket(s).`);\nif (topTickets.length) summaryBits.push(`Representative impacted tickets include: ${topTickets.join('; ')}.`);\nsummaryBits.push(d.root_cause && d.root_cause !== 'Under investigation' ? `Likely root cause: ${d.root_cause}.` : 'Root cause is still under investigation.');\nif (d.workaround && d.workaround !== 'None yet.') summaryBits.push(`Current workaround: ${d.workaround}.`);\nif (d.permanent_fix && d.permanent_fix !== 'None yet.') summaryBits.push(`Planned permanent fix: ${d.permanent_fix}.`);\n\nconst generatedSummary = summaryBits.join(' ');\nconst subject = `[ITSM Problem] ${pri.toUpperCase()} - ${d.title || 'Problem Detected'}`;\nconst body = `Problem ${d.problem_id || 'N/A'} has been flagged for response. The issue titled \"${d.title || 'N/A'}\" is currently \"${d.status || 'open'}\" with priority \"${pri.toUpperCase()}\" and currently affects ${d.affected_tickets_count ?? 0} ticket(s). Detailed summary: ${generatedSummary} Detection time: ${d.created_at || new Date().toISOString()}. Open the problem record here: ${d.problem_url || 'N/A'}. Trace reference: ${d.trace_id || 'N/A'}; workflow run: ${d.run_id || 'N/A'}. Source: system:n8n.`;\n\nreturn [{ json: { ...d, stage: 'build_email', priority: pri, email_subject: subject, email_body: body, generated_summary: generatedSummary } }];"
       },
       "id": "build-email-content",
       "name": "Build Email Content",
@@ -309,6 +309,48 @@
         1100,
         580
       ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.ITSM_BASE_URL || 'http://host.docker.internal:8000') + '/api/notifications' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Automation-Secret",
+              "value": "={{ $env.AUTOMATION_SECRET }}"
+            },
+            {
+              "name": "X-Actor",
+              "value": "system:n8n"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { problem_id: $json.problem_id, type: 'problem', title: 'Problem Detected', body: $json.generated_summary || $json.title || ('Problem ' + $json.problem_id), severity: 'critical', link: '/problems/' + $json.problem_id, source: 'n8n' } }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "problem-create-notification",
+      "name": "Create In-App Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2320,
+        260
+      ],
+      "continueOnFail": true
     },
     {
       "parameters": {
@@ -449,6 +491,17 @@
         ],
         [
           {
+            "node": "Create In-App Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create In-App Notification": {
+      "main": [
+        [
+          {
             "node": "Log Success",
             "type": "main",
             "index": 0
@@ -470,3 +523,5 @@
     "notifications"
   ]
 }
+
+

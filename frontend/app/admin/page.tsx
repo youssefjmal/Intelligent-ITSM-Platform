@@ -33,16 +33,10 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
-import { Shield, Users, Trash2, Mail } from "lucide-react"
+import { Shield, Users, Trash2, Mail, History } from "lucide-react"
 import Link from "next/link"
 import { apiFetch } from "@/lib/api"
-
-const ROLE_COLORS: Record<UserRole, string> = {
-  admin: "bg-red-100 text-red-800",
-  agent: "bg-blue-100 text-blue-800",
-  user: "bg-emerald-100 text-emerald-800",
-  viewer: "bg-slate-100 text-slate-700",
-}
+import { fetchTicketHistory, type TicketHistoryEvent } from "@/lib/tickets-api"
 
 const SENIORITY_OPTIONS: UserSeniority[] = ["intern", "junior", "middle", "senior"]
 
@@ -54,11 +48,46 @@ interface EmailRecord {
   kind: string
 }
 
+function historyActionLabel(event: TicketHistoryEvent, locale: "fr" | "en"): string {
+  const action = (event.action || "").toLowerCase()
+  if (action === "created") return locale === "fr" ? "Ticket cree" : "Ticket created"
+  if (action === "resolved") return locale === "fr" ? "Ticket resolu" : "Ticket resolved"
+  if (action === "closed") return locale === "fr" ? "Ticket cloture" : "Ticket closed"
+  if (action === "status_changed") return locale === "fr" ? "Statut modifie" : "Status changed"
+  if (action === "triage_updated") return locale === "fr" ? "Triage modifie" : "Triage updated"
+  if (action === "comment_added") return locale === "fr" ? "Commentaire ajoute" : "Comment added"
+  if (action === "status_aligned_from_jira") return locale === "fr" ? "Statut aligne depuis Jira" : "Status aligned from Jira"
+  return event.eventType.replace(/_/g, " ").toLowerCase()
+}
+
+function historyFieldLabel(field: string, locale: "fr" | "en"): string {
+  const map: Record<string, { fr: string; en: string }> = {
+    status: { fr: "Statut", en: "Status" },
+    priority: { fr: "Priorite", en: "Priority" },
+    category: { fr: "Categorie", en: "Category" },
+    assignee: { fr: "Assigne", en: "Assignee" },
+    problem_id: { fr: "Probleme", en: "Problem" },
+    resolution: { fr: "Resolution", en: "Resolution" },
+    tags: { fr: "Tags", en: "Tags" },
+    assignment_change_count: { fr: "Nb reaffectations", en: "Reassignment count" },
+  }
+  const key = map[field]
+  if (key) return locale === "fr" ? key.fr : key.en
+  return field.replace(/_/g, " ")
+}
+
+function historyValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "-"
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(", ")
+  return String(value)
+}
+
 export default function AdminPage() {
   const { user, hasPermission, getAllUsers, updateUserRole, updateUserSeniority, deleteUser } = useAuth()
   const { t, locale } = useI18n()
   const [users, setUsers] = useState<User[]>([])
   const [emails, setEmails] = useState<EmailRecord[]>([])
+  const [history, setHistory] = useState<TicketHistoryEvent[]>([])
   const [actionError, setActionError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -70,6 +99,16 @@ export default function AdminPage() {
       .then(setEmails)
       .catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (!hasPermission("view_admin")) {
+      setHistory([])
+      return
+    }
+    fetchTicketHistory({ limit: 150 })
+      .then(setHistory)
+      .catch(() => setHistory([]))
+  }, [hasPermission])
 
   if (!hasPermission("view_admin")) {
     return (
@@ -142,6 +181,11 @@ export default function AdminPage() {
           <p className="section-caption">{t("nav.admin")}</p>
           <h2 className="mt-2 text-3xl font-bold text-foreground text-balance sm:text-4xl">{t("admin.title")}</h2>
           <p className="mt-2 max-w-3xl text-sm text-muted-foreground sm:text-base">{t("admin.subtitle")}</p>
+          <div className="mt-3">
+            <Button asChild variant="outline" size="sm">
+              <Link href="/admin/notifications-debug">Notifications debug</Link>
+            </Button>
+          </div>
           {actionError && <p className="mt-2 text-sm text-destructive">{actionError}</p>}
         </div>
 
@@ -284,6 +328,53 @@ export default function AdminPage() {
                 </TableBody>
               </Table>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card className="surface-card">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base font-semibold text-foreground">
+              <History className="h-5 w-5 text-primary" />
+              {locale === "fr" ? "Historique tickets" : "Ticket history"}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {history.length === 0 ? (
+              <p className="py-4 text-center text-sm text-muted-foreground">
+                {locale === "fr" ? "Aucun evenement de ticket pour le moment." : "No ticket events yet."}
+              </p>
+            ) : (
+              <div className="space-y-3">
+                {history.map((event) => (
+                  <div key={event.id} className="rounded-lg border border-border bg-muted/20 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-medium text-foreground">
+                        <Link href={`/tickets/${event.ticketId}`} className="text-primary hover:underline">
+                          {event.ticketId}
+                        </Link>{" "}
+                        - {historyActionLabel(event, locale)}
+                      </p>
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(event.createdAt).toLocaleString(locale === "fr" ? "fr-FR" : "en-US")}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {locale === "fr" ? "Par" : "By"} {event.actor}
+                    </p>
+                    {event.changes.length > 0 && (
+                      <div className="mt-2 space-y-1 rounded-md border border-border/70 bg-background/60 p-2">
+                        {event.changes.slice(0, 6).map((change, idx) => (
+                          <p key={`${event.id}-${change.field}-${idx}`} className="text-[11px] text-muted-foreground">
+                            <span className="font-medium text-foreground">{historyFieldLabel(change.field, locale)}</span>:{" "}
+                            {historyValue(change.before)} {"->"} {historyValue(change.after)}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
 

@@ -16,7 +16,7 @@
 ## 2. Endpoint compatibility checks
 
 - [ ] Confirm `POST /api/sla/run` accepts body `{ "dry_run": false }`.
-- [ ] Confirm `GET /api/tickets` supports `sla_status=breached,at_risk`.
+- [ ] Confirm SLA workflow filters breached/at-risk tickets in-node after `GET /api/tickets`.
   - If not supported: add query parsing for list values.
 - [ ] Confirm `PATCH /api/tickets/{ticket_id}/triage` accepts `priority=critical`.
   - If required by schema, include required fields (assignee/category/etc).
@@ -57,7 +57,7 @@
 
 ## 7. Security hardening reminders
 
-- [ ] Never store API tokens in workflow JSON directly; use `{{$env.ITSM_API_TOKEN}}`.
+- [ ] Never store secrets in workflow JSON directly; use `{{$env.AUTOMATION_SECRET}}`.
 - [ ] Keep n8n env variables out of Git (`.env` excluded).
 - [ ] Restrict SMTP/Teams credentials to minimum required channels.
 - [ ] Review security headers and runtime guards in backend before production rollout.

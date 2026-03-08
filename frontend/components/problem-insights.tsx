@@ -8,6 +8,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/h
 import { useI18n } from "@/lib/i18n"
 
 type ProblemInsight = {
+  problem_id?: string | null
   title: string
   occurrences: number
   active_count: number
@@ -96,10 +97,12 @@ export function ProblemInsights({ insights }: { insights: ProblemInsight[] }) {
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            {insights.map((problem) => (
+            {insights.map((problem) => {
+              const targetHref = problem.problem_id ? `/problems/${problem.problem_id}` : "/problems"
+              return (
               <HoverCard key={`${problem.latest_ticket_id}-${problem.title}`} openDelay={100} closeDelay={80}>
                 <HoverCardTrigger asChild>
-                  <Link href={problem.latest_ticket_id ? `/tickets/${problem.latest_ticket_id}` : "/problems"} className="group block">
+                  <Link href={targetHref} className="group block">
                     <article className="rounded-xl border border-white/80 bg-white/90 p-4 shadow-sm backdrop-blur transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md dark:border-slate-600/70 dark:bg-slate-900/90 dark:hover:bg-slate-900">
 	                      <div className="flex items-start justify-between gap-3">
 	                        <div className="min-w-0">
@@ -252,7 +255,7 @@ export function ProblemInsights({ insights }: { insights: ProblemInsight[] }) {
                         </Link>
                       ))}
                   </div>
-                  <Link href={problem.latest_ticket_id ? `/tickets/${problem.latest_ticket_id}` : "/problems"} className="mt-3 inline-flex">
+                  <Link href={targetHref} className="mt-3 inline-flex">
                     <Button size="sm" className="h-8 gap-1.5 bg-red-600 text-white hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600">
                       {t("dashboard.problemViewLatest")}
                       <ArrowRight className="h-3.5 w-3.5" />
@@ -260,7 +263,8 @@ export function ProblemInsights({ insights }: { insights: ProblemInsight[] }) {
                   </Link>
                 </HoverCardContent>
               </HoverCard>
-            ))}
+              )
+            })}
           </div>
         )}
 

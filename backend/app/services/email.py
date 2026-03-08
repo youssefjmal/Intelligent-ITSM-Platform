@@ -174,8 +174,12 @@ def send_email(to: str, subject: str, body: str, *, html_body: str | None = None
             if settings.SMTP_TLS:
                 server.starttls()
                 server.ehlo()
-            if settings.SMTP_USER:
-                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+            smtp_user = str(settings.SMTP_USER or "").strip()
+            smtp_password = str(settings.SMTP_PASSWORD or "")
+            if smtp_user and smtp_password:
+                server.login(smtp_user, smtp_password)
+            elif smtp_user and not smtp_password:
+                logger.warning("SMTP_USER is set but SMTP_PASSWORD is empty; skipping SMTP auth login.")
             server.send_message(message)
         logger.info("Email sent: %s", to)
         return True

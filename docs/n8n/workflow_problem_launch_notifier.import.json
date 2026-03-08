@@ -130,8 +130,8 @@
         "headerParameters": {
           "parameters": [
             {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.ITSM_API_TOKEN }}"
+              "name":  "X-Automation-Secret",
+              "value":  "={{ $env.AUTOMATION_SECRET }}"
             },
             {
               "name": "X-Actor",
@@ -212,7 +212,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const d = $json;\nconst sep = '------------------------------------------';\n\nconst subject = `[ITSM Problem] ${(d.severity || 'unknown').toUpperCase()} \u2014 ${d.title || 'Problem Detected'}`;\n\nconst body = [\n  'ITSM Platform \u2013 Problem Notification',\n  '==========================================',\n  '',\n  `Problem ID   : ${d.problem_id || 'N/A'}`,\n  `Title        : ${d.title || 'N/A'}`,\n  `Severity     : ${(d.severity || 'unknown').toUpperCase()}`,\n  `Status       : ${d.status || 'open'}`,\n  `Affected     : ${d.affected_tickets_count ?? 0} ticket(s)`,\n  `Detected at  : ${d.created_at || new Date().toISOString()}`,\n  '',\n  sep,\n  'Description',\n  sep,\n  d.description || 'No description available.',\n  '',\n  sep,\n  'Root Cause',\n  sep,\n  d.root_cause || 'Under investigation.',\n  '',\n  sep,\n  'Workaround',\n  sep,\n  d.workaround || 'None yet.',\n  '',\n  sep,\n  'View in ITSM Platform:',\n  d.problem_url || 'N/A',\n  sep,\n  '',\n  'This message was generated automatically by the ITSM n8n automation layer.',\n  'Actor: system:n8n'\n].join('\\n');\n\nreturn [{ json: { ...d, email_subject: subject, email_body: body } }];"
+        "jsCode": "const d = $json;\nconst severity = String(d.severity || 'unknown').toUpperCase();\nconst description = d.description || d.root_cause || 'No description available.';\nconst subject = `[ITSM Problem] ${severity} - ${d.title || 'Problem Detected'}`;\nconst body = `Problem ${d.problem_id || 'N/A'} has been detected and requires attention. The issue titled \"${d.title || 'N/A'}\" is currently \"${d.status || 'open'}\" with severity \"${severity}\" and affects ${d.affected_tickets_count ?? 0} ticket(s). Description summary: ${description}. Root cause detail: ${d.root_cause || 'Under investigation.'} Workaround detail: ${d.workaround || 'None yet.'} Detection time: ${d.created_at || new Date().toISOString()}. Open the problem record here: ${d.problem_url || 'N/A'}. Source: system:n8n.`;\n\nreturn [{ json: { ...d, email_subject: subject, email_body: body } }];"
       },
       "id": "build-email-content",
       "name": "Build Email Content",
@@ -425,3 +425,4 @@
   "pinData": {},
   "tags": []
 }
+

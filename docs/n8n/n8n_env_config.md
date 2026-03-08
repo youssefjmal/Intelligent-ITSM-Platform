@@ -2,6 +2,17 @@
 
 Set these variables in your n8n environment (for example in `.env`, Docker env, or n8n Cloud variables).
 
+## Secret handling (required)
+
+- Keep real secrets in local env only; never commit them to git.
+- Use `docs/n8n/n8n_key.example.txt` as a template only.
+- Provide `N8N_ENCRYPTION_KEY` in `docs/n8n/.env` (local) or your runtime environment.
+- Generate a key (PowerShell):
+
+```powershell
+[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+```
+
 For your local mapping `5670:5678`, a ready local file was created at:
 
 - `docs/n8n/.env`
@@ -20,8 +31,8 @@ docker run --rm -it \
 
 - `ITSM_BASE_URL`
   - Example: `http://localhost:8000`
-- `ITSM_API_TOKEN`
-  - Bearer token used in `Authorization: Bearer ...` for backend calls.
+- `AUTOMATION_SECRET`
+  - Shared secret sent in `X-Automation-Secret` for backend automation calls.
 - `FRONTEND_BASE_URL`
   - Example: `http://localhost:3000`
   - Used to build problem/ticket deep links in notifications.
@@ -61,4 +72,4 @@ Your backend supports bearer tokens through:
 
 - `POST /api/auth/token`
 
-Use a dedicated automation user (service account) to generate a token for `ITSM_API_TOKEN`, and rotate it regularly.
+Use a long random value for `AUTOMATION_SECRET` and keep it identical in backend `.env` and n8n environment variables.

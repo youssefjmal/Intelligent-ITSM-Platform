@@ -309,6 +309,8 @@ def resolve_problem_linked_tickets(
         db,
         problem,
         actor=current_user.name,
+        actor_id=str(current_user.id),
+        actor_role=current_user.role.value,
         resolution_comment=payload.resolution_comment,
     )
     return ResolveLinkedTicketsResponse(problem_id=problem.id, resolved_count=resolved_count)

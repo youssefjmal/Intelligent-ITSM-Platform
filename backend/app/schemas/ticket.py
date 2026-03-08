@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from app.models.enums import TicketCategory, TicketPriority, TicketStatus
@@ -126,6 +127,26 @@ class TicketOut(TicketBase):
 
     class Config:
         from_attributes = True
+
+
+class TicketHistoryChange(BaseModel):
+    field: str
+    before: Any | None = None
+    after: Any | None = None
+
+
+class TicketHistoryOut(BaseModel):
+    id: str
+    ticket_id: str
+    event_type: str
+    action: str | None = None
+    actor: str
+    actor_id: str | None = None
+    actor_role: str | None = None
+    comment_added: bool = False
+    comment_id: str | None = None
+    created_at: dt.datetime
+    changes: list[TicketHistoryChange] = Field(default_factory=list)
 
 
 class TicketStats(BaseModel):

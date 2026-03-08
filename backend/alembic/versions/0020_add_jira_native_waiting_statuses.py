@@ -1,6 +1,6 @@
 """add jira-native waiting statuses to ticket_status enum
 
-Revision ID: 0020_add_jira_native_waiting_statuses
+Revision ID: 0020_jira_waiting_statuses
 Revises: 0019_kb_chunk_identity_uniques
 Create Date: 2026-02-19 00:00:00.000000
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 from alembic import op
 
 
-revision = "0020_add_jira_native_waiting_statuses"
+revision = "0020_jira_waiting_statuses"
 down_revision = "0019_kb_chunk_identity_uniques"
 branch_labels = None
 depends_on = None

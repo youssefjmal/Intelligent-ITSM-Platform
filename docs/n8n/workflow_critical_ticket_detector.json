@@ -115,8 +115,8 @@
         "headerParameters": {
           "parameters": [
             {
-              "name": "Authorization",
-              "value": "={{ 'Bearer ' + $env.ITSM_API_TOKEN }}"
+              "name": "X-Automation-Secret",
+              "value": "={{ $env.AUTOMATION_SECRET }}"
             },
             {
               "name": "X-Actor",
@@ -190,7 +190,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const d = $json;\nconst subject = `[ITSM][CRITICAL] ${String(d.priority || 'critical').toUpperCase()} - ${d.ticket_id} - ${d.title || 'Critical Ticket'}`;\nconst body = [\n  'Critical Ticket Notification',\n  '==========================================',\n  `Trace ID   : ${d.trace_id || 'N/A'}`,\n  `Run ID     : ${d.run_id || 'N/A'}`,\n  `Ticket ID  : ${d.ticket_id || 'N/A'}`,\n  `Title      : ${d.title || 'N/A'}`,\n  `Priority   : ${String(d.priority || 'critical').toUpperCase()}`,\n  `Status     : ${d.status || 'open'}`,\n  `Assignee   : ${d.assignee || 'Unassigned'}`,\n  `Reporter   : ${d.reporter || 'N/A'}`,\n  `Created At : ${d.created_at || new Date().toISOString()}`,\n  '',\n  'Description',\n  '------------------------------------------',\n  d.description || 'No details provided.',\n  '',\n  'Open in ITSM:',\n  d.ticket_url || 'N/A'\n].join('\\n');\nreturn [{ json: { ...d, stage: 'build_email', email_subject: subject, email_body: body } }];"
+        "jsCode": "const d = $json;\nconst priority = String(d.priority || 'critical').toUpperCase();\nconst subject = `[ITSM][CRITICAL] ${priority} - ${d.ticket_id} - ${d.title || 'Critical Ticket'}`;\nconst description = d.description || d.summary || d.body || 'No details provided.';\nconst body = `Critical ticket ${d.ticket_id || 'N/A'} requires immediate attention. The ticket titled \"${d.title || 'N/A'}\" is currently in status \"${d.status || 'open'}\" with priority \"${priority}\", assigned to ${d.assignee || 'Unassigned'} and reported by ${d.reporter || 'N/A'}. Description summary: ${description}. The ticket was created at ${d.created_at || new Date().toISOString()} and can be opened here: ${d.ticket_url || 'N/A'}. Trace reference: ${d.trace_id || 'N/A'}; workflow run: ${d.run_id || 'N/A'}. Source: system:n8n.`;\nreturn [{ json: { ...d, stage: 'build_email', email_subject: subject, email_body: body } }];"
       },
       "id": "ctd-build-email",
       "name": "Build Email Content",
@@ -266,6 +266,48 @@
         1120,
         580
       ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.ITSM_BASE_URL || 'http://host.docker.internal:8000') + '/api/notifications' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Automation-Secret",
+              "value": "={{ $env.AUTOMATION_SECRET }}"
+            },
+            {
+              "name": "X-Actor",
+              "value": "system:n8n"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { ticket_id: $json.ticket_id, type: 'ticket', title: 'Critical Ticket Created', body: $json.title || ('Ticket ' + $json.ticket_id), severity: 'critical', link: '/tickets/' + $json.ticket_id, source: 'n8n' } }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "ctd-create-notification",
+      "name": "Create In-App Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2580,
+        260
+      ],
+      "continueOnFail": true
     },
     {
       "parameters": {
@@ -406,6 +448,17 @@
         ],
         [
           {
+            "node": "Create In-App Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create In-App Notification": {
+      "main": [
+        [
+          {
             "node": "Log Success",
             "type": "main",
             "index": 0
@@ -428,3 +481,5 @@
     "email"
   ]
 }
+
+

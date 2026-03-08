@@ -19,7 +19,9 @@ from app.models.recommendation import Recommendation
 from app.models.ticket import Ticket
 from app.schemas.problem import ProblemUpdate
 from app.services.ai import classify_ticket, score_recommendations
+from app.services.automation_webhooks import trigger_problem_detected
 from app.services.embeddings import compute_embedding
+from app.services.notifications_service import create_notifications_for_users, resolve_problem_recipients
 from app.services.tickets import select_best_assignee, update_status
 from app.services.users import list_assignees
 
@@ -345,9 +347,9 @@ def _problem_match_score(*, ticket: Ticket, similarity_key: str, problem: Proble
     return _hybrid_similarity(lexical=lexical, semantic=semantic)
 
 
-def _ticket_pair_similarity_score(ticket: Ticket, other: Ticket) -> float:
+def _ticket_pair_similarity_components(ticket: Ticket, other: Ticket) -> tuple[float, float | None, float]:
     if ticket.category != other.category:
-        return 0.0
+        return 0.0, None, 0.0
     left_key = compute_similarity_key(
         ticket.title,
         ticket.category,
@@ -361,10 +363,16 @@ def _ticket_pair_similarity_score(ticket: Ticket, other: Ticket) -> float:
         tags=other.tags,
     )
     if left_key == right_key:
-        return 1.0
+        return 1.0, 1.0, 1.0
     lexical = _jaccard_overlap(_ticket_similarity_tokens(ticket), _ticket_similarity_tokens(other))
     semantic = _semantic_similarity(_ticket_similarity_text(ticket), _ticket_similarity_text(other))
-    return _hybrid_similarity(lexical=lexical, semantic=semantic)
+    score = _hybrid_similarity(lexical=lexical, semantic=semantic)
+    return lexical, semantic, score
+
+
+def _ticket_pair_similarity_score(ticket: Ticket, other: Ticket) -> float:
+    _, _, score = _ticket_pair_similarity_components(ticket, other)
+    return score
 
 
 def find_similar_tickets(
@@ -373,13 +381,16 @@ def find_similar_tickets(
     candidates: list[Ticket],
     limit: int = 5,
     min_score: float = 0.3,
+    require_semantic: bool = False,
 ) -> list[tuple[Ticket, float]]:
     """Rank similar tickets using the same hybrid lexical+semantic score used for Problem detection."""
     ranked: list[tuple[Ticket, float]] = []
     for candidate in candidates:
         if candidate.id == ticket.id:
             continue
-        score = _ticket_pair_similarity_score(ticket, candidate)
+        _, semantic, score = _ticket_pair_similarity_components(ticket, candidate)
+        if require_semantic and semantic is None:
+            continue
         if score < min_score:
             continue
         ranked.append((candidate, score))
@@ -661,6 +672,23 @@ def link_ticket_to_problem(db: Session, ticket: Ticket) -> Problem | None:
     db.flush()
     recompute_problem_stats(db, problem.id)
     _emit_problem_recommendations(db, problem, candidates, created=created)
+    if created:
+        recipients = resolve_problem_recipients(db, problem=problem, include_admins=True)
+        create_notifications_for_users(
+            db,
+            users=recipients,
+            title=f"Problem detected: {problem.id}",
+            body=problem.title,
+            severity="critical",
+            link=f"/problems/{problem.id}",
+            source="n8n",
+            cooldown_minutes=30,
+            metadata_json={
+                "workflow_name": "problem_linking_detector",
+                "trigger_ticket_id": ticket.id,
+            },
+        )
+        trigger_problem_detected(db, problem)
     return problem
 
 
@@ -801,6 +829,20 @@ def upsert_problem(db: Session, *, similarity_key: str, tickets: list[Ticket]) -
     _emit_problem_recommendations(db, problem, tickets, created=created)
     db.commit()
     db.refresh(problem)
+    if created:
+        recipients = resolve_problem_recipients(db, problem=problem, include_admins=True)
+        create_notifications_for_users(
+            db,
+            users=recipients,
+            title=f"Problem detected: {problem.id}",
+            body=problem.title,
+            severity="critical",
+            link=f"/problems/{problem.id}",
+            source="n8n",
+            cooldown_minutes=30,
+        )
+        db.commit()
+        trigger_problem_detected(db, problem)
     return problem, created, updated
 
 
@@ -1253,6 +1295,8 @@ def resolve_linked_tickets(
     problem: Problem,
     *,
     actor: str,
+    actor_id: str | None = None,
+    actor_role: str | None = None,
     resolution_comment: str,
 ) -> int:
     linked = (
@@ -1267,6 +1311,8 @@ def resolve_linked_tickets(
             ticket.id,
             TicketStatus.resolved,
             actor=actor,
+            actor_id=actor_id,
+            actor_role=actor_role,
             resolution_comment=resolution_comment,
         )
         if updated:

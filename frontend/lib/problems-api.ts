@@ -88,6 +88,30 @@ export interface ProblemAssigneeUpdateResult {
   mode: ProblemAssignmentMode
 }
 
+export const PROBLEM_AI_FALLBACK_CONFIDENCE_START = 82
+export const PROBLEM_AI_FALLBACK_CONFIDENCE_STEP = 6
+export const PROBLEM_AI_FALLBACK_CONFIDENCE_MIN = 55
+
+function clampConfidence(value: number): number {
+  return Math.max(0, Math.min(100, value))
+}
+
+function normalizeSuggestionText(value: unknown): string {
+  return String(value || "").trim()
+}
+
+export function scoreProblemSuggestions(suggestions: Array<unknown>): Array<{ text: string; confidence: number }> {
+  return suggestions
+    .map((text, index) => ({
+      text: normalizeSuggestionText(text),
+      confidence: Math.max(
+        PROBLEM_AI_FALLBACK_CONFIDENCE_MIN,
+        PROBLEM_AI_FALLBACK_CONFIDENCE_START - index * PROBLEM_AI_FALLBACK_CONFIDENCE_STEP,
+      ),
+    }))
+    .filter((item) => item.text.length > 0)
+}
+
 function mapProblem(problem: ApiProblem): ProblemListItem {
   return {
     id: problem.id,
@@ -159,16 +183,11 @@ export async function fetchProblemAISuggestions(problemId: string): Promise<Prob
     Array.isArray(row.suggestions_scored) && row.suggestions_scored.length > 0
       ? row.suggestions_scored
           .map((item) => ({
-            text: String(item.text || "").trim(),
-            confidence: Number.isFinite(item.confidence) ? Math.max(0, Math.min(100, Number(item.confidence))) : 0,
+            text: normalizeSuggestionText(item.text),
+            confidence: Number.isFinite(item.confidence) ? clampConfidence(Number(item.confidence)) : 0,
           }))
           .filter((item) => item.text.length > 0)
-      : (Array.isArray(row.suggestions) ? row.suggestions : [])
-          .map((text, index) => ({
-            text: String(text || "").trim(),
-            confidence: Math.max(55, 82 - index * 6),
-          }))
-          .filter((item) => item.text.length > 0)
+      : scoreProblemSuggestions(Array.isArray(row.suggestions) ? row.suggestions : [])
   return {
     problemId: row.problem_id,
     category: row.category,

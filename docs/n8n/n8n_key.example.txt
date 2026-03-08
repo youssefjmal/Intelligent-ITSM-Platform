@@ -1,0 +1,4 @@
+# Example only.
+# Generate your own 32+ char random key and keep it in local env only.
+# Do not commit real keys to git.
+replace-with-your-own-random-n8n-encryption-key

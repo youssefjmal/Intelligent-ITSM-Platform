@@ -12,7 +12,22 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.enums import TicketCategory, TicketPriority, TicketStatus, UserRole
-from app.schemas.ai import AIRecommendationOut, ChatRequest, ChatResponse, ClassificationRequest, ClassificationResponse, TicketDraft
+from app.schemas.ai import (
+    AIDraftContext,
+    AIRecommendationOut,
+    AISolutionRecommendation,
+    AISuggestedKBArticle,
+    AISuggestedProblem,
+    AISuggestedTicket,
+    AISuggestionBundle,
+    ChatRequest,
+    ChatResponse,
+    ClassificationRequest,
+    ClassificationResponse,
+    SuggestRequest,
+    SuggestResponse,
+    TicketDraft,
+)
 from app.services.ai.analytics_queries import _answer_data_query
 from app.services.ai.classifier import apply_category_guardrail, classify_ticket, classify_ticket_detailed, score_recommendations
 from app.services.ai.formatters import (
@@ -37,6 +52,7 @@ from app.services.ai.intents import (
 from app.services.ai.llm import extract_json, ollama_generate
 from app.services.ai.prompts import build_chat_prompt
 from app.services.ai.quickfix import append_solution
+from app.services.ai.retrieval import unified_retrieve
 from app.services.jira_kb import build_jira_knowledge_block
 from app.services.tickets import compute_stats, list_tickets_for_user, select_best_assignee
 from app.services.users import list_assignees
@@ -620,6 +636,236 @@ def handle_classify(payload: ClassificationRequest, db: Session) -> Classificati
     )
 
 
+def _detect_unified_pattern(question: str, *, plan: RoutingPlan) -> str:
+    text = _normalize_intent_text(question)
+    if any(token in text for token in ["thanks", "thank you", "that worked", "fixed", "resolved", "merci", "resolu", "marche"]):
+        return "CONFIRM_RESOLUTION"
+    if any(token in text for token in ["status", "etat", "ticket ", "tw-"]):
+        return "STATUS_UPDATE"
+    if any(token in text for token in ["escalat", "urgent help", "need escalation", "escalade"]):
+        return "ESCALATION_HELP"
+    if any(token in text for token in ["problem", "root cause", "pattern", "cause", "analyse"]):
+        return "PROBLEM_ANALYSIS"
+    if any(token in text for token in ["similar", "related ticket", "ticket like", "semblable", "similaire"]):
+        return "SIMILAR_TICKETS"
+    if plan.intent == ChatIntent.create_ticket or _is_explicit_ticket_create_request(question):
+        return "TICKET_CREATE"
+    if any(token in text for token in ["fix", "resolve", "solution", "cannot", "can't", "unable", "error", "issue", "panne"]):
+        return "HOW_TO_FIX"
+    if plan.intent == ChatIntent.data_query or any(token in text for token in ["trend", "kpi", "count", "critical network", "analytics", "stats"]):
+        return "ANALYTICS"
+    return "GENERAL_ITSM"
+
+
+def _build_suggestion_bundle(retrieval: dict[str, Any]) -> AISuggestionBundle:
+    confidence = float(retrieval.get("confidence") or 0.0)
+    source = str(retrieval.get("source") or "llm_fallback")
+    if confidence < 0.6:
+        return AISuggestionBundle(confidence=confidence, source=source)
+
+    tickets = [
+        AISuggestedTicket(
+            id=str(item.get("id") or ""),
+            title=str(item.get("title") or "Ticket"),
+            similarity_score=float(item.get("similarity_score") or 0.0),
+            status=str(item.get("status") or "unknown"),
+            resolution_snippet=str(item.get("resolution_snippet") or "").strip() or None,
+        )
+        for item in list(retrieval.get("similar_tickets") or [])[:3]
+        if str(item.get("id") or "").strip()
+    ]
+    problems = [
+        AISuggestedProblem(
+            id=str(item.get("id") or ""),
+            title=str(item.get("title") or "Problem"),
+            match_reason=str(item.get("match_reason") or "Pattern match"),
+            root_cause=str(item.get("root_cause") or "").strip() or None,
+            affected_tickets=int(item.get("affected_tickets") or 0) or None,
+        )
+        for item in list(retrieval.get("related_problems") or [])[:3]
+        if str(item.get("id") or "").strip()
+    ]
+    kb_articles = [
+        AISuggestedKBArticle(
+            id=str(item.get("id") or f"kb-{idx}"),
+            title=str(item.get("title") or "Knowledge Article"),
+            excerpt=str(item.get("excerpt") or "").strip(),
+            similarity_score=float(item.get("similarity_score") or 0.0),
+            source_type=str(item.get("source_type") or "kb"),
+        )
+        for idx, item in enumerate(list(retrieval.get("kb_articles") or [])[:3], start=1)
+        if str(item.get("excerpt") or "").strip()
+    ]
+    solution_recommendations = [
+        AISolutionRecommendation(
+            text=str(item.get("text") or "").strip(),
+            source=str(item.get("source") or "unknown"),
+            source_id=str(item.get("source_id") or "").strip() or None,
+            evidence_snippet=str(item.get("evidence_snippet") or "").strip() or None,
+            quality_score=float(item.get("quality_score") or 0.0),
+            confidence=float(item.get("confidence") or 0.0),
+            reason=str(item.get("reason") or "").strip() or None,
+        )
+        for item in list(retrieval.get("solution_recommendations") or [])[:3]
+        if str(item.get("text") or "").strip()
+    ]
+    return AISuggestionBundle(
+        tickets=tickets,
+        problems=problems,
+        kb_articles=kb_articles,
+        solution_recommendations=solution_recommendations,
+        confidence=confidence,
+        source=source,
+    )
+
+
+def _suggestion_actions(pattern: str, bundle: AISuggestionBundle, *, base_action: str | None) -> list[str]:
+    actions: list[str] = []
+    if base_action and base_action != "none":
+        actions.append(base_action)
+    if bundle.tickets:
+        actions.extend(["apply_solution", "view_ticket"])
+    if bundle.problems:
+        actions.append("view_problem")
+    if pattern in {"STATUS_UPDATE", "ESCALATION_HELP"}:
+        actions.append("escalate")
+    if pattern == "CONFIRM_RESOLUTION":
+        actions.extend(["close_ticket", "add_to_kb"])
+    if pattern == "TICKET_CREATE":
+        actions.append("create_ticket")
+    if pattern == "GENERAL_ITSM":
+        actions.append("create_ticket")
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in actions:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
+def _augment_reply_with_hints(reply: str, *, pattern: str, bundle: AISuggestionBundle, lang: str) -> str:
+    text = (reply or "").strip()
+    if bundle.confidence < 0.6:
+        fallback = (
+            "\n\nNeed more specific help? Try: create ticket / show mine."
+            if lang == "en"
+            else "\n\nBesoin d'aide plus precise ? Essayez : creer un ticket / afficher mes tickets."
+        )
+        return (text + fallback).strip()
+
+    ticket_ids = [item.id for item in bundle.tickets[:3]]
+    if pattern in {"HOW_TO_FIX", "SIMILAR_TICKETS"} and ticket_ids:
+        suffix = (
+            f"\n\nRelated solved tickets: {', '.join(ticket_ids)}."
+            if lang == "en"
+            else f"\n\nTickets resolus similaires : {', '.join(ticket_ids)}."
+        )
+        return (text + suffix).strip()
+    if pattern == "PROBLEM_ANALYSIS" and bundle.problems:
+        problem = bundle.problems[0]
+        suffix = (
+            f"\n\nPattern match: {problem.id} ({problem.title})."
+            if lang == "en"
+            else f"\n\nPattern detecte : {problem.id} ({problem.title})."
+        )
+        return (text + suffix).strip()
+    if pattern == "STATUS_UPDATE" and bundle.tickets:
+        suffix = (
+            "\n\nSimilar tickets were resolved quickly; monitor SLA risk."
+            if lang == "en"
+            else "\n\nDes tickets similaires ont ete resolus rapidement ; surveillez le risque SLA."
+        )
+        return (text + suffix).strip()
+    if pattern == "CONFIRM_RESOLUTION":
+        suffix = (
+            "\n\nClose ticket and add to knowledge base?"
+            if lang == "en"
+            else "\n\nFermer le ticket et ajouter la solution a la base de connaissance ?"
+        )
+        return (text + suffix).strip()
+    return text
+
+
+def _merge_suggested_fix_into_description(description: str, *, suggestion: str, lang: str) -> str:
+    current = (description or "").strip()
+    snippet = (suggestion or "").strip()
+    if not snippet:
+        return current
+    marker = "Suggested fix (from retrieval):" if lang == "en" else "Correctif suggere (depuis la base):"
+    if marker.casefold() in current.casefold():
+        return current
+    suffix = f"\n\n{marker}\n{snippet}"
+    return f"{current}{suffix}".strip()
+
+
+def _build_draft_context(
+    *,
+    ticket: TicketDraft | None,
+    bundle: AISuggestionBundle,
+    lang: str,
+) -> AIDraftContext | None:
+    if ticket is None:
+        return None
+    preferred = ""
+    if bundle.tickets:
+        preferred = str(bundle.tickets[0].resolution_snippet or "").strip()
+    if not preferred and bundle.kb_articles:
+        preferred = str(bundle.kb_articles[0].excerpt or "").strip()
+
+    prefilled = ticket.description
+    if preferred and bundle.confidence >= 0.6:
+        prefilled = _merge_suggested_fix_into_description(prefilled, suggestion=preferred, lang=lang)
+
+    return AIDraftContext(
+        pre_filled_description=prefilled,
+        suggested_priority=ticket.priority.value if getattr(ticket, "priority", None) else None,
+        related_tickets=[item.id for item in bundle.tickets[:3]],
+        confidence=bundle.confidence,
+    )
+
+
+def _compose_chat_response(
+    *,
+    question: str,
+    lang: str,
+    plan: RoutingPlan,
+    db: Session,
+    tickets: list,
+    solution_quality: str,
+    reply: str,
+    action: str | None,
+    ticket: TicketDraft | None,
+) -> ChatResponse:
+    retrieval = unified_retrieve(
+        db,
+        query=question,
+        visible_tickets=tickets,
+        top_k=5,
+        solution_quality=solution_quality,
+    )
+    bundle = _build_suggestion_bundle(retrieval)
+    pattern = _detect_unified_pattern(question, plan=plan)
+    draft_context = _build_draft_context(ticket=ticket, bundle=bundle, lang=lang)
+    if draft_context and ticket is not None:
+        ticket.description = draft_context.pre_filled_description
+    reply_text = _augment_reply_with_hints(reply, pattern=pattern, bundle=bundle, lang=lang)
+    actions = _suggestion_actions(pattern, bundle, base_action=action)
+    rag_grounding = bundle.confidence >= 0.6 and bundle.source in {"embedding", "hybrid"}
+    normalized_action = action if action and action != "none" else None
+    return ChatResponse(
+        reply=reply_text,
+        message=reply_text,
+        action=normalized_action,
+        ticket=ticket,
+        rag_grounding=rag_grounding,
+        suggestions=bundle,
+        draft_context=draft_context,
+        actions=actions,
+    )
+
+
 def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse:
     tickets = list_tickets_for_user(db, current_user)
     tickets = sorted(
@@ -646,7 +892,7 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
     top = _ticket_prompt_lines(tickets)
 
     if plan.name == "forced_create_ticket":
-        return _build_forced_ai_ticket_draft(
+        draft_response = _build_forced_ai_ticket_draft(
             question=last_question,
             lang=lang,
             db=db,
@@ -655,6 +901,17 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
             current_user=current_user,
             top=top,
         )
+        return _compose_chat_response(
+            question=last_question,
+            lang=lang,
+            plan=plan,
+            db=db,
+            tickets=tickets,
+            solution_quality=payload.solution_quality,
+            reply=draft_response.reply,
+            action=draft_response.action,
+            ticket=draft_response.ticket,
+        )
 
     if plan.name == "shortcut_recent_ticket":
         open_only = _wants_open_only(lowered)
@@ -662,15 +919,45 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
         recent = pool[0] if pool else None
         reply = _format_most_recent_ticket(recent, lang, open_only=open_only)
         summary = _ticket_to_summary(recent, lang)
-        return ChatResponse(reply=reply, action="show_ticket" if summary else None, ticket=summary)
+        return _compose_chat_response(
+            question=last_question,
+            lang=lang,
+            plan=plan,
+            db=db,
+            tickets=tickets,
+            solution_quality=payload.solution_quality,
+            reply=reply,
+            action="show_ticket" if summary else None,
+            ticket=summary,
+        )
 
     if plan.name == "shortcut_most_used_tickets":
         reply = _format_most_used_tickets(tickets, lang)
-        return ChatResponse(reply=reply, action=None, ticket=None)
+        return _compose_chat_response(
+            question=last_question,
+            lang=lang,
+            plan=plan,
+            db=db,
+            tickets=tickets,
+            solution_quality=payload.solution_quality,
+            reply=reply,
+            action=None,
+            ticket=None,
+        )
 
     if plan.name == "shortcut_weekly_summary":
         reply = _format_weekly_summary(tickets, stats, lang)
-        return ChatResponse(reply=reply, action=None, ticket=None)
+        return _compose_chat_response(
+            question=last_question,
+            lang=lang,
+            plan=plan,
+            db=db,
+            tickets=tickets,
+            solution_quality=payload.solution_quality,
+            reply=reply,
+            action=None,
+            ticket=None,
+        )
 
     if plan.name == "shortcut_critical_tickets":
         active_only = _wants_active_only(lowered)
@@ -679,17 +966,47 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
             critical = [t for t in critical if t.status in ACTIVE_STATUSES]
         reply = _format_critical_tickets(critical, lang, active_only=active_only)
         summary = _ticket_to_summary(critical[0], lang) if critical else None
-        return ChatResponse(reply=reply, action="show_ticket" if summary else None, ticket=summary)
+        return _compose_chat_response(
+            question=last_question,
+            lang=lang,
+            plan=plan,
+            db=db,
+            tickets=tickets,
+            solution_quality=payload.solution_quality,
+            reply=reply,
+            action="show_ticket" if summary else None,
+            ticket=summary,
+        )
 
     if plan.name == "shortcut_recurring_solutions":
         reply = _format_recurring_solutions(tickets, lang, last_question)
-        return ChatResponse(reply=reply, action=None, ticket=None)
+        return _compose_chat_response(
+            question=last_question,
+            lang=lang,
+            plan=plan,
+            db=db,
+            tickets=tickets,
+            solution_quality=payload.solution_quality,
+            reply=reply,
+            action=None,
+            ticket=None,
+        )
 
     if plan.name == "structured_data_query":
         structured_answer = _answer_data_query(last_question, tickets, lang, assignee_names)
         if structured_answer:
             reply, action, ticket = structured_answer
-            return ChatResponse(reply=reply, action=action, ticket=ticket)
+            return _compose_chat_response(
+                question=last_question,
+                lang=lang,
+                plan=plan,
+                db=db,
+                tickets=tickets,
+                solution_quality=payload.solution_quality,
+                reply=reply,
+                action=action,
+                ticket=ticket,
+            )
         logger.info("AI routing fallback to general_llm because structured_data_query returned no answer.")
         plan = RoutingPlan(
             name="general_llm",
@@ -754,4 +1071,41 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
             current_user=current_user,
         )
 
-    return ChatResponse(reply=reply, action=action, ticket=ticket)
+    return _compose_chat_response(
+        question=last_question,
+        lang=lang,
+        plan=plan,
+        db=db,
+        tickets=tickets,
+        solution_quality=payload.solution_quality,
+        reply=reply,
+        action=action,
+        ticket=ticket,
+    )
+
+
+def handle_suggest(payload: SuggestRequest, db: Session, current_user) -> SuggestResponse:
+    tickets = list_tickets_for_user(db, current_user)
+    retrieval = unified_retrieve(
+        db,
+        query=payload.query,
+        visible_tickets=tickets,
+        top_k=5,
+        solution_quality=payload.solution_quality,
+    )
+    bundle = _build_suggestion_bundle(retrieval)
+    plan = RoutingPlan(
+        name="suggestion_engine",
+        intent=detect_intent(payload.query),
+        use_llm=False,
+        use_kb=True,
+        reason="explicit_suggest_endpoint",
+    )
+    pattern = _detect_unified_pattern(payload.query, plan=plan)
+    actions = _suggestion_actions(pattern, bundle, base_action=None)
+    rag_grounding = bundle.confidence >= 0.6 and bundle.source in {"embedding", "hybrid"}
+    return SuggestResponse(
+        rag_grounding=rag_grounding,
+        suggestions=bundle,
+        actions=actions,
+    )
