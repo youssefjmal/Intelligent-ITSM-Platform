@@ -1,5 +1,18 @@
 # Full Project Resume (Frontend + Backend + Database + Integrations)
 
+Enterprise audience note:
+- This file is the full technical handover ledger for Teamwill stakeholders.
+- It is intentionally detailed and chronological (architecture + delivery history + integration status).
+- For a concise entry point, start with root `README.md`, then backend/frontend READMEs.
+
+Quick navigation:
+1. Scope and objective
+2. Architecture and platform design
+3. Backend and frontend implementation details
+4. Database and migration evolution
+5. Jira/n8n/AI integration delivery details
+6. Chronological timeline and current release status
+
 ## 1. Scope of this resume
 
 This document is a full end-to-end resume of the project from initial setup to the latest step, including:
@@ -850,3 +863,34 @@ Use this structure in the final PFE report (weekly or monthly cut):
 Interpretation rule:
 
 1. Keep objective status as `partiellement atteint` until at least one stable pilot window confirms sustained KPI improvement.
+
+---
+
+## 24. Notification delivery enhancement (2026-03-03)
+
+Implemented upgrade for n8n -> backend -> bell notifications with email delivery controls and observability:
+
+1. Data model:
+   - `notifications` extended with `metadata_json`, `action_type`, `action_payload`.
+   - Added `notification_preferences` (email enabled/min severity/digest/quiet hours).
+   - Added `notification_delivery_events` for debug tracing and delivery outcomes.
+2. Backend API:
+   - `GET/PATCH /api/notifications/preferences`
+   - `POST /api/notifications/{id}/send-email` (admin)
+   - `POST /api/notifications/digest/run` (admin/agent)
+   - `GET /api/notifications/debug-recent` (admin)
+   - `GET /api/notifications/analytics` (admin/agent)
+3. Delivery policy:
+   - `critical`: immediate email + in-app.
+   - `high`: in-app + pending hourly digest.
+   - `info/warning`: in-app only unless forced by admin resend.
+   - Quiet hours respected via preferences, with bypass for `source=sla` + `critical` (`[URGENT]` subject).
+4. Email templates:
+   - Branded HTML alert template with severity bar, portal CTA, and preference footer.
+   - Hourly digest HTML template grouped per user.
+5. Frontend:
+   - Bell dropdown now grouped by severity (`Critical`, `High`, `Medium/Low`).
+   - Critical items are pinned until opened; mark-all skips unread critical.
+   - Inline action support (`dismiss`, `approve`, `escalate`) based on `action_type`.
+   - Notifications page includes preferences controls and action buttons.
+   - Added admin debug page: `/admin/notifications-debug` with filters, resend, digest trigger, and analytics snapshot.

@@ -1,98 +1,93 @@
-# Frontend (Next.js)
+# Frontend Documentation (Next.js)
 
-## Overview
-The frontend is a Next.js App Router application providing the ITSM dashboard, ticket management UI, AI assistant chat, and recommendations view. It consumes the FastAPI backend through a single API base URL.
+Frontend UI for the Teamwill Intern ITSM Platform (PFE internship project).
 
-## Requirements
-- Node.js 18+
+## 1. Purpose
+The frontend provides the operational interface for:
+- Ticket lifecycle management.
+- AI-assisted triage and support interactions.
+- Problem monitoring and recurring incident analysis.
+- Notifications and admin controls.
 
-## Setup (Windows PowerShell)
+## 2. Technology
+- Next.js (App Router)
+- React + TypeScript
+- Tailwind CSS
+- shadcn/ui component primitives
+
+## 3. User-Facing Modules
+Primary routes:
+- `/` dashboard and KPI overview
+- `/tickets` list and filterable grid
+- `/tickets/new` ticket creation + AI classify
+- `/tickets/[id]` ticket detail and actions
+- `/problems` recurring problem list
+- `/problems/[id]` problem detail + AI suggestions
+- `/chat` AI assistant
+- `/recommendations` recommendation views
+- `/notifications` notification center
+- `/admin` admin panel (role-gated)
+- `/auth/*` authentication and recovery flows
+
+## 4. Access and Roles
+The UI enforces backend-authenticated session behavior and permission checks through auth guard components.
+Role-sensitive actions are hidden or disabled when user permissions do not allow mutation.
+
+## 5. Runtime Configuration
+Environment file: `frontend/.env.local`
+
+Required variable:
+- `NEXT_PUBLIC_API_URL` (example: `http://localhost:8000/api`)
+
+Template file:
+- `frontend/.env.local.example`
+
+## 6. Local Setup (Windows PowerShell)
 ```powershell
-cd C:\Users\kahla\Downloads\jira-ticket-managementv2\frontend
+cd frontend
 copy .env.local.example .env.local
 npm install
 npm run dev
 ```
 
-## Environment Variables
-File: `frontend/.env.local`
-- `NEXT_PUBLIC_API_URL` (example: `http://localhost:8000/api`)
+App URL:
+- `http://localhost:3000`
 
-## Running the App
+## 7. Build and Validation
 ```powershell
-npm run dev
-```
-- App URL: `http://localhost:3000`
-
-## Routes
-- `/` Dashboard and KPIs
-- `/tickets` Ticket list
-- `/tickets/new` Create ticket
-- `/tickets/[id]` Ticket detail
-- `/chat` AI assistant
-- `/recommendations` Recommendations
-- `/admin` Admin user management
-- `/auth/login` Login
-- `/auth/signup` Signup
-- `/auth/signup-success` Signup success
-- `/auth/verify` Email verification
-- `/auth/forgot-password` Request password reset
-- `/auth/reset-password` Set new password from reset link
-
-Login flow note:
-- `/auth/login` now supports email auto-signup: if the email does not exist, the backend creates the account and sends verification.
-
-## Data Flow
-- API calls use `frontend/lib/api.ts` and `NEXT_PUBLIC_API_URL`.
-- Auth state uses cookie-based JWT set by the backend.
-- `auth-guard` restricts access by roles and permissions.
-
-## Localization
-- Translations live in `frontend/lib/i18n.tsx`.
-- UI strings are accessed via `useI18n()`.
-
-## Key Components
-- `components/ticket-form.tsx` ticket creation + AI classify
-- `components/ticket-table.tsx` list view
-- `components/ticket-detail.tsx` detail view
-- `components/ticket-chatbot.tsx` AI assistant
-- `components/recommendations.tsx` recommendations view
-- `components/app-shell.tsx` layout shell
-- `components/app-sidebar.tsx` navigation
-
-## Styling
-- Tailwind CSS is configured in `tailwind.config.ts`.
-- Global styles in `frontend/styles/globals.css` and `frontend/app/globals.css`.
-- UI primitives from `components/ui/*` (shadcn/ui).
-
-## Build
-```powershell
-npm run build
-npm run start
-```
-
-## Validation Commands
-Use this sequence when verifying frontend changes:
-
-```powershell
-cd C:\Users\kahla\Downloads\jira-ticket-managementv2\frontend
+cd frontend
 npm install
 npm run build
 ```
 
 Expected:
-- Next.js build completes successfully.
-- Routes are generated for dashboard, ticket, problem, auth, admin, and assistant pages.
+- Production build succeeds.
+- Route compilation completes without runtime import errors.
 
-## Troubleshooting
-- If you see 401 errors, confirm backend is running and cookies are allowed.
-- If pages are blank, verify `NEXT_PUBLIC_API_URL` points to `/api`.
-- If ticket/problem pages fail to load data, confirm backend URL in `.env.local` matches the running API host.
+## 8. Frontend Architecture Notes
+- API access is centralized in `frontend/lib/api.ts`.
+- Domain client helpers are split into dedicated modules (`tickets-api.ts`, `problems-api.ts`, `notifications-api.ts`, etc.).
+- Localization strings are maintained in `frontend/lib/i18n.tsx`.
+- Shared layout and navigation live in `components/app-shell.tsx` and `components/app-sidebar.tsx`.
 
-## Safe Commit Practices
-- Do not commit `frontend/.env.local`.
-- Commit only `frontend/.env.local.example` when env keys change.
-- Before pushing:
+## 9. Styling and UI System
+- Tailwind config: `tailwind.config.ts`
+- Global styles: `app/globals.css`, `styles/globals.css`
+- Reusable UI primitives: `components/ui/*`
+
+## 10. Security and Data Handling
+- No secret should exist in frontend source.
+- Only public config variables (`NEXT_PUBLIC_*`) are allowed client-side.
+- Auth relies on secure backend cookies/tokens; frontend does not store privileged secrets.
+
+## 11. Troubleshooting
+- API 401/403: verify backend is running and authentication state is valid.
+- Missing data: verify `NEXT_PUBLIC_API_URL` target and backend health.
+- Build errors: clear local caches and reinstall dependencies.
+
+## 12. Commit Hygiene
+- Never commit `frontend/.env.local`.
+- Commit only `frontend/.env.local.example` when config keys change.
 
 ```powershell
 git diff --cached --name-only

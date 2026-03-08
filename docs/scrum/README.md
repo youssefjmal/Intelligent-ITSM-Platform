@@ -1,17 +1,28 @@
-# Scrum Artifacts
+# Scrum Documentation Guide
 
-This folder contains lightweight Scrum artifacts for the project.
+This folder contains Scrum artifacts for planning, execution, and governance of the Teamwill Intern ITSM Platform.
 
-## Files
+## 1. Goal
+Provide a lightweight but auditable process for:
+- prioritizing backlog work,
+- planning sprint commitments,
+- tracking story acceptance,
+- validating delivery quality.
 
-- `product-backlog.md`: ordered list of product backlog items.
-- `user-stories.md`: user stories with acceptance criteria.
-- `sprint-backlog.md`: sprint goal, selected items, and task breakdown.
-- `definition-of-done.md`: quality checklist before closing work.
+## 2. Artifacts
+- `product-backlog.md`: prioritized backlog with business value and ownership.
+- `user-stories.md`: stories with acceptance criteria and role context.
+- `sprint-backlog.md`: active sprint scope, tasks, and progress tracking.
+- `definition-of-done.md`: release quality checklist.
 
-## How to use
+## 3. Recommended Workflow
+1. Update and reprioritize `product-backlog.md` weekly.
+2. Select sprint scope from backlog into `sprint-backlog.md`.
+3. Ensure each selected item has a corresponding story and acceptance criteria in `user-stories.md`.
+4. Validate completed items against `definition-of-done.md` before marking done.
 
-1. Keep `product-backlog.md` prioritized.
-2. During sprint planning, move selected items to `sprint-backlog.md`.
-3. Track stories and acceptance criteria in `user-stories.md`.
-4. Validate each completed item against `definition-of-done.md`.
+## 4. Governance Notes
+- Keep acceptance criteria testable.
+- Keep sprint scope realistic for internship capacity.
+- Document blockers and risk decisions directly in sprint artifacts.
+- Align sprint outcomes with Teamwill operational value (triage speed, visibility, reliability).
