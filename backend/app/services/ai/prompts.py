@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 HIGH_RISK_KEYWORDS = [
     "outage",
     "panne",
@@ -86,8 +88,12 @@ def build_classification_prompt(
 
     return (
         "Tu es un assistant ITSM. Reponds avec JSON valide uniquement, sans texte hors JSON.\n"
+        "Analyse d'abord le ticket avant de recommander:\n"
+        "- Extrais les signaux techniques cles: erreurs, metriques, changements de configuration, symptomes.\n"
+        "- Base chaque recommandation uniquement sur ces signaux.\n"
+        "- Evite les conseils generiques.\n"
         "Knowledge-first strict:\n"
-        "- Si Knowledge Section a des matchs Jira, base d'abord priority/category/recommendations sur commentaires + champs Jira.\n"
+        "- Si Knowledge Section a des matchs Jira, base d'abord priority/ticket_type/category/recommendations sur commentaires + champs Jira.\n"
         "- Si Knowledge Section est vide ou insuffisante, utilise la connaissance IT generale.\n"
         "- Si matchs Jira presents mais support insuffisant pour 2-4 actions concretes, retourne recommendations=[].\n"
         "- N'invente jamais de Jira key, incident, correctif, action historique.\n"
@@ -95,7 +101,9 @@ def build_classification_prompt(
         "Schema JSON strict:\n"
         "{\n"
         '  "priority": "critical|high|medium|low",\n'
+        '  "ticket_type": "incident|service_request",\n'
         '  "category": "infrastructure|network|security|application|service_request|hardware|email",\n'
+        '  "technical_signals": ["3-8 signaux techniques issus du ticket et/ou Jira"],\n'
         '  "recommendations": ["2-4 actions courtes"] | [],\n'
         '  "notes": "explication courte du grounding Jira ou insuffisance",\n'
         '  "sources": ["Jira keys presentes dans Knowledge Section"]\n'
@@ -121,6 +129,10 @@ def build_chat_prompt(
 ) -> str:
     return (
         "You are an ITSM assistant. Return ONLY valid JSON.\n"
+        "Before answering, analyze the ticket context:\n"
+        "- Extract key technical signals (errors, metrics, config changes, symptoms).\n"
+        "- Base recommendations strictly on those signals.\n"
+        "- Avoid generic advice.\n"
         "Knowledge-first strict policy:\n"
         "- If Knowledge Section has Jira matches, base classification/recommendations/solution primarily on those Jira matches.\n"
         "- If Knowledge Section is empty or insufficient, use general IT knowledge.\n"
@@ -129,6 +141,10 @@ def build_chat_prompt(
         "- If Jira support is insufficient for 2-4 concrete actions, return recommendations=[].\n"
         "- If Knowledge Section is empty, set confidence=\"low\" and sources=[].\n"
         "- When Knowledge Section is used, sources must contain Jira keys referenced from [KEY] patterns.\n"
+        "- If a specific ticket ID is present in the user request, anchor the answer to that single ticket and do not switch to a multi-ticket summary.\n"
+        "- If the question contains a compact conversation context block, treat it as authoritative session memory and keep follow-up answers tied to that context.\n"
+        "- Distinguish retrieved facts from inference. Do not present inference as confirmed fact.\n"
+        "- If evidence is weak, say so explicitly and prefer concrete next checks over generic filler.\n"
         "JSON schema:\n"
         "{\n"
         '  "reply": "string",\n'
@@ -136,8 +152,10 @@ def build_chat_prompt(
         '  "sources": ["Jira keys like ABC-123"],\n'
         '  "classification": {\n'
         '    "priority": "critical|high|medium|low",\n'
+        '    "ticket_type": "incident|service_request",\n'
         '    "category": "infrastructure|network|security|application|service_request|hardware|email"\n'
         "  },\n"
+        '  "technical_signals": ["3-8 short technical signals"],\n'
         '  "recommendations": ["2-4 short concrete actions"] | [],\n'
         '  "notes": "short grounding explanation (Jira used or insufficient)",\n'
         '  "action": "create_ticket" | "none",\n'
@@ -146,6 +164,7 @@ def build_chat_prompt(
         '    "title": "string",\n'
         '    "description": "string",\n'
         '    "priority": "critical|high|medium|low",\n'
+        '    "ticket_type": "incident|service_request",\n'
         '    "category": "infrastructure|network|security|application|service_request|hardware|email",\n'
         '    "tags": ["string"],\n'
         '    "assignee": "one of available assignees or null"\n'
@@ -166,4 +185,54 @@ def build_chat_prompt(
         f"- Available assignees: {assignee_list}.\n"
         f"- Stats: {stats}.\n"
         f"- Question: {question}\n"
+    )
+
+
+def build_chat_grounded_prompt(
+    *,
+    question: str,
+    grounding: dict,
+    lang: str,
+    greeting: str,
+) -> str:
+    return (
+        "You are an ITSM assistant formatting a resolver-approved answer.\n"
+        "Return ONLY valid JSON.\n"
+        "The resolver has already decided the recommendation content.\n"
+        "You must preserve the resolver's truth exactly.\n"
+        "The final answer will be rendered into fixed sections by the application.\n"
+        "Your job is only to provide short supporting phrasing for those sections.\n"
+        "Do NOT:\n"
+        "- replace the recommended action\n"
+        "- upgrade tentative advice into a confident fix\n"
+        "- invent evidence, root causes, or validation steps\n"
+        "- override confidence, mode, or degraded status\n"
+        "- turn a single-ticket grounded answer into a list or broad generic guidance\n"
+        "- repeat the recommended action in summary or why-this-matches text\n"
+        "- repeat validation or next-step content\n"
+        "- add generic troubleshooting filler like 'check logs' or 'verify configuration' unless the grounding already names the exact subsystem and reason\n"
+        "You may:\n"
+        "- simplify language\n"
+        "- summarize the root issue in 1-2 short bullets\n"
+        "- summarize why the evidence matches in 1-2 short bullets\n"
+        "- acknowledge limited evidence honestly in one short confidence note\n"
+        "- reuse the ticket or topic already established by the conversation context in the user question\n"
+        "If mode is tentative_diagnostic or no_strong_match, preserve uncertainty clearly.\n"
+        "If mode is tentative_diagnostic, do not phrase anything as a confirmed fix.\n"
+        "If retrieval_mode is lexical_only or fallback_rules, explicitly mention that evidence quality is limited.\n"
+        "Keep each bullet concise and engineer-friendly.\n"
+        "Maximum lengths:\n"
+        "- summary: 2 bullets\n"
+        "- why_this_matches: 2 bullets\n"
+        "- confidence_note: 1 short sentence\n"
+        "JSON schema:\n"
+        "{\n"
+        '  "summary": ["short bullet", "short bullet"] | [],\n'
+        '  "why_this_matches": ["short bullet", "short bullet"] | [],\n'
+        '  "confidence_note": "short sentence or empty string"\n'
+        "}\n"
+        f"- Write all strings in language: {lang}.\n"
+        f"- Greeting available if useful: {greeting}.\n"
+        f"- User question: {question}\n"
+        f"- Resolver grounding JSON:\n{json.dumps(grounding, ensure_ascii=True)}\n"
     )

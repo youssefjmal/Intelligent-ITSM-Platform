@@ -25,6 +25,7 @@ node_modules/
 # Local runtime/debug artifacts
 .pg_local/
 .pg_local_pw.txt
+.ops_backups/
 *.dev.out.log
 *.dev.err.log
 ping_test.log
