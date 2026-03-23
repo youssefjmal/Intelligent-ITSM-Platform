@@ -100,7 +100,7 @@ python -m venv .venv
 pip install -r requirements.txt
 python -m alembic -c alembic.ini upgrade head
 python scripts\seed.py
-python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8052
 ```
 
 ### Frontend
@@ -139,9 +139,9 @@ npm run build
 ```
 
 ## 12. Operational Notes
-- API docs: `http://127.0.0.1:8000/docs`
+- API docs: `http://127.0.0.1:8052/docs`
 - Frontend app: `http://localhost:3000`
-- Backend service: `http://127.0.0.1:8000`
+- Backend service: `http://127.0.0.1:8052`
 - Jira and n8n flows are optional and can be enabled progressively.
 
 ## 13. Risk and Governance Notes
@@ -153,12 +153,25 @@ npm run build
 - Backend deep-dive: `backend/README.md`
 - Frontend deep-dive: `frontend/README.md`
 - SLA deep-dive: `docs/SLA_README.md`
+- AI handoff brief for ChatGPT/Claude: `docs/AI_HANDOFF_CONTEXT.md`
+- Shared AI resolver workflows and SLA advisory handover: `docs/WORK_RESUME_README.md` (see sections `26.2.1` and `26.3.1`)
 - Docker teammate setup: `docs/TEAMMATE_SETUP_README.md`
-- n8n setup/checklists: `docs/n8n/n8n_env_config.md`, `docs/n8n/backend_n8n_integration_checklist.md`
+- n8n workflow guide and setup/checklists: `docs/n8n/README.md`, `docs/n8n/n8n_env_config.md`, `docs/n8n/backend_n8n_integration_checklist.md`
 - Scrum artifacts: `docs/scrum/README.md`
 - Full technical handover timeline: `docs/WORK_RESUME_README.md`
 
-## 15. Git Safety
+## 15. Current Mock Data Workflow
+
+For deterministic local demo data and Jira alignment work:
+
+- Local-only reset script: `backend/scripts/reset_local_mock_dataset.py`
+- Jira/JSM alignment script: `backend/scripts/sync_local_mock_dataset_to_jira.py`
+
+Notes:
+- The reset script is local DB only and avoids Jira/reconcile/network-heavy flows.
+- The Jira sync script is destructive for the configured Jira project because it deletes current project issues before recreating the local dataset from the DB.
+
+## 16. Git Safety
 Before commit/push:
 ```powershell
 git status --short

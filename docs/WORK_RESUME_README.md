@@ -12,6 +12,12 @@ Quick navigation:
 4. Database and migration evolution
 5. Jira/n8n/AI integration delivery details
 6. Chronological timeline and current release status
+7. Current workspace state and handoff priorities (sections 26 to 28)
+
+Current workspace note:
+- This file originally tracked the pushed milestones through the February delivery.
+- The live workspace now contains additional local work through `2026-03-16`, especially around evidence-first AI recommendations, deterministic SLA advisory, and backend-driven notifications.
+- For the fastest current-state ramp-up, read sections `25` through `28` first, then come back to the earlier architecture/history sections if needed.
 
 ## 1. Scope of this resume
 
@@ -665,7 +671,7 @@ python -m venv .venv
 pip install -r requirements.txt
 python -m alembic -c alembic.ini upgrade head
 python scripts\seed.py
-python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8052
 ```
 
 Frontend:
@@ -894,3 +900,454 @@ Implemented upgrade for n8n -> backend -> bell notifications with email delivery
    - Inline action support (`dismiss`, `approve`, `escalate`) based on `action_type`.
    - Notifications page includes preferences controls and action buttons.
    - Added admin debug page: `/admin/notifications-debug` with filters, resend, digest trigger, and analytics snapshot.
+
+---
+
+## 25. Deterministic mock dataset and Jira alignment tooling (2026-03-15)
+
+Current local working-state update added in this session:
+
+1. Added a fast local-only dataset reset script:
+   - `backend/scripts/reset_local_mock_dataset.py`
+2. Added a Jira project alignment script:
+   - `backend/scripts/sync_local_mock_dataset_to_jira.py`
+3. Added an external-AI handoff doc:
+   - `docs/AI_HANDOFF_CONTEXT.md`
+
+### 25.1 Local mock dataset reset
+
+Purpose:
+
+1. Replace the existing local sample data quickly.
+2. Keep the dataset deterministic for demos and debugging.
+3. Avoid Jira push/reconcile when only local DB reset is needed.
+
+Behavior of `reset_local_mock_dataset.py`:
+
+1. Deletes existing local tickets, comments, problems, notifications, recommendations, AI SLA evaluations, and automation events.
+2. Seeds exactly:
+   - `40` tickets (`TW-MOCK-001` .. `TW-MOCK-040`)
+   - `2` problems (`PB-MOCK-01`, `PB-MOCK-02`)
+3. Ensures every ticket has:
+   - title
+   - description
+   - assignee
+   - reporter
+   - ticket type
+   - status
+   - `due_at`
+   - SLA fields
+   - at least `2` comments
+   - resolution text for resolved tickets
+4. Links a subset of tickets to the two problem records.
+5. Prints a compact verification summary only.
+
+Verified local DB result on `2026-03-15`:
+
+1. `40` tickets
+2. `80` comments
+3. `2` problems
+4. Ticket type breakdown:
+   - `20` incidents
+   - `20` service requests
+5. Status breakdown:
+   - `14` open
+   - `13` in-progress
+   - `13` resolved
+6. SLA breakdown:
+   - `10` ok
+   - `11` at_risk
+   - `11` breached
+   - `8` completed
+7. `40` tickets with `due_at`
+8. `13` resolved tickets with non-empty `resolution`
+
+### 25.2 Jira/JSM alignment script
+
+Reason:
+
+1. Local DB was reduced to the new deterministic 40-ticket dataset.
+2. Jira/JSM project `TEAMWILL` still contained `81` issues as of `2026-03-15`.
+3. A narrow synchronization path was needed without reconcile/KB refresh.
+
+Behavior of `sync_local_mock_dataset_to_jira.py`:
+
+1. Uses the current local DB dataset as the source of truth.
+2. Writes a backup of Jira issue summaries to `.ops_backups/`.
+3. Clears local Jira linkage fields on tickets/comments before recreation.
+4. Deletes existing issues in the configured Jira project.
+5. Pushes the current local dataset to Jira/JSM.
+6. Pushes ticket comments after issue creation.
+7. Verifies final Jira/local linkage counts.
+8. Intentionally skips:
+   - Jira reconcile
+   - Jira KB refresh
+   - SLA sync
+
+Operational caution:
+
+1. The Jira sync script is destructive for the configured Jira project because it deletes existing project issues before recreating the local dataset.
+2. Use it only when the local DB should become the source of truth for the Jira project.
+
+### 25.3 External AI handoff support
+
+To make external review easier, a dedicated handoff note was added:
+
+1. `docs/AI_HANDOFF_CONTEXT.md`
+
+It includes:
+
+1. Project summary and architecture snapshot.
+2. Current mock dataset state.
+3. Jira mismatch context.
+4. Important files for Jira reasoning.
+5. Constraints and safety notes.
+6. A copy-paste prompt for ChatGPT/Claude.
+
+---
+
+## 26. Current workspace state snapshot (2026-03-16)
+
+This section reflects the current working tree in this repository, not only the older pushed history.
+
+### 26.1 Local workspace status
+
+1. Current local `HEAD` observed in the workspace: `f249c34`.
+2. The working tree contains additional local modifications and new files beyond the historical pushed-state sections above.
+3. Treat the current code on disk as the source of truth for handoff, verification, and debugging.
+
+### 26.2 Current AI recommendation architecture
+
+The platform now uses an evidence-first recommendation path for ticket detail and the main recommendations page.
+
+Operational flow:
+
+```text
+ticket/problem context
+-> unified_retrieve(...)
+-> build_resolution_advice(...)
+-> classifier used only for metadata
+-> frontend renders action/reasoning/evidence/confidence
+```
+
+Key behavior:
+
+1. Evidence priority in `backend/app/services/ai/resolution_advisor.py`:
+   - resolved tickets
+   - similar tickets
+   - KB articles
+   - comment-based fixes
+   - related problems
+2. Retrieval is hybrid in `backend/app/services/ai/retrieval.py`:
+   - semantic + lexical
+   - query-aware scoring
+   - lexical/domain overlap checks
+   - mismatch penalties
+3. Recommendation output is now action-first and evidence-backed:
+   - `recommended_action`
+   - `reasoning`
+   - `evidence_sources`
+   - `probable_root_cause`
+   - `confidence`
+   - `confidence_band`
+   - `match_summary`
+   - `next_best_actions`
+   - `incident_cluster`
+   - `impact_summary`
+4. A final action-to-ticket relevance gate prevents weak unrelated fixes from appearing as the main recommendation.
+
+Display modes currently used:
+
+1. `evidence_action`
+   - a concrete relevant fix was supported by evidence.
+2. `tentative_diagnostic`
+   - evidence was weak but aligned enough for a safe deterministic diagnostic step.
+3. `no_strong_match`
+   - no safe evidence-backed action should be displayed.
+
+Main files:
+
+1. `backend/app/services/ai/retrieval.py`
+2. `backend/app/services/ai/resolution_advisor.py`
+3. `backend/app/services/ai/orchestrator.py`
+4. `backend/app/services/recommendations.py`
+5. `backend/app/schemas/ai.py`
+6. `backend/app/schemas/recommendation.py`
+7. `frontend/components/ticket-detail.tsx`
+8. `frontend/components/recommendations.tsx`
+9. `frontend/lib/tickets-api.ts`
+10. `frontend/lib/recommendations-api.ts`
+
+### 26.2.1 Shared AI resolver workflows
+
+The current platform intentionally uses one shared evidence-first resolver core across three UX layers.
+
+Common backend core:
+
+```text
+user/page context
+-> retrieval query construction
+-> unified_retrieve(...)
+-> candidate clustering / family coherence
+-> build_resolution_advice(...)
+-> typed payload shaping
+-> frontend rendering
+```
+
+Core rule:
+
+- The same retrieval + advisor logic should stay consistent across chat, `/recommendations`, and `/tickets/[id]`.
+- Differences between the three layers should come from input context and response shaping, not from separate recommendation engines.
+
+Workflow 1: chat resolver path
+
+```text
+chat message
+-> orchestrator intent + entity resolution
+-> session/context resolution (`last_ticket_id`, `last_ticket_list`, follow-up references)
+-> resolve_ticket_advice(...) when ticket/problem context is available
+-> build_* chat payload (`cause_analysis`, `resolution_advice`, `similar_tickets`, etc.)
+-> chat UI card/text response
+```
+
+Current behavior:
+
+1. Explicit ticket mention is the strongest entity anchor.
+2. Follow-ups such as `this ticket`, `why?`, `what should I do next?`, and `which tickets are similar to this one?` reuse the active ticket context.
+3. Assistant-generated related suggestion IDs must not silently replace the active ticket.
+4. Chat uses the same evidence clusters and advisor output as the page-level recommendation flows, then formats the result into a chat-specific structured payload.
+
+Primary files for chat workflow:
+
+1. `backend/app/services/ai/chat_session.py`
+2. `backend/app/services/ai/orchestrator.py`
+3. `backend/app/services/ai/chat_payloads.py`
+4. `backend/app/services/ai/resolver.py`
+
+Workflow 2: recommendations page path
+
+```text
+/recommendations page load
+-> frontend recommendations API call
+-> backend recommendation service gathers ticket/problem candidates
+-> unified_retrieve(...)
+-> build_resolution_advice(...)
+-> response serialized for recommendations page
+-> page renders action/reasoning/evidence/confidence
+```
+
+Current behavior:
+
+1. The recommendations page is list-oriented and page-driven rather than conversational.
+2. It still relies on the same selected cluster / coherent-family guardrails as chat.
+3. The page should therefore surface the same dominant incident family and evidence-backed action that chat would surface for the same ticket.
+4. If evidence is weak, the page should degrade to a cautious deterministic diagnostic or no-strong-match state instead of mixing families.
+
+Primary files for recommendations page workflow:
+
+1. `backend/app/services/recommendations.py`
+2. `backend/app/services/ai/retrieval.py`
+3. `backend/app/services/ai/resolution_advisor.py`
+4. `frontend/components/recommendations.tsx`
+5. `frontend/lib/recommendations-api.ts`
+
+Workflow 3: ticket detail recommendation path
+
+```text
+/tickets/[id] page load
+-> frontend ticket detail API call
+-> backend fetches ticket context + comments + metadata
+-> resolve_ticket_advice(...)
+-> unified_retrieve(...)
+-> build_resolution_advice(...)
+-> ticket detail recommendation card renders evidence-backed advice
+```
+
+Current behavior:
+
+1. Ticket detail is the most context-rich non-chat path because it always starts from one resolved ticket.
+2. Title, description, recent comments, metadata, and linked problem information are all used to strengthen retrieval precision.
+3. The final recommendation card should remain inside one coherent incident family and prefer explicit evidence over generic checklist wording.
+4. This page is also the cleanest reference behavior for validating whether chat is staying aligned with the shared resolver core.
+
+Primary files for ticket detail workflow:
+
+1. `backend/app/services/ai/resolver.py`
+2. `backend/app/services/ai/retrieval.py`
+3. `backend/app/services/ai/resolution_advisor.py`
+4. `frontend/components/ticket-detail.tsx`
+5. `frontend/lib/tickets-api.ts`
+
+### 26.3 Current SLA advisory architecture
+
+Ticket detail no longer shows an empty SLA AI panel by default.
+
+Current behavior:
+
+1. Every ticket receives an SLA advisory payload.
+2. If no persisted AI evaluation is available, the system returns a deterministic advisory.
+3. If persisted AI data exists, the panel can show a hybrid advisory.
+4. The advisory includes:
+   - `risk_score`
+   - `band`
+   - `confidence`
+   - `reasoning`
+   - `recommended_actions`
+   - `advisory_mode`
+   - `sla_elapsed_ratio`
+   - `time_consumed_percent`
+
+Primary files:
+
+1. `backend/app/services/ai/ai_sla_risk.py`
+2. `backend/app/routers/sla.py`
+3. `frontend/components/ticket-detail.tsx`
+4. `frontend/lib/tickets-api.ts`
+
+### 26.3.1 AI SLA advisory workflow
+
+The SLA advisory path is separate from the ticket-resolution advisor and should be understood as a parallel advisory layer.
+
+```text
+ticket context + SLA fields
+-> router/service builds SLA advisory request
+-> deterministic SLA baseline is computed first
+-> persisted AI SLA evaluation is read if available
+-> fallback deterministic advisory is built if no AI evaluation exists
+-> ticket detail UI renders SLA advisory panel
+```
+
+Operational rule:
+
+1. Deterministic SLA logic remains the control path.
+2. AI SLA advisory adds risk interpretation and recommended actions, but does not replace deterministic escalation safeguards.
+3. The panel should always return something useful:
+   - persisted AI-backed advisory when available
+   - deterministic advisory fallback otherwise
+4. This keeps SLA guidance stable even when model inference is unavailable or no prior AI evaluation was stored.
+
+What this means architecturally:
+
+1. Ticket-resolution recommendations answer: `what should we do to resolve this incident?`
+2. SLA advisory answers: `how risky is the current SLA state and what immediate operational action should be considered?`
+3. Both appear on ticket detail, but they are distinct advisory systems with different objectives and safety rules.
+
+### 26.4 Current notifications architecture
+
+Notifications are now backend-driven and preference-aware.
+
+Current behavior:
+
+1. Backend is the source of truth for unread state and delivery routing.
+2. Bell unread count reads from backend unread notifications.
+3. Mark-one-read and mark-all-read update backend state first, then the frontend refreshes.
+4. Critical items can stay visually pinned until opened.
+5. Delivery routes are explicit:
+   - `in_app_only`
+   - `direct_email`
+   - `digest_queue`
+   - `n8n_workflow`
+6. Duplicate suppression and material-change checks are implemented for noisy event classes.
+
+Primary files:
+
+1. `backend/app/services/notifications_service.py`
+2. `backend/app/routers/notifications.py`
+3. `frontend/components/app-shell.tsx`
+4. `frontend/app/notifications/page.tsx`
+5. `frontend/app/admin/notifications-debug/page.tsx`
+6. `frontend/lib/notifications-api.ts`
+
+### 26.5 Notification demo artifact
+
+To prove the bell and notification flow locally, a deterministic seed script was added:
+
+1. `backend/scripts/seed_notification_demo.py`
+
+Demo entities created by that script:
+
+1. Ticket: `TW-DEMO-NOTIFY-01`
+2. Problem: `PB-DEMO-NOTIFY-01`
+
+Use this demo when validating:
+
+1. bell unread count
+2. notification page items
+3. pinned critical notifications
+4. mark-read and mark-all-read behavior
+5. delivery audit visibility
+
+### 26.6 Latest verification status
+
+Most recent verified outcomes in the current workspace:
+
+1. `pytest backend/tests -q` passed with `92` tests during the recommendation hardening pass.
+2. The backend recommendation and SLA paths compile and run with the deterministic-first architecture described above.
+3. Frontend type-checking still has pre-existing unrelated issues in:
+   - `frontend/app/page.tsx`
+   - `frontend/components/ui/calendar.tsx`
+
+---
+
+## 27. Current validation tickets and known practical cases
+
+Useful tickets for validating current behavior:
+
+1. `TW-MOCK-023`
+   - good `/recommendations` page validation target for critical relay/certificate behavior.
+2. `TW-MOCK-025`
+   - recommendation precision regression target for payroll export/date-format evidence.
+   - expected behavior: recommendation stays in export/date-format/application space and does not drift to hardware/mail fixes.
+3. `TW-DEMO-NOTIFY-01`
+   - notification bell/page/delivery demo ticket created by `seed_notification_demo.py`.
+
+Known remaining precision gap:
+
+1. `TW-MOCK-019` (`CRM sync job stalls after token rotation`) is a known example where recommendation quality can still be poor.
+2. Observed bad output:
+   - a mail/relay certificate/queue action was selected for a CRM/token/stalled-worker ticket.
+3. Strong implication:
+   - KB/local evidence filtering is improved but not perfect.
+   - Some low-quality KB matches can still survive on generic overlap instead of domain/entity overlap.
+4. If this case is being worked next, start in:
+   - `backend/app/services/ai/retrieval.py`
+   - `backend/app/services/ai/resolution_advisor.py`
+
+---
+
+## 28. Recommended reading order for the next AI or engineer
+
+If the next task is about AI recommendations:
+
+1. `backend/app/services/ai/retrieval.py`
+2. `backend/app/services/ai/resolution_advisor.py`
+3. `backend/app/services/ai/orchestrator.py`
+4. `backend/app/services/recommendations.py`
+5. `frontend/lib/tickets-api.ts`
+6. `frontend/lib/recommendations-api.ts`
+7. `frontend/components/ticket-detail.tsx`
+8. `frontend/components/recommendations.tsx`
+
+If the next task is about SLA advisory:
+
+1. `backend/app/services/ai/ai_sla_risk.py`
+2. `backend/app/routers/sla.py`
+3. `frontend/lib/tickets-api.ts`
+4. `frontend/components/ticket-detail.tsx`
+
+If the next task is about notifications:
+
+1. `backend/app/services/notifications_service.py`
+2. `backend/app/routers/notifications.py`
+3. `backend/scripts/seed_notification_demo.py`
+4. `frontend/components/app-shell.tsx`
+5. `frontend/app/notifications/page.tsx`
+6. `frontend/app/admin/notifications-debug/page.tsx`
+
+If the next task is about Jira/local dataset alignment:
+
+1. `backend/scripts/reset_local_mock_dataset.py`
+2. `backend/scripts/sync_local_mock_dataset_to_jira.py`
+3. `backend/app/integrations/jira/client.py`
+4. `backend/app/integrations/jira/outbound.py`
+5. `backend/app/integrations/jira/service.py`

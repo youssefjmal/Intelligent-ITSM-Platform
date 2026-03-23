@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from app.models.enums import TicketCategory, TicketPriority, TicketStatus, UserRole
 from app.schemas.ai import AIChatGrounding, AIResolutionAdvice, AIResolutionEvidence, ChatMessage, ChatRequest
+from app.services.ai.chat_payloads import build_cause_analysis_payload, build_insufficient_evidence_payload
 from app.services.ai import intents, orchestrator
 from app.services.ai.intents import ChatIntent, IntentConfidence
 from app.services.ai.resolver import ResolverOutput
@@ -744,6 +745,221 @@ def test_handle_chat_short_why_followup_reuses_prior_ticket_context(monkeypatch)
     assert response.response_payload.ticket_id == "TW-MOCK-019"
 
 
+def test_handle_chat_followup_guidance_does_not_drift_to_assistant_suggestion_ticket(monkeypatch) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    tickets = [
+        _ticket(
+            ticket_id="TW-MOCK-025",
+            title="Payroll export writes invalid date columns",
+            description="Payroll export produces broken date values.",
+            status=TicketStatus.open,
+            priority=TicketPriority.medium,
+            category=TicketCategory.application,
+            assignee="Karim Benali",
+            reporter="Finance Lead",
+            created_at=now - dt.timedelta(hours=1),
+        ),
+        _ticket(
+            ticket_id="TW-MOCK-008",
+            title="Create finance-alerts distribution list",
+            description="Create a mailing list for payroll and audit notifications.",
+            status=TicketStatus.open,
+            priority=TicketPriority.low,
+            category=TicketCategory.service_request,
+            assignee="Nadia Boucher",
+            reporter="Finance Lead",
+            created_at=now - dt.timedelta(hours=2),
+        ),
+    ]
+    resolver_output = _resolver_output(confidence=0.64, root_cause="Payroll export date serialization drift")
+    captured: dict[str, str | None] = {}
+
+    monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: tickets)
+    monkeypatch.setattr(orchestrator, "list_assignees", lambda db: [SimpleNamespace(name="Karim Benali")])
+    monkeypatch.setattr(orchestrator, "compute_stats", lambda rows: {"total": len(rows)})
+
+    def _fake_guidance(**kwargs):
+        captured["resolved_ticket_id"] = kwargs.get("resolved_ticket_id")
+        ticket_id = str(kwargs.get("resolved_ticket_id") or "TW-MOCK-025")
+        return _authoritative_ticket_guidance(resolver_output, ticket_id=ticket_id, confidence_band="medium")
+
+    monkeypatch.setattr(orchestrator, "resolve_chat_guidance", _fake_guidance)
+    monkeypatch.setattr(orchestrator, "build_chat_reply", lambda *args, **kwargs: ("Structured guidance", None, None))
+
+    payload = ChatRequest(
+        messages=[
+            ChatMessage(role="user", content="Show me details of TW-MOCK-025"),
+            ChatMessage(
+                role="assistant",
+                content=(
+                    "Ticket TW-MOCK-025 details.\n"
+                    "Related suggestions: TW-MOCK-013, TW-MOCK-032, TW-MOCK-008"
+                ),
+            ),
+            ChatMessage(role="user", content="What should I do next for this ticket?"),
+        ],
+        locale="en",
+    )
+    current_user = SimpleNamespace(role=UserRole.agent, name="Agent One")
+    response = orchestrator.handle_chat(payload, db=None, current_user=current_user)
+
+    assert captured["resolved_ticket_id"] == "TW-MOCK-025"
+    assert response.response_payload is not None
+    assert response.response_payload.type == "resolution_advice"
+    assert response.response_payload.ticket_id == "TW-MOCK-025"
+
+
+def test_handle_chat_similar_tickets_followup_uses_sticky_active_ticket(monkeypatch) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    tickets = [
+        _ticket(
+            ticket_id="TW-MOCK-025",
+            title="Payroll export writes invalid date columns",
+            description="Payroll export produces broken date values.",
+            status=TicketStatus.open,
+            priority=TicketPriority.medium,
+            category=TicketCategory.application,
+            assignee="Karim Benali",
+            reporter="Finance Lead",
+            created_at=now - dt.timedelta(hours=1),
+        ),
+        _ticket(
+            ticket_id="TW-MOCK-008",
+            title="Create finance-alerts distribution list",
+            description="Create a mailing list for payroll and audit notifications.",
+            status=TicketStatus.open,
+            priority=TicketPriority.low,
+            category=TicketCategory.service_request,
+            assignee="Nadia Boucher",
+            reporter="Finance Lead",
+            created_at=now - dt.timedelta(hours=2),
+        ),
+    ]
+    resolver_output = _resolver_output(confidence=0.72, root_cause="Payroll export date serialization drift")
+    captured: dict[str, str | None] = {}
+
+    monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: tickets)
+    monkeypatch.setattr(orchestrator, "list_assignees", lambda db: [SimpleNamespace(name="Karim Benali")])
+    monkeypatch.setattr(orchestrator, "compute_stats", lambda rows: {"total": len(rows)})
+
+    def _fake_guidance(**kwargs):
+        captured["resolved_ticket_id"] = kwargs.get("resolved_ticket_id")
+        ticket_id = str(kwargs.get("resolved_ticket_id") or "TW-MOCK-025")
+        return _authoritative_ticket_guidance(resolver_output, ticket_id=ticket_id, confidence_band="medium")
+
+    monkeypatch.setattr(orchestrator, "resolve_chat_guidance", _fake_guidance)
+    monkeypatch.setattr(orchestrator, "build_chat_reply", lambda *args, **kwargs: ("Similar tickets", None, None))
+
+    payload = ChatRequest(
+        messages=[
+            ChatMessage(role="user", content="Show me details of TW-MOCK-025"),
+            ChatMessage(
+                role="assistant",
+                content=(
+                    "Ticket TW-MOCK-025 details.\n"
+                    "Related suggestions: TW-MOCK-013, TW-MOCK-032, TW-MOCK-008"
+                ),
+            ),
+            ChatMessage(role="user", content="Which tickets are similar to this one?"),
+        ],
+        locale="en",
+    )
+    current_user = SimpleNamespace(role=UserRole.agent, name="Agent One")
+    response = orchestrator.handle_chat(payload, db=None, current_user=current_user)
+
+    assert captured["resolved_ticket_id"] == "TW-MOCK-025"
+    assert response.response_payload is not None
+    assert response.response_payload.type == "similar_tickets"
+    assert response.response_payload.source_ticket_id == "TW-MOCK-025"
+
+
+def test_handle_chat_why_followup_after_positional_selection_keeps_selected_ticket(monkeypatch) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    tickets = [
+        _ticket(
+            ticket_id="TW-MOCK-019",
+            title="CRM sync job stalls after token rotation",
+            description="The CRM sync worker stops after token rotation.",
+            status=TicketStatus.in_progress,
+            priority=TicketPriority.high,
+            category=TicketCategory.application,
+            assignee="Nadia Boucher",
+            reporter="Karim Benali",
+            created_at=now - dt.timedelta(hours=1),
+            sla_status="breached",
+        ),
+        _ticket(
+            ticket_id="TW-MOCK-025",
+            title="Payroll export writes invalid date columns",
+            description="Payroll export produces broken date values.",
+            status=TicketStatus.open,
+            priority=TicketPriority.medium,
+            category=TicketCategory.application,
+            assignee="Karim Benali",
+            reporter="Finance Lead",
+            created_at=now - dt.timedelta(hours=2),
+            sla_status="at_risk",
+        ),
+        _ticket(
+            ticket_id="TW-MOCK-008",
+            title="Create finance-alerts distribution list",
+            description="Create a mailing list for payroll and audit notifications.",
+            status=TicketStatus.open,
+            priority=TicketPriority.low,
+            category=TicketCategory.service_request,
+            assignee="Nadia Boucher",
+            reporter="Finance Lead",
+            created_at=now - dt.timedelta(hours=3),
+            sla_status="ok",
+        ),
+    ]
+    resolver_output = _resolver_output(confidence=0.68, root_cause="Payroll export date serialization drift")
+    captured: dict[str, str | None] = {}
+
+    monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: tickets)
+    monkeypatch.setattr(orchestrator, "list_assignees", lambda db: [SimpleNamespace(name="Karim Benali")])
+    monkeypatch.setattr(orchestrator, "compute_stats", lambda rows: {"total": len(rows)})
+
+    def _fake_guidance(**kwargs):
+        captured["resolved_ticket_id"] = kwargs.get("resolved_ticket_id")
+        ticket_id = str(kwargs.get("resolved_ticket_id") or "TW-MOCK-025")
+        return _authoritative_ticket_guidance(resolver_output, ticket_id=ticket_id, confidence_band="medium")
+
+    monkeypatch.setattr(orchestrator, "resolve_chat_guidance", _fake_guidance)
+    monkeypatch.setattr(orchestrator, "build_chat_reply", lambda *args, **kwargs: ("Cause analysis", None, None))
+
+    payload = ChatRequest(
+        messages=[
+            ChatMessage(role="user", content="Show high SLA tickets"),
+            ChatMessage(
+                role="assistant",
+                content=(
+                    "Matching tickets:\n"
+                    "- TW-MOCK-019 | CRM sync job stalls after token rotation\n"
+                    "- TW-MOCK-025 | Payroll export writes invalid date columns"
+                ),
+            ),
+            ChatMessage(role="user", content="Show me the second one"),
+            ChatMessage(
+                role="assistant",
+                content=(
+                    "Ticket TW-MOCK-025 details.\n"
+                    "Related suggestions: TW-MOCK-008"
+                ),
+            ),
+            ChatMessage(role="user", content="Why is this happening?"),
+        ],
+        locale="en",
+    )
+    current_user = SimpleNamespace(role=UserRole.agent, name="Agent One")
+    response = orchestrator.handle_chat(payload, db=None, current_user=current_user)
+
+    assert captured["resolved_ticket_id"] == "TW-MOCK-025"
+    assert response.response_payload is not None
+    assert response.response_payload.type == "cause_analysis"
+    assert response.response_payload.ticket_id == "TW-MOCK-025"
+
+
 def test_handle_chat_show_all_tickets_keeps_list_behavior(monkeypatch) -> None:
     now = dt.datetime.now(dt.timezone.utc)
     tickets = [
@@ -879,6 +1095,100 @@ def test_handle_chat_cause_query_returns_ranked_cause_analysis(monkeypatch) -> N
     assert response.response_payload.ticket_id == "TW-MOCK-019"
     assert response.response_payload.possible_causes
     assert response.response_payload.possible_causes[0].evidence
+
+
+def test_build_cause_analysis_payload_excludes_problem_rows_outside_selected_cluster() -> None:
+    ticket = _ticket(
+        ticket_id="TW-MOCK-019",
+        title="CRM sync job stalls after token rotation",
+        description="The CRM sync worker stops after token rotation.",
+        status=TicketStatus.in_progress,
+        priority=TicketPriority.high,
+        category=TicketCategory.application,
+        assignee="Nadia Boucher",
+        reporter="Karim Benali",
+        created_at=dt.datetime.now(dt.timezone.utc),
+    )
+    resolver_output = _resolver_output(confidence=0.78, root_cause="Worker process did not reload rotated integration credentials")
+    resolver_output.retrieval["evidence_clusters"] = {"selected_cluster_id": "crm_integration"}
+    resolver_output.retrieval["related_problems"] = [
+        {
+            "id": "PB-VPN-01",
+            "title": "VPN sessions time out after policy cleanup",
+            "root_cause": "A recent VPN policy cleanup left the MFA session timeout and split-tunnel routes out of sync for several user groups.",
+            "match_reason": "Direct semantic/lexical match from problem knowledge",
+            "similarity_score": 0.93,
+            "_advisor_cluster_id": "network_access",
+        },
+        {
+            "id": "PB-CRM-01",
+            "title": "CRM worker credential cache not refreshed",
+            "root_cause": "The sync worker kept using the old integration credential after token rotation.",
+            "match_reason": "Matches the CRM token-rotation incident family.",
+            "similarity_score": 0.71,
+            "_advisor_cluster_id": "crm_integration",
+        },
+    ]
+
+    payload = build_cause_analysis_payload(ticket=ticket, resolver_output=resolver_output, lang="en")
+
+    assert payload.type == "cause_analysis"
+    combined_text = " ".join(
+        [payload.summary]
+        + [candidate.title for candidate in payload.possible_causes]
+        + [candidate.explanation for candidate in payload.possible_causes]
+    ).lower()
+    assert "vpn" not in combined_text
+    assert "mfa" not in combined_text
+    assert "split-tunnel" not in combined_text
+    assert payload.possible_causes[0].title == "Worker process did not reload rotated integration credentials"
+
+
+def test_build_insufficient_evidence_payload_filters_recommended_checks_to_selected_family() -> None:
+    ticket = _ticket(
+        ticket_id="TW-MOCK-025",
+        title="Payroll export writes invalid date columns",
+        description="Payroll export produces broken date values.",
+        status=TicketStatus.open,
+        priority=TicketPriority.medium,
+        category=TicketCategory.application,
+        assignee="Karim Benali",
+        reporter="Finance Lead",
+        created_at=dt.datetime.now(dt.timezone.utc),
+    )
+    resolver_output = _resolver_output(confidence=0.41, root_cause="Payroll export date serialization drift")
+    resolver_output.retrieval["query_context"] = {
+        "query": "Payroll export writes invalid date columns",
+        "title": "Payroll export writes invalid date columns",
+        "topics": ["payroll_export", "notification_distribution"],
+        "domains": ["application"],
+        "metadata": {"category": "application"},
+    }
+    resolver_output.retrieval["evidence_clusters"] = {
+        "selected_cluster_id": "payroll_export",
+        "clusters": [
+            {"cluster_id": "payroll_export", "dominant_topic": "payroll_export"},
+            {"cluster_id": "notification_distribution", "dominant_topic": "notification_distribution"},
+        ],
+    }
+    resolver_output.validation_steps = [
+        "Send one controlled approval notice and confirm it reaches the expected manager recipient.",
+        "Generate one control export and validate the corrected date columns in the downstream import.",
+    ]
+    resolver_output.next_best_actions = [
+        "Verify the payroll approval notification distribution rule and confirm the expected manager recipient mapping.",
+        "Verify the payroll export formatter and the date-column mapping before the next import.",
+    ]
+    resolver_output.fallback_action = "Verify the distribution rule or recipient mapping with a controlled test."
+
+    payload = build_insufficient_evidence_payload(resolver_output=resolver_output, ticket=ticket, lang="en")
+
+    assert payload.type == "insufficient_evidence"
+    assert payload.recommended_next_checks
+    combined_text = " ".join(payload.recommended_next_checks).lower()
+    assert "export" in combined_text or "date" in combined_text
+    assert "recipient" not in combined_text
+    assert "approval notice" not in combined_text
 
 
 def test_handle_chat_similar_ticket_query_returns_structured_matches(monkeypatch) -> None:

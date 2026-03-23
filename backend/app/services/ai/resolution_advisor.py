@@ -404,6 +404,26 @@ def _topic_signals(tokens: set[str]) -> set[str]:
     return topics
 
 
+def _ordered_topic_matches(tokens: set[str]) -> list[str]:
+    scored: list[tuple[int, int, str]] = []
+    for index, (topic, hints) in enumerate(_TOPIC_HINTS.items()):
+        overlap = len(tokens.intersection(hints))
+        if overlap:
+            scored.append((overlap, index, topic))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [topic for _, _, topic in scored]
+
+
+def _ordered_domain_matches(tokens: set[str]) -> list[str]:
+    scored: list[tuple[int, int, str]] = []
+    for index, (category, hints) in enumerate(_CATEGORY_HINTS.items()):
+        overlap = len(tokens.intersection(hints))
+        if overlap:
+            scored.append((overlap, index, category))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [category for _, _, category in scored]
+
+
 def _strong_signal_terms(tokens: set[str]) -> set[str]:
     return {token for token in tokens if token in _HIGH_SIGNAL_VOCAB and token not in _LOW_SIGNAL_TOKENS}
 
@@ -430,10 +450,10 @@ def _query_context(retrieval: dict[str, Any]) -> dict[str, Any]:
             strong_terms.append(token)
         topics = [str(token).strip().lower() for token in list(context.get("topics") or []) if str(token).strip()]
         if not topics:
-            topics = list(_topic_signals(context_tokens))
+            topics = _ordered_topic_matches(context_tokens)
         domains = [str(token).strip().lower() for token in list(context.get("domains") or []) if str(token).strip()]
         if not domains:
-            domains = list(_domain_signals(context_tokens))
+            domains = _ordered_domain_matches(context_tokens)
         return {
             "query": _normalize_text(context.get("query")),
             "title": _normalize_text(context.get("title")),
@@ -449,7 +469,7 @@ def _query_context(retrieval: dict[str, Any]) -> dict[str, Any]:
     query = _normalize_text(retrieval.get("query"))
     query_tokens = list(_meaningful_tokens(query))
     strong_terms = [token for token in query_tokens if token in _HIGH_SIGNAL_VOCAB][:10]
-    topics = list(_topic_signals(set(query_tokens)))
+    topics = _ordered_topic_matches(set(query_tokens))
     return {
         "query": query,
         "title": query,
@@ -458,7 +478,7 @@ def _query_context(retrieval: dict[str, Any]) -> dict[str, Any]:
         "title_tokens": query_tokens[:6],
         "focus_terms": query_tokens[:6],
         "strong_terms": strong_terms,
-        "domains": list(_domain_signals(set(query_tokens))),
+        "domains": _ordered_domain_matches(set(query_tokens)),
         "topics": topics,
         "metadata": {},
     }
@@ -805,6 +825,45 @@ def _match_summary(query_context: dict[str, Any], primary: EvidenceCandidate, su
     return f"Matched on {joined}."
 
 
+def _problem_candidate_relevant_for_root_cause(candidate: EvidenceCandidate) -> bool:
+    if candidate.topic_mismatch or candidate.domain_mismatch:
+        return (
+            candidate.exact_focus_hits >= 1
+            or candidate.exact_strong_hits >= 1
+            or candidate.strong_overlap >= 0.14
+            or candidate.relevance >= 0.18
+            or candidate.coherence_score >= 0.32
+        )
+    return True
+
+
+def _problem_candidate_matches_selected_cluster(
+    row: dict[str, Any],
+    candidate: EvidenceCandidate,
+    *,
+    selected_cluster_id: str | None,
+) -> bool:
+    if not selected_cluster_id:
+        return True
+    explicit_problem_cluster_id = str(row.get("cluster_id") or "").strip().lower() or None
+    derived_problem_cluster_id = str(row.get("_advisor_cluster_id") or "").strip().lower() or None
+    if explicit_problem_cluster_id:
+        return explicit_problem_cluster_id == selected_cluster_id
+    if derived_problem_cluster_id == selected_cluster_id:
+        return True
+    if candidate.cluster_id == selected_cluster_id:
+        return True
+    if candidate.topic_mismatch or candidate.domain_mismatch:
+        return False
+    return (
+        candidate.exact_focus_hits >= 1
+        or candidate.exact_strong_hits >= 1
+        or candidate.strong_overlap >= 0.18
+        or candidate.relevance >= 0.22
+        or candidate.coherence_score >= 0.45
+    )
+
+
 def build_root_cause(
     retrieval: dict[str, Any],
     *,
@@ -817,13 +876,13 @@ def build_root_cause(
     root_problem_ref = None
     for row in list(retrieval.get("related_problems") or []):
         problem_candidate = _candidate_from_problem(row, query_context=query_context)
-        if problem_candidate is None or not _passes_relevance_gate(problem_candidate, allow_weak=True):
+        if problem_candidate is None or not _problem_candidate_relevant_for_root_cause(problem_candidate):
             continue
-        if (
-            selected_cluster_id
-            and problem_candidate.cluster_id != selected_cluster_id
-            and problem_candidate.relevance < 0.32
-            and problem_candidate.exact_focus_hits < 2
+        # Root-cause text must stay inside the selected incident family.
+        if not _problem_candidate_matches_selected_cluster(
+            row,
+            problem_candidate,
+            selected_cluster_id=selected_cluster_id,
         ):
             continue
         root_text = _normalize_text(row.get("root_cause"))
@@ -912,31 +971,29 @@ def extract_ticket_operational_signals(
         combined_tokens.update(_meaningful_tokens(text))
     matched_terms = _match_terms(query_context, *evidence_texts, limit=6)
     query_terms = _ordered_query_terms(query_context)
+    signal_tokens = combined_tokens.union(query_terms)
     dominant_topic = next((topic for topic in list(query_context.get("topics") or []) if topic in _TOPIC_HINTS), None)
     if not dominant_topic and primary.cluster_id in _TOPIC_HINTS:
         dominant_topic = primary.cluster_id
     if not dominant_topic:
-        for topic, hints in _TOPIC_HINTS.items():
-            if combined_tokens.intersection(hints):
-                dominant_topic = topic
-                break
+        dominant_topic = next(iter(_ordered_topic_matches(signal_tokens)), None)
     topic_terms = list(_TOPIC_HINTS.get(dominant_topic or "", set()))
     subject = _subject_label(query_context) or ", ".join(matched_terms[:3])
     return {
         "dominant_topic": dominant_topic,
         "query_terms": query_terms,
         "matched_terms": matched_terms,
-        "combined_tokens": combined_tokens,
+        "combined_tokens": signal_tokens,
         "subject": subject,
         "topic_terms": topic_terms,
         "primary_reference": primary.reference,
         "support_references": [candidate.reference for candidate in support[:3] if candidate.reference],
-        "integration_auth": bool(combined_tokens.intersection({"crm", "sync", "integration", "worker", "job", "scheduler"}) and combined_tokens.intersection({"token", "oauth", "credential", "secret", "auth", "authentication"})),
-        "export_mapping": bool(combined_tokens.intersection({"export", "csv", "date", "formatter", "parser", "serializer", "mapping", "schema", "import"})),
-        "mail_routing": bool(combined_tokens.intersection({"mail", "email", "relay", "connector", "forwarding", "distribution", "mailbox", "queue"})),
-        "network_access": bool(combined_tokens.intersection({"vpn", "route", "routing", "gateway", "dns", "remote", "tunnel", "mfa"})),
-        "auth_path": bool(combined_tokens.intersection({"auth", "authentication", "sso", "certificate", "signin", "login", "token", "policy"})),
-        "notification_distribution": bool(combined_tokens.intersection({"distribution", "notification", "recipient", "approval", "manager", "managers", "notice", "notices"})),
+        "integration_auth": bool(signal_tokens.intersection({"crm", "sync", "integration", "worker", "job", "scheduler"}) and signal_tokens.intersection({"token", "oauth", "credential", "secret", "auth", "authentication"})),
+        "export_mapping": bool(signal_tokens.intersection({"export", "csv", "date", "formatter", "parser", "serializer", "mapping", "schema", "import"})),
+        "mail_routing": bool(signal_tokens.intersection({"mail", "email", "relay", "connector", "forwarding", "distribution", "mailbox", "queue"})),
+        "network_access": bool(signal_tokens.intersection({"vpn", "route", "routing", "gateway", "dns", "remote", "tunnel", "mfa"})),
+        "auth_path": bool(signal_tokens.intersection({"auth", "authentication", "sso", "certificate", "signin", "login", "token", "policy"})),
+        "notification_distribution": bool(signal_tokens.intersection({"distribution", "notification", "recipient", "approval", "manager", "managers", "notice", "notices"})),
     }
 
 
@@ -1061,6 +1118,7 @@ def build_grounded_actions(
         support=support,
         probable_root_cause=probable_root_cause,
     )
+    preferred_family = _preferred_signal_topic(signals)
     matched_terms = list(signals.get("matched_terms") or [])
     subject = str(signals.get("subject") or "affected workflow").strip()
     evidence_rows = _action_step_evidence(
@@ -1096,7 +1154,7 @@ def build_grounded_actions(
         if bound is not None:
             action_steps.append(bound)
 
-    if signals["integration_auth"] or signals.get("dominant_topic") == "crm_integration":
+    if preferred_family == "crm_integration":
         templates = [
             (
                 "Verify the CRM integration token currently stored after the recent token rotation."
@@ -1131,7 +1189,7 @@ def build_grounded_actions(
             bound = bind_action_to_evidence(step=len(action_steps) + 1, text=text, reason=reason, evidence=evidence_rows)
             if bound is not None:
                 action_steps.append(bound)
-    elif signals["notification_distribution"] or signals.get("dominant_topic") == "notification_distribution":
+    elif preferred_family == "notification_distribution":
         templates = [
             (
                 "Verify the payroll approval notification distribution rule and confirm the expected manager recipient mapping."
@@ -1148,7 +1206,7 @@ def build_grounded_actions(
             bound = bind_action_to_evidence(step=len(action_steps) + 1, text=text, reason=default_reason, evidence=evidence_rows)
             if bound is not None:
                 action_steps.append(bound)
-    elif signals["export_mapping"] or signals.get("dominant_topic") == "payroll_export":
+    elif preferred_family == "payroll_export":
         templates = [
             (
                 "Verify the payroll export formatter and the date-column mapping before the next import."
@@ -1183,7 +1241,7 @@ def build_grounded_actions(
             bound = bind_action_to_evidence(step=len(action_steps) + 1, text=text, reason=reason, evidence=evidence_rows)
             if bound is not None:
                 action_steps.append(bound)
-    elif signals["mail_routing"] or signals.get("dominant_topic") == "mail_transport":
+    elif preferred_family == "mail_transport":
         templates = [
             (
                 "Verify the affected relay, connector, or forwarding rule configuration on the current mail path."
@@ -1200,7 +1258,7 @@ def build_grounded_actions(
             bound = bind_action_to_evidence(step=len(action_steps) + 1, text=text, reason=default_reason, evidence=evidence_rows)
             if bound is not None:
                 action_steps.append(bound)
-    elif signals["network_access"] or signals.get("dominant_topic") == "network_access":
+    elif preferred_family == "network_access":
         templates = [
             (
                 "Verify the VPN route, gateway, or policy path that matches the affected access flow."
@@ -1217,7 +1275,7 @@ def build_grounded_actions(
             bound = bind_action_to_evidence(step=len(action_steps) + 1, text=text, reason=default_reason, evidence=evidence_rows)
             if bound is not None:
                 action_steps.append(bound)
-    elif signals["auth_path"]:
+    elif preferred_family == "auth_path":
         templates = [
             (
                 "Verify the relevant authentication token, certificate, or policy state on the affected sign-in path."
@@ -1629,6 +1687,43 @@ def _validation_step(query_context: dict[str, Any], *, lang: str) -> str:
     integration_tokens = {"crm", "sync", "integration", "worker", "job", "scheduler", "token", "oauth", "credential", "secret", "requeue"}
     auth_tokens = {"auth", "sso", "token", "certificate"}
     network_tokens = {"vpn", "dns", "route", "mfa", "remote", "gateway"}
+    preferred_topic = _preferred_query_topic(query_context)
+    if preferred_topic == "crm_integration":
+        return (
+            "Retestez le service d'integration avec un element affecte et confirmez que le worker recharge bien le credential ou token attendu."
+            if lang == "fr"
+            else "Retest the integration on an affected record and confirm the worker reloaded the expected credential or token."
+        )
+    if preferred_topic == "notification_distribution":
+        return (
+            "Envoyez un avis d'approbation controle et confirmez qu'il atteint le responsable destinataire attendu."
+            if lang == "fr"
+            else "Send one controlled approval notice and confirm it reaches the expected manager recipient."
+        )
+    if preferred_topic == "payroll_export":
+        return (
+            "Generez un export de controle et validez les champs corriges avant cloture."
+            if lang == "fr"
+            else "Generate a control export and validate the corrected fields before closure."
+        )
+    if preferred_topic == "mail_transport":
+        return (
+            "Envoyez un test controle et confirmez que le routage ou le transfert est retabli."
+            if lang == "fr"
+            else "Send a controlled test and confirm routing or forwarding is restored."
+        )
+    if preferred_topic == "network_access":
+        return (
+            "Retestez la connectivite ou la connexion avec un utilisateur distant affecte."
+            if lang == "fr"
+            else "Retest connectivity or sign-in with an affected remote user."
+        )
+    if preferred_topic == "auth_path":
+        return (
+            "Retestez l'acces ou la connexion pour un utilisateur affecte et confirmez l'etat de la politique."
+            if lang == "fr"
+            else "Retest access or sign-in for an affected user and confirm the policy state."
+        )
     if tokens.intersection(integration_tokens):
         return (
             "Retestez le service d'integration avec un element affecte et confirmez que le worker recharge bien le credential ou token attendu."
@@ -2099,6 +2194,13 @@ def _candidate_from_problem(row: dict[str, Any], *, query_context: dict[str, Any
     )
 
 
+def _annotate_related_problem_row(row: dict[str, Any], candidate: EvidenceCandidate) -> None:
+    row["_advisor_cluster_id"] = candidate.cluster_id
+    row["_advisor_relevance"] = round(float(candidate.relevance), 4)
+    row["_advisor_exact_focus_hits"] = int(candidate.exact_focus_hits)
+    row["_advisor_exact_strong_hits"] = int(candidate.exact_strong_hits)
+
+
 def _build_buckets(retrieval: dict[str, Any], *, query_context: dict[str, Any]) -> list[list[EvidenceCandidate]]:
     resolved: list[EvidenceCandidate] = []
     similar: list[EvidenceCandidate] = []
@@ -2129,6 +2231,7 @@ def _build_buckets(retrieval: dict[str, Any], *, query_context: dict[str, Any]) 
     for row in list(retrieval.get("related_problems") or []):
         candidate = _candidate_from_problem(row, query_context=query_context)
         if candidate is not None:
+            _annotate_related_problem_row(row, candidate)
             problem_rows.append(candidate)
 
     return [
@@ -2359,6 +2462,33 @@ def _subject_terms(query_context: dict[str, Any], *, limit: int = 4) -> list[str
     return [term for term in terms if term][:limit]
 
 
+def _preferred_query_topic(query_context: dict[str, Any]) -> str | None:
+    for topic in list(query_context.get("topics") or []):
+        normalized = str(topic or "").strip().lower()
+        if normalized in _TOPIC_HINTS:
+            return normalized
+    return None
+
+
+def _preferred_signal_topic(signals: dict[str, Any]) -> str | None:
+    dominant_topic = str(signals.get("dominant_topic") or "").strip().lower()
+    if dominant_topic in _TOPIC_HINTS:
+        return dominant_topic
+    if signals.get("integration_auth"):
+        return "crm_integration"
+    if signals.get("export_mapping"):
+        return "payroll_export"
+    if signals.get("notification_distribution"):
+        return "notification_distribution"
+    if signals.get("mail_routing"):
+        return "mail_transport"
+    if signals.get("network_access"):
+        return "network_access"
+    if signals.get("auth_path"):
+        return "auth_path"
+    return None
+
+
 def _safe_diagnostic_action(query_context: dict[str, Any], *, lang: str) -> str | None:
     terms = _subject_terms(query_context)
     if not terms:
@@ -2369,6 +2499,44 @@ def _safe_diagnostic_action(query_context: dict[str, Any], *, lang: str) -> str 
     network_tokens = {"vpn", "mfa", "signin", "login", "gateway", "route", "split", "dns", "remote"}
     category = str((query_context.get("metadata") or {}).get("category") or "").strip().lower()
     subject = ", ".join(terms[:3])
+    preferred_topic = _preferred_query_topic(query_context)
+
+    if preferred_topic == "payroll_export":
+        return (
+            "Verifiez le formatteur d'export, comparez les colonnes de dates avec un export valide, puis confirmez le mapping attendu avant nouvel import."
+            if lang == "fr"
+            else "Verify the export formatter, compare the date columns against a known-good export, and confirm the expected mapping before re-import."
+        )
+    if preferred_topic == "notification_distribution":
+        return (
+            "Verifiez la regle de distribution des notifications d'approbation paie et confirmez le mapping attendu des responsables destinataires."
+            if lang == "fr"
+            else "Verify the payroll approval notification distribution rule and confirm the expected manager recipient mapping."
+        )
+    if preferred_topic == "crm_integration":
+        return (
+            "Verifiez que le credential ou token d'integration tourne est valide, confirmez que le worker de synchronisation a recharge la nouvelle valeur, puis inspectez les journaux du worker pour une erreur d'authentification ou de reprise."
+            if lang == "fr"
+            else "Verify the rotated integration credential or token is valid, confirm the sync worker reloaded the new value, and inspect the worker logs for authentication or retry failures."
+        )
+    if preferred_topic == "mail_transport":
+        return (
+            "Verifiez la regle de distribution ou le mapping des destinataires, puis confirmez le routage attendu avec un test controle."
+            if lang == "fr"
+            else "Verify the distribution rule or recipient mapping, then confirm the expected routing with a controlled test."
+        )
+    if preferred_topic == "network_access":
+        return (
+            "Verifiez la configuration de session ou de routage VPN et retestez l'acces avec un utilisateur affecte."
+            if lang == "fr"
+            else "Verify the VPN session or routing configuration and retest access with an affected user."
+        )
+    if preferred_topic == "auth_path":
+        return (
+            "Verifiez la politique d'authentification ou le certificat concerne, puis retestez l'acces attendu."
+            if lang == "fr"
+            else "Verify the relevant authentication policy or certificate, then retest the expected access path."
+        )
 
     if {"payroll", "distribution", "approval"}.issubset(tokens):
         return (

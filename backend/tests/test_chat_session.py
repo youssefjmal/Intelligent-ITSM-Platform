@@ -26,6 +26,7 @@ def test_build_chat_session_trims_recent_history_and_keeps_summary() -> None:
 def test_resolve_contextual_reference_supports_second_one_and_previous_one() -> None:
     session = build_chat_session(
         [
+            ChatMessage(role="user", content="Show high SLA tickets"),
             ChatMessage(role="assistant", content="Matching tickets: TW-MOCK-010 TW-MOCK-011 TW-MOCK-012"),
             ChatMessage(role="user", content="Show me details of TW-MOCK-019"),
             ChatMessage(role="assistant", content="Ticket TW-MOCK-019 details:"),
@@ -57,3 +58,49 @@ def test_resolve_comparison_targets_uses_last_two_ticket_mentions() -> None:
 
     assert current_ticket == "TW-MOCK-025"
     assert previous_ticket == "TW-MOCK-019"
+
+
+def test_build_chat_session_keeps_user_selected_ticket_sticky_despite_assistant_suggestions() -> None:
+    session = build_chat_session(
+        [
+            ChatMessage(role="user", content="Show me details of TW-MOCK-025"),
+            ChatMessage(
+                role="assistant",
+                content=(
+                    "Ticket TW-MOCK-025 details.\n"
+                    "Related suggestions: TW-MOCK-013, TW-MOCK-032, TW-MOCK-008"
+                ),
+            ),
+        ]
+    )
+
+    ticket_id, source = resolve_contextual_reference("What should I do next for this ticket?", session)
+
+    assert session.last_ticket_id == "TW-MOCK-025"
+    assert session.last_ticket_list == []
+    assert ticket_id == "TW-MOCK-025"
+    assert source == "context"
+
+
+def test_build_chat_session_captures_assistant_list_only_after_user_requested_list() -> None:
+    session = build_chat_session(
+        [
+            ChatMessage(role="user", content="Show high SLA tickets"),
+            ChatMessage(
+                role="assistant",
+                content=(
+                    "Matching tickets:\n"
+                    "- TW-MOCK-010\n"
+                    "- TW-MOCK-011\n"
+                    "- TW-MOCK-012"
+                ),
+            ),
+        ]
+    )
+
+    second_ticket, source = resolve_list_reference("Show me the second one", session)
+
+    assert session.last_ticket_id is None
+    assert session.last_ticket_list == ["TW-MOCK-010", "TW-MOCK-011", "TW-MOCK-012"]
+    assert second_ticket == "TW-MOCK-011"
+    assert source == "list_position"

@@ -64,6 +64,8 @@ _IMPLICIT_REFERENCE_HINTS = {
     "this ticket",
     "that ticket",
     "the ticket",
+    "this one",
+    "that one",
     "this issue",
     "that issue",
     "this incident",
@@ -239,6 +241,21 @@ class ChatSession:
         return [{"role": turn.role, "content": turn.text} for turn in self.recent_messages]
 
 
+def _is_list_request_intent(text: str, *, detected_intent: str) -> bool:
+    normalized = _normalize_intent_text(text)
+    if detected_intent in {"ticket_list", "similar_tickets"}:
+        return True
+    return "tickets" in normalized and any(token in normalized for token in {"show", "list", "similar", "related", "matching"})
+
+
+def _record_active_ticket(session: ChatSession, ticket_id: str) -> None:
+    normalized = _normalize_text(ticket_id).upper()
+    if not normalized:
+        return
+    session.last_ticket_id = normalized
+    _ticket_order_append(session.ticket_reference_order, normalized)
+
+
 def append_recent_message(session: ChatSession, message: MessageTurn, *, max_turns: int = 8) -> ChatSession:
     session.recent_messages.append(message)
     return trim_recent_history(session, max_turns=max_turns)
@@ -276,6 +293,7 @@ def build_chat_session(messages: Any, *, max_recent: int = 8) -> ChatSession:
 
     session = ChatSession()
     rows = list(messages or []) if isinstance(messages, (list, tuple)) else list(getattr(messages, "messages", None) or [])
+    pending_ticket_list = False
     for index, raw in enumerate(rows, start=1):
         role = _message_role(raw)
         text = _message_content(raw)
@@ -298,22 +316,35 @@ def build_chat_session(messages: Any, *, max_recent: int = 8) -> ChatSession:
         )
         if role == "user":
             session.last_intent = detected_intent
+            pending_ticket_list = _is_list_request_intent(text, detected_intent=detected_intent)
         elif response_type:
             session.last_response_type = response_type
-        if ticket_ids:
-            for ticket_id in ticket_ids:
-                _ticket_order_append(session.ticket_reference_order, ticket_id)
+        if role == "user":
             if len(ticket_ids) == 1:
-                session.last_ticket_id = ticket_ids[0]
-            else:
-                session.last_ticket_list = ticket_ids[:8]
-                session.last_related_ticket_ids = ticket_ids[1:4]
+                _record_active_ticket(session, ticket_ids[0])
+            elif len(ticket_ids) >= 2:
                 if detected_intent == "compare":
                     session.compared_ticket_ids = ticket_ids[:2]
-        elif detected_intent == "compare":
-            previous_ticket = _previous_ticket_id(session)
-            if session.last_ticket_id and previous_ticket and previous_ticket != session.last_ticket_id:
-                session.compared_ticket_ids = [previous_ticket, session.last_ticket_id]
+                    for ticket_id in ticket_ids[:2]:
+                        _record_active_ticket(session, ticket_id)
+                else:
+                    session.last_ticket_list = ticket_ids[:8]
+            else:
+                resolved_ticket_id, _ = resolve_contextual_reference(text, session)
+                if resolved_ticket_id:
+                    _record_active_ticket(session, resolved_ticket_id)
+                if detected_intent == "compare":
+                    current_ticket, previous_ticket = resolve_comparison_targets(text, session)
+                    if current_ticket and previous_ticket:
+                        session.compared_ticket_ids = [previous_ticket, current_ticket]
+        elif ticket_ids:
+            if len(ticket_ids) > 1:
+                session.last_related_ticket_ids = ticket_ids[:4]
+                if pending_ticket_list:
+                    session.last_ticket_list = ticket_ids[:8]
+            pending_ticket_list = False
+        elif role == "assistant" and pending_ticket_list:
+            pending_ticket_list = False
         topic = _detect_topic(text)
         if topic:
             session.active_topic = topic
@@ -362,7 +393,11 @@ def resolve_contextual_reference(text: str, session: ChatSession) -> tuple[str |
             if ticket_id != session.last_ticket_id:
                 return ticket_id, "comparison_context"
 
-    if _contains_any(normalized, _IMPLICIT_REFERENCE_HINTS) or _is_short_followup(text) or _contains_any(normalized, _DETAIL_HINTS.union(_GUIDANCE_HINTS).union(_CAUSE_HINTS)):
+    if (
+        _contains_any(normalized, _IMPLICIT_REFERENCE_HINTS)
+        or _is_short_followup(text)
+        or _contains_any(normalized, _DETAIL_HINTS.union(_GUIDANCE_HINTS).union(_CAUSE_HINTS).union(_SIMILAR_HINTS))
+    ):
         if session.last_ticket_id:
             return session.last_ticket_id, "context"
     return None, "none"

@@ -460,6 +460,36 @@ def test_resolution_advice_returns_tentative_diagnostic_for_aligned_weak_evidenc
     assert 0.22 <= advice["action_relevance_score"] <= 1.0
 
 
+def test_resolution_advice_fallback_respects_selected_export_family_over_notification_tokens() -> None:
+    retrieval = {
+        "query_context": {
+            "query": "Payroll export approval file writes invalid date columns",
+            "title": "Payroll export approval file writes invalid date columns",
+            "description": "The export is produced, but the date columns break the downstream import schema.",
+            "tokens": ["payroll", "export", "approval", "date", "columns", "invalid", "mapping", "import"],
+            "title_tokens": ["payroll", "export", "date", "columns", "mapping"],
+            "focus_terms": ["export", "date", "mapping", "import"],
+            "topics": ["payroll_export", "notification_distribution"],
+            "domains": ["application"],
+            "metadata": {"category": "application"},
+        },
+        "similar_tickets": [],
+        "kb_articles": [],
+        "solution_recommendations": [],
+        "related_problems": [],
+        "source": "fallback_rules",
+    }
+
+    advice = build_resolution_advice(retrieval, lang="en")
+
+    assert advice is not None
+    assert advice["display_mode"] == "no_strong_match"
+    assert advice["fallback_action"] is not None
+    assert "export" in advice["fallback_action"].lower()
+    assert "notification" not in advice["fallback_action"].lower()
+    assert "recipient" not in advice["fallback_action"].lower()
+
+
 def test_resolution_advice_prefers_context_aligned_export_fix_over_unrelated_higher_similarity() -> None:
     retrieval = {
         "query_context": {
@@ -977,3 +1007,99 @@ def test_resolution_advice_composes_only_from_selected_cluster_evidence() -> Non
     assert "csv" not in combined_text
     assert "export" not in combined_text
     assert "workbook" not in combined_text
+
+
+def test_resolution_advice_root_cause_stays_inside_selected_cluster() -> None:
+    retrieval = {
+        "query_context": {
+            "query": "CRM sync job stalls after token rotation",
+            "title": "CRM sync job stalls after token rotation",
+            "description": "The scheduled CRM sync starts on time, but it stalls after token rotation and never writes the latest contact updates.",
+            "tokens": ["crm", "sync", "job", "stalls", "token", "rotation", "contact", "updates", "worker", "integration"],
+            "title_tokens": ["crm", "sync", "job", "stalls", "token", "rotation"],
+            "focus_terms": ["crm", "sync", "token", "rotation", "worker", "integration"],
+            "domains": ["infrastructure", "security"],
+            "metadata": {"category": "infrastructure"},
+        },
+        "similar_tickets": [
+            {
+                "id": "TW-CRM-3",
+                "title": "CRM worker stalled after expired token cache",
+                "status": "resolved",
+                "resolution_snippet": "Reload the CRM worker token cache, restart the sync worker, and requeue the stalled contacts.",
+                "similarity_score": 0.79,
+                "context_score": 0.61,
+                "lexical_overlap": 0.32,
+                "title_overlap": 0.3,
+                "strong_overlap": 0.3,
+                "cluster_id": "crm_integration",
+                "coherence_score": 0.76,
+            }
+        ],
+        "kb_articles": [],
+        "solution_recommendations": [
+            {
+                "text": "Reload the CRM worker token cache, restart the sync worker, and confirm contact updates resume.",
+                "source": "jira_comment",
+                "source_id": "TEAMWILL-CRM-3",
+                "quality_score": 0.82,
+                "confidence": 0.8,
+                "context_score": 0.58,
+                "lexical_overlap": 0.29,
+                "strong_overlap": 0.28,
+                "cluster_id": "crm_integration",
+                "coherence_score": 0.74,
+            }
+        ],
+        "related_problems": [
+            {
+                "id": "PB-VPN-01",
+                "title": "VPN sessions time out after policy cleanup",
+                "root_cause": "A recent VPN policy cleanup left the MFA session timeout and split-tunnel routes out of sync for several user groups.",
+                "match_reason": "Direct semantic/lexical match from problem knowledge",
+                "similarity_score": 0.93,
+                "context_score": 0.34,
+                "lexical_overlap": 0.18,
+                "title_overlap": 0.16,
+                "strong_overlap": 0.1,
+                "topic_overlap": 0.0,
+                "cluster_id": "network_access",
+                "coherence_score": 0.36,
+                "topic_mismatch": True,
+                "domain_mismatch": True,
+            },
+            {
+                "id": "PB-CRM-01",
+                "title": "CRM worker credential cache not refreshed",
+                "root_cause": "The sync worker kept using the old integration credential after token rotation.",
+                "match_reason": "Matches the CRM token-rotation incident family.",
+                "similarity_score": 0.71,
+                "context_score": 0.57,
+                "lexical_overlap": 0.27,
+                "title_overlap": 0.24,
+                "strong_overlap": 0.24,
+                "topic_overlap": 0.5,
+                "cluster_id": "crm_integration",
+                "coherence_score": 0.73,
+            },
+        ],
+        "source": "hybrid_jira_local",
+    }
+
+    advice = build_resolution_advice(retrieval, lang="en")
+
+    assert advice is not None
+    assert advice["display_mode"] == "evidence_action"
+    assert advice["root_cause"] == "The sync worker kept using the old integration credential after token rotation."
+    assert {row["reference"] for row in advice["evidence_sources"]}.issubset({"TW-CRM-3", "TEAMWILL-CRM-3", "PB-CRM-01"})
+    combined_text = " ".join(
+        [
+            advice["root_cause"] or "",
+            advice["reasoning"],
+            " ".join(advice["why_this_matches"]),
+            " ".join(step["excerpt"] for step in advice["evidence_sources"]),
+        ]
+    ).lower()
+    assert "vpn" not in combined_text
+    assert "mfa" not in combined_text
+    assert "split-tunnel" not in combined_text

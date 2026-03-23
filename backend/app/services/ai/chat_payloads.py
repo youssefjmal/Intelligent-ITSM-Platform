@@ -39,6 +39,13 @@ _ACTIVE_STATUSES = {
     TicketStatus.waiting_for_support_vendor.value,
     TicketStatus.pending.value,
 }
+_TOPIC_STEP_HINTS = {
+    "crm_integration": {"crm", "sync", "worker", "token", "oauth", "credential", "integration"},
+    "payroll_export": {"export", "date", "formatter", "parser", "schema", "import", "csv", "workbook", "serializer"},
+    "notification_distribution": {"distribution", "notification", "recipient", "approval", "manager", "notice"},
+    "mail_transport": {"mail", "email", "relay", "connector", "forwarding", "mailbox", "queue"},
+    "network_access": {"vpn", "route", "routing", "gateway", "dns", "remote", "tunnel", "mfa"},
+}
 
 
 def _iso_or_none(value: Any) -> str | None:
@@ -273,6 +280,72 @@ def _evidence_references(evidence_sources: list[Any], *, limit: int = 3) -> list
     return [item.reference for item in evidence_sources[:limit] if _string_or_none(getattr(item, "reference", None))]
 
 
+def _selected_cluster_id(resolver_output: ResolverOutput | None) -> str | None:
+    if resolver_output is None:
+        return None
+    cluster_summary = dict((resolver_output.retrieval or {}).get("evidence_clusters") or {})
+    return _string_or_none(cluster_summary.get("selected_cluster_id"))
+
+
+def _selected_cluster_topic(resolver_output: ResolverOutput | None) -> str | None:
+    if resolver_output is None:
+        return None
+    cluster_summary = dict((resolver_output.retrieval or {}).get("evidence_clusters") or {})
+    selected_cluster_id = _selected_cluster_id(resolver_output)
+    for cluster in list(cluster_summary.get("clusters") or []):
+        cluster_id = _string_or_none(cluster.get("cluster_id"))
+        dominant_topic = _string_or_none(cluster.get("dominant_topic"))
+        if selected_cluster_id and cluster_id and cluster_id.casefold() == selected_cluster_id.casefold():
+            return dominant_topic or cluster_id
+    query_context = dict((resolver_output.retrieval or {}).get("query_context") or {})
+    for topic in list(query_context.get("topics") or []):
+        normalized = _string_or_none(topic)
+        if normalized:
+            return normalized
+    return None
+
+
+def _recommended_checks_in_scope(resolver_output: ResolverOutput | None, *, limit: int = 3) -> list[str]:
+    rows = _dedupe_lines(
+        list(getattr(resolver_output, "validation_steps", []) or [])
+        + list(getattr(resolver_output, "next_best_actions", []) or [])
+        + ([resolver_output.fallback_action] if resolver_output and resolver_output.fallback_action else []),
+        limit=max(6, limit * 2),
+    )
+    preferred_topic = _selected_cluster_topic(resolver_output)
+    hints = set(_TOPIC_STEP_HINTS.get(str(preferred_topic or "").strip().lower()) or [])
+    if not hints:
+        return rows[:limit]
+    scoped = [
+        row
+        for row in rows
+        if any(hint in row.casefold() for hint in hints)
+    ]
+    return (scoped or rows)[:limit]
+
+
+def _related_problem_rows_in_scope(
+    rows: list[dict[str, Any]],
+    *,
+    resolver_output: ResolverOutput | None,
+    evidence_refs: list[str],
+) -> list[dict[str, Any]]:
+    selected_cluster_id = _selected_cluster_id(resolver_output)
+    if not selected_cluster_id:
+        return rows
+    scoped_rows: list[dict[str, Any]] = []
+    evidence_ref_keys = {str(ref).strip().casefold() for ref in evidence_refs if str(ref).strip()}
+    for row in rows:
+        row_id = _string_or_none(row.get("id"))
+        row_cluster_id = _string_or_none(row.get("_advisor_cluster_id") or row.get("cluster_id"))
+        if row_id and row_id.casefold() in evidence_ref_keys:
+            scoped_rows.append(row)
+            continue
+        if row_cluster_id and row_cluster_id.casefold() == selected_cluster_id.casefold():
+            scoped_rows.append(row)
+    return scoped_rows
+
+
 def _advice_reason_lines(advice: Any, *, limit: int = 4) -> list[str]:
     return _dedupe_lines(
         list(getattr(advice, "why_this_matches", []) or [])
@@ -342,12 +415,7 @@ def build_insufficient_evidence_payload(
             if lang == "en"
             else "Aucune cause racine concordante n'a ete confirmee."
         ]
-    recommended = _dedupe_lines(
-        list(getattr(resolver_output, "validation_steps", []) or [])
-        + list(getattr(resolver_output, "next_best_actions", []) or [])
-        + ([resolver_output.fallback_action] if resolver_output and resolver_output.fallback_action else []),
-        limit=3,
-    )
+    recommended = _recommended_checks_in_scope(resolver_output, limit=3)
     if not recommended:
         recommended = [
             "Collect one more verified technical signal before changing the system."
@@ -474,10 +542,14 @@ def build_cause_analysis_payload(
             lang=lang,
             summary=_string_or_none(advice.reasoning),
         )
-    related_rows = list((resolver_output.retrieval or {}).get("related_problems") or [])
+    evidence_refs = _evidence_references(advice.evidence_sources)
+    related_rows = _related_problem_rows_in_scope(
+        list((resolver_output.retrieval or {}).get("related_problems") or []),
+        resolver_output=resolver_output,
+        evidence_refs=evidence_refs,
+    )
     similar_refs = _related_ticket_refs(list((resolver_output.retrieval or {}).get("similar_tickets") or []))
     confidence = _confidence_from_resolver(resolver_output, lang=lang)
-    evidence_refs = _evidence_references(advice.evidence_sources)
     possible_causes: list[AIChatCauseCandidate] = []
     seen: set[str] = set()
 
