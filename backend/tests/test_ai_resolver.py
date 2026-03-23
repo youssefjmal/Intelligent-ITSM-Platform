@@ -243,6 +243,31 @@ def test_resolve_ticket_advice_filters_attempted_chat_steps_from_next_actions() 
     assert output.validation_steps
 
 
+def test_build_resolution_advice_model_keeps_probable_root_cause_unconfirmed() -> None:
+    advice = resolver.build_resolution_advice_model(
+        {
+            "recommended_action": "Generate one control export and validate the corrected date columns in the downstream import.",
+            "reasoning": "The strongest evidence stays in the payroll export/date-format family.",
+            "probable_root_cause": "Payroll export date serialization drift after the formatter update.",
+            "root_cause": None,
+            "confidence": 0.44,
+            "confidence_band": "low",
+            "confidence_label": "low",
+            "source_label": "local_lexical",
+            "recommendation_mode": "fallback_diagnostic",
+            "display_mode": "tentative_diagnostic",
+            "validation_steps": [
+                "Generate one control export and validate the corrected date columns in the downstream import.",
+            ],
+            "response_text": "Tentative diagnostic: validate the corrected export path before broader rollout.",
+        }
+    )
+
+    assert advice is not None
+    assert advice.probable_root_cause == "Payroll export date serialization drift after the formatter update."
+    assert advice.root_cause is None
+
+
 def test_handle_chat_no_strong_match_uses_resolver_first_reply(monkeypatch) -> None:
     monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: [])
     monkeypatch.setattr(orchestrator, "list_assignees", lambda db: [])

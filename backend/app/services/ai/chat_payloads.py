@@ -305,23 +305,43 @@ def _selected_cluster_topic(resolver_output: ResolverOutput | None) -> str | Non
     return None
 
 
-def _recommended_checks_in_scope(resolver_output: ResolverOutput | None, *, limit: int = 3) -> list[str]:
-    rows = _dedupe_lines(
-        list(getattr(resolver_output, "validation_steps", []) or [])
-        + list(getattr(resolver_output, "next_best_actions", []) or [])
-        + ([resolver_output.fallback_action] if resolver_output and resolver_output.fallback_action else []),
-        limit=max(6, limit * 2),
-    )
+def _lines_in_selected_family(
+    rows: list[str],
+    *,
+    resolver_output: ResolverOutput | None,
+    limit: int,
+) -> list[str]:
+    scoped_rows = _dedupe_lines(rows, limit=max(6, limit * 2))
     preferred_topic = _selected_cluster_topic(resolver_output)
     hints = set(_TOPIC_STEP_HINTS.get(str(preferred_topic or "").strip().lower()) or [])
     if not hints:
-        return rows[:limit]
+        return scoped_rows[:limit]
     scoped = [
         row
-        for row in rows
+        for row in scoped_rows
         if any(hint in row.casefold() for hint in hints)
     ]
-    return (scoped or rows)[:limit]
+    return (scoped or scoped_rows)[:limit]
+
+
+def _recommended_checks_in_scope(resolver_output: ResolverOutput | None, *, limit: int = 3) -> list[str]:
+    return _lines_in_selected_family(
+        list(getattr(resolver_output, "validation_steps", []) or [])
+        + list(getattr(resolver_output, "next_best_actions", []) or [])
+        + ([resolver_output.fallback_action] if resolver_output and resolver_output.fallback_action else []),
+        resolver_output=resolver_output,
+        limit=limit,
+    )
+
+
+def _validation_steps_in_scope(resolver_output: ResolverOutput | None, *, limit: int = 4) -> list[str]:
+    validation_rows = _lines_in_selected_family(
+        list(getattr(resolver_output, "validation_steps", []) or []),
+        resolver_output=resolver_output,
+        limit=limit,
+    )
+    missing_rows = _dedupe_lines(list(getattr(resolver_output, "missing_information", []) or []), limit=limit)
+    return _dedupe_lines(validation_rows + missing_rows, limit=limit)
 
 
 def _related_problem_rows_in_scope(
@@ -525,6 +545,81 @@ def _likelihood_from_score(score: float) -> str:
     return "low"
 
 
+def _supported_cause_hypothesis(
+    *,
+    advice: Any,
+    related_rows: list[dict[str, Any]],
+    evidence_refs: list[str],
+    confidence: AIChatConfidence,
+) -> bool:
+    if _string_or_none(getattr(advice, "root_cause", None)):
+        return True
+    if not _string_or_none(getattr(advice, "probable_root_cause", None)):
+        return False
+    if related_rows and evidence_refs:
+        return True
+    if confidence.level in {"medium", "high"} and len(evidence_refs) >= 2:
+        return True
+    return False
+
+
+def _cause_summary(
+    *,
+    title: str,
+    confidence: AIChatConfidence,
+    confirmed: bool,
+    lang: str,
+) -> str:
+    if lang == "fr":
+        if confirmed and confidence.level == "high":
+            return f"Cause la plus probable dans ce contexte : {title}."
+        return f"Aucune cause racine confirmee pour l'instant. Hypothese principale actuelle dans ce contexte : {title}."
+    if confirmed and confidence.level == "high":
+        return f"Most likely in-scope cause: {title}."
+    return f"No confirmed root cause yet. Strongest supported in-scope hypothesis: {title}."
+
+
+def _cause_explanation(
+    *,
+    advice: Any,
+    confirmed: bool,
+    related_rows: list[dict[str, Any]],
+    evidence_refs: list[str],
+    lang: str,
+) -> str:
+    base = _string_or_none(getattr(advice, "match_summary", None)) or _string_or_none(getattr(advice, "reasoning", None))
+    evidence_bits: list[str] = []
+    if related_rows:
+        evidence_bits.append(
+            "a scoped recurring problem pattern" if lang == "en" else "un schema de probleme recurrent dans le meme perimetre"
+        )
+    if len(evidence_refs) >= 2:
+        evidence_bits.append(
+            "multiple aligned evidence references" if lang == "en" else "plusieurs references de preuve alignees"
+        )
+    elif len(evidence_refs) == 1:
+        evidence_bits.append(
+            "one direct evidence reference" if lang == "en" else "une reference de preuve directe"
+        )
+    if confirmed:
+        return base or (
+            "This cause is the strongest match supported by the retrieved evidence."
+            if lang == "en"
+            else "Cette cause est la correspondance la plus forte soutenue par les preuves recuperees."
+        )
+    support_text = ""
+    if evidence_bits:
+        if lang == "en":
+            support_text = " It remains a hypothesis supported by " + " and ".join(evidence_bits) + "."
+        else:
+            support_text = " Cela reste une hypothese soutenue par " + " et ".join(evidence_bits) + "."
+    return (base or (
+        "Evidence is still limited, so this remains the leading in-scope hypothesis."
+        if lang == "en"
+        else "Les preuves restent limitees, donc cela reste l'hypothese principale dans ce contexte."
+    )) + support_text
+
+
 def build_cause_analysis_payload(
     *,
     ticket: Any | None,
@@ -550,20 +645,39 @@ def build_cause_analysis_payload(
     )
     similar_refs = _related_ticket_refs(list((resolver_output.retrieval or {}).get("similar_tickets") or []))
     confidence = _confidence_from_resolver(resolver_output, lang=lang)
+    if not _supported_cause_hypothesis(
+        advice=advice,
+        related_rows=related_rows,
+        evidence_refs=evidence_refs,
+        confidence=confidence,
+    ):
+        return build_insufficient_evidence_payload(
+            resolver_output=resolver_output,
+            ticket=ticket,
+            lang=lang,
+            summary=(
+                "Insufficient evidence to rank specific causes yet."
+                if lang == "en"
+                else "Preuves insuffisantes pour classer des causes specifiques pour le moment."
+            ),
+        )
     possible_causes: list[AIChatCauseCandidate] = []
     seen: set[str] = set()
 
-    primary_cause = _string_or_none(advice.root_cause or advice.probable_root_cause)
+    confirmed_cause = _string_or_none(advice.root_cause)
+    primary_cause = confirmed_cause or _string_or_none(advice.probable_root_cause)
     if primary_cause:
         seen.add(primary_cause.casefold())
         possible_causes.append(
             AIChatCauseCandidate(
                 title=primary_cause,
-                likelihood=_likelihood_from_score(float(advice.confidence or 0.0)),
-                explanation=_string_or_none(advice.reasoning) or _string_or_none(advice.match_summary) or (
-                    "This is the strongest current inference supported by retrieved evidence."
-                    if lang == "en"
-                    else "Il s'agit de l'inference actuelle la plus forte soutenue par les preuves recuperees."
+                likelihood="high" if confirmed_cause and confidence.level == "high" else _likelihood_from_score(float(advice.confidence or 0.0)),
+                explanation=_cause_explanation(
+                    advice=advice,
+                    confirmed=bool(confirmed_cause),
+                    related_rows=related_rows,
+                    evidence_refs=evidence_refs,
+                    lang=lang,
                 ),
                 evidence=evidence_refs,
                 related_tickets=similar_refs[:2],
@@ -607,23 +721,18 @@ def build_cause_analysis_payload(
             ),
         )
 
-    summary = (
-        f"Most likely cause in scope: {possible_causes[0].title}."
-        if confidence.level == "high"
-        else (
-            f"No confirmed root cause yet. Strongest current hypothesis: {possible_causes[0].title}."
-            if lang == "en"
-            else f"Aucune cause racine confirmee pour l'instant. Hypothese principale actuelle : {possible_causes[0].title}."
-        )
+    summary = _cause_summary(
+        title=possible_causes[0].title,
+        confidence=confidence,
+        confirmed=bool(confirmed_cause),
+        lang=lang,
     )
-    if lang == "fr" and confidence.level == "high":
-        summary = f"Cause la plus probable dans ce contexte : {possible_causes[0].title}."
     return AIChatCauseAnalysisResponse(
         ticket_id=str(getattr(ticket, "id", "") or "") or None,
         summary=summary,
         possible_causes=possible_causes,
-        recommended_checks=_dedupe_lines(list(advice.next_best_actions or []) + list(advice.validation_steps or []), limit=4),
-        validation_steps=_dedupe_lines(list(advice.validation_steps or []) + list(advice.missing_information or []), limit=4),
+        recommended_checks=_recommended_checks_in_scope(resolver_output, limit=4),
+        validation_steps=_validation_steps_in_scope(resolver_output, limit=4),
         confidence=confidence,
     )
 
@@ -676,8 +785,12 @@ def build_similar_tickets_payload(
             ticket=None,
             lang=lang,
             summary=(
-                "No sufficiently similar tickets were retrieved for this request."
+                f"No sufficiently similar tickets were retrieved for {source_ticket_id}."
+                if lang == "en" and source_ticket_id
+                else "No sufficiently similar tickets were retrieved for this request."
                 if lang == "en"
+                else f"Aucun ticket suffisamment similaire n'a ete recupere pour {source_ticket_id}."
+                if source_ticket_id
                 else "Aucun ticket suffisamment similaire n'a ete recupere pour cette demande."
             ),
         )

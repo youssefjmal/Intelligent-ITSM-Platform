@@ -552,7 +552,7 @@ def build_resolution_advice_model(
         recommended_action=recommended_action,
         reasoning=reasoning,
         probable_root_cause=_normalize_line(advice_payload.get("probable_root_cause")) or None,
-        root_cause=_normalize_line(advice_payload.get("root_cause")) or _normalize_line(advice_payload.get("probable_root_cause")) or None,
+        root_cause=_normalize_line(advice_payload.get("root_cause")) or None,
         supporting_context=_normalize_line(advice_payload.get("supporting_context")) or None,
         why_this_matches=[
             _normalize_line(item)

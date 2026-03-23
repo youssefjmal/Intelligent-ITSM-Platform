@@ -146,6 +146,7 @@ def test_resolution_advice_marks_tentative_when_only_problem_evidence_exists() -
     assert advice["display_mode"] == "tentative_diagnostic"
     assert advice["recommended_action"].startswith("Verify the relevant authentication token, certificate, or policy state")
     assert advice["probable_root_cause"] == "Expired SSO signing certificate on the identity provider."
+    assert advice["root_cause"] is None
     assert advice["confidence_band"] == "low"
     assert advice["next_best_actions"]
 

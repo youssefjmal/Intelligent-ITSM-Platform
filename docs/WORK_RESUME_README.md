@@ -1055,6 +1055,9 @@ Key behavior:
    - `incident_cluster`
    - `impact_summary`
 4. A final action-to-ticket relevance gate prevents weak unrelated fixes from appearing as the main recommendation.
+5. Cause analysis now keeps `probable_root_cause` separate from a confirmed `root_cause`:
+   - only stronger evidence paths should surface a confirmed root cause
+   - lower-support cases should stay hypothesis-oriented or fall back to `insufficient_evidence`
 
 Display modes currently used:
 
@@ -1116,6 +1119,7 @@ Current behavior:
 2. Follow-ups such as `this ticket`, `why?`, `what should I do next?`, and `which tickets are similar to this one?` reuse the active ticket context.
 3. Assistant-generated related suggestion IDs must not silently replace the active ticket.
 4. Chat uses the same evidence clusters and advisor output as the page-level recommendation flows, then formats the result into a chat-specific structured payload.
+5. Cause-analysis cards and insufficient-evidence cards must keep recommended checks inside the selected incident family and avoid promoting a low-support hypothesis as confirmed.
 
 Primary files for chat workflow:
 

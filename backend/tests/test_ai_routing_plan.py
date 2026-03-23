@@ -5,7 +5,11 @@ from types import SimpleNamespace
 
 from app.models.enums import TicketCategory, TicketPriority, TicketStatus, UserRole
 from app.schemas.ai import AIChatGrounding, AIResolutionAdvice, AIResolutionEvidence, ChatMessage, ChatRequest
-from app.services.ai.chat_payloads import build_cause_analysis_payload, build_insufficient_evidence_payload
+from app.services.ai.chat_payloads import (
+    build_cause_analysis_payload,
+    build_insufficient_evidence_payload,
+    build_similar_tickets_payload,
+)
 from app.services.ai import intents, orchestrator
 from app.services.ai.intents import ChatIntent, IntentConfidence
 from app.services.ai.resolver import ResolverOutput
@@ -1189,6 +1193,125 @@ def test_build_insufficient_evidence_payload_filters_recommended_checks_to_selec
     assert "export" in combined_text or "date" in combined_text
     assert "recipient" not in combined_text
     assert "approval notice" not in combined_text
+
+
+def test_build_cause_analysis_payload_filters_checks_to_selected_family() -> None:
+    ticket = _ticket(
+        ticket_id="TW-MOCK-025",
+        title="Payroll export writes invalid date columns",
+        description="Payroll export produces broken date values.",
+        status=TicketStatus.open,
+        priority=TicketPriority.medium,
+        category=TicketCategory.application,
+        assignee="Karim Benali",
+        reporter="Finance Lead",
+        created_at=dt.datetime.now(dt.timezone.utc),
+    )
+    resolver_output = _resolver_output(confidence=0.64, root_cause=None)
+    resolver_output.advice.probable_root_cause = "Payroll export date serialization drift"
+    resolver_output.advice.root_cause = None
+    resolver_output.retrieval["query_context"] = {
+        "query": "Payroll export writes invalid date columns",
+        "title": "Payroll export writes invalid date columns",
+        "topics": ["payroll_export", "notification_distribution"],
+        "domains": ["application"],
+        "metadata": {"category": "application"},
+    }
+    resolver_output.retrieval["evidence_clusters"] = {
+        "selected_cluster_id": "payroll_export",
+        "clusters": [
+            {"cluster_id": "payroll_export", "dominant_topic": "payroll_export"},
+            {"cluster_id": "notification_distribution", "dominant_topic": "notification_distribution"},
+        ],
+    }
+    resolver_output.retrieval["related_problems"] = [
+        {
+            "id": "PB-PAY-01",
+            "title": "Payroll export formatter date drift",
+            "root_cause": "Payroll export date serialization drift",
+            "match_reason": "Matches the export/date-format incident family.",
+            "similarity_score": 0.73,
+            "_advisor_cluster_id": "payroll_export",
+        }
+    ]
+    resolver_output.validation_steps = [
+        "Send one controlled approval notice and confirm it reaches the expected manager recipient.",
+        "Generate one control export and validate the corrected date columns in the downstream import.",
+    ]
+    resolver_output.next_best_actions = [
+        "Verify the payroll approval notification distribution rule and confirm the expected manager recipient mapping.",
+        "Verify the payroll export formatter and the date-column mapping before the next import.",
+    ]
+    resolver_output.advice.validation_steps = list(resolver_output.validation_steps)
+    resolver_output.advice.next_best_actions = list(resolver_output.next_best_actions)
+
+    payload = build_cause_analysis_payload(ticket=ticket, resolver_output=resolver_output, lang="en")
+
+    assert payload.type == "cause_analysis"
+    combined_text = " ".join(payload.recommended_checks + payload.validation_steps).lower()
+    assert "export" in combined_text or "date" in combined_text
+    assert "recipient" not in combined_text
+    assert "approval notice" not in combined_text
+
+
+def test_build_cause_analysis_payload_returns_insufficient_evidence_for_low_confidence_unconfirmed_hypothesis() -> None:
+    ticket = _ticket(
+        ticket_id="TW-MOCK-025",
+        title="Payroll export writes invalid date columns",
+        description="Payroll export produces broken date values.",
+        status=TicketStatus.open,
+        priority=TicketPriority.medium,
+        category=TicketCategory.application,
+        assignee="Karim Benali",
+        reporter="Finance Lead",
+        created_at=dt.datetime.now(dt.timezone.utc),
+    )
+    resolver_output = _resolver_output(confidence=0.41, root_cause=None)
+    resolver_output.advice.probable_root_cause = "Payroll export date serialization drift"
+    resolver_output.advice.root_cause = None
+    resolver_output.advice.confidence = 0.41
+    resolver_output.advice.confidence_band = "low"
+    resolver_output.retrieval["query_context"] = {
+        "query": "Payroll export writes invalid date columns",
+        "title": "Payroll export writes invalid date columns",
+        "topics": ["payroll_export"],
+        "domains": ["application"],
+        "metadata": {"category": "application"},
+    }
+    resolver_output.retrieval["evidence_clusters"] = {
+        "selected_cluster_id": "payroll_export",
+        "clusters": [
+            {"cluster_id": "payroll_export", "dominant_topic": "payroll_export"},
+        ],
+    }
+    resolver_output.retrieval["related_problems"] = []
+    resolver_output.next_best_actions = [
+        "Verify the payroll export formatter and the date-column mapping before the next import.",
+    ]
+    resolver_output.validation_steps = [
+        "Generate one control export and validate the corrected date columns in the downstream import.",
+    ]
+    resolver_output.advice.next_best_actions = list(resolver_output.next_best_actions)
+    resolver_output.advice.validation_steps = list(resolver_output.validation_steps)
+
+    payload = build_cause_analysis_payload(ticket=ticket, resolver_output=resolver_output, lang="en")
+
+    assert payload.type == "insufficient_evidence"
+    assert "insufficient evidence" in payload.summary.lower()
+
+
+def test_build_similar_tickets_payload_mentions_source_ticket_when_no_matches() -> None:
+    resolver_output = _resolver_output(confidence=0.49, root_cause=None)
+    resolver_output.retrieval["similar_tickets"] = []
+
+    payload = build_similar_tickets_payload(
+        source_ticket_id="TW-MOCK-025",
+        resolver_output=resolver_output,
+        lang="en",
+    )
+
+    assert payload.type == "insufficient_evidence"
+    assert "TW-MOCK-025" in payload.summary
 
 
 def test_handle_chat_similar_ticket_query_returns_structured_matches(monkeypatch) -> None:

@@ -890,7 +890,28 @@ def build_root_cause(
             root_cause = _truncate(root_text, limit=160)
             root_problem_ref = str(row.get("id") or row.get("title") or "").strip() or None
             break
-    if not root_cause:
+    support_confirms_excerpt = any(
+        candidate.reference != primary.reference
+        and candidate.cluster_id == primary.cluster_id
+        and not candidate.topic_mismatch
+        and not candidate.domain_mismatch
+        and candidate.coherence_score >= 0.34
+        for candidate in support
+    )
+    excerpt_root_cause_supported = (
+        primary.coherence_score >= 0.44
+        and not primary.topic_mismatch
+        and not primary.domain_mismatch
+        and (
+            primary.relevance >= 0.28
+            or primary.context_score >= 0.28
+            or primary.exact_focus_hits >= 1
+            or primary.exact_strong_hits >= 1
+            or primary.strong_overlap >= 0.14
+        )
+        and (support_confirms_excerpt or primary.relevance >= 0.42 or primary.context_score >= 0.4)
+    )
+    if not root_cause and excerpt_root_cause_supported:
         root_cause = _extract_root_cause_text(primary.excerpt, *(item.excerpt for item in support[1:]))
     return root_cause, root_problem_ref
 
@@ -2790,7 +2811,7 @@ def _fallback_diagnostic_payload(
         "recommended_action": recommended_action,
         "reasoning": reasoning,
         "probable_root_cause": probable_root_cause,
-        "root_cause": probable_root_cause,
+        "root_cause": None,
         "supporting_context": supporting_context,
         "why_this_matches": list(why_this_matches or []),
         "evidence_sources": normalized_evidence[:2],
@@ -3118,6 +3139,7 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
 
     recommended_action = grounded_action_steps[0].text if grounded_action_steps else candidate_action
     confidence_band = classify_confidence(confidence)
+    confirmed_root_cause = root_cause if (root_problem_ref or confidence >= 0.78) else None
     next_best_actions = [step.text for step in grounded_action_steps[1:]]
     validation_steps = build_validation_from_actions(query_context, action_steps=grounded_action_steps, lang=lang)
     fallback_action = build_fallback_action(
@@ -3159,7 +3181,7 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
         "recommended_action": recommended_action,
         "reasoning": reasoning,
         "probable_root_cause": root_cause,
-        "root_cause": root_cause,
+        "root_cause": confirmed_root_cause,
         "supporting_context": supporting_context,
         "why_this_matches": why_this_matches,
         "evidence_sources": evidence_sources,

@@ -6,6 +6,7 @@ This update strengthens the ITSM copilot in two areas that were limiting product
 
 1. Resolution guidance is now more specific and evidence-grounded.
 2. Conversation continuity now works across follow-up questions without degrading deterministic routing.
+3. Cause analysis is now more conservative about when a root cause is treated as confirmed versus only a supported hypothesis.
 
 These changes were needed because the earlier chatbot flow could still return generic troubleshooting steps such as "check logs" or "verify configuration" even when the right incident family had already been selected. The chat layer also relied too heavily on short-lived ticket memory, which made follow-up prompts such as "Why?" or "Show me the second one" unreliable.
 
@@ -13,6 +14,8 @@ The new implementation keeps the resolver safe and operationally correct:
 
 - recommendations stay inside the selected evidence family
 - action steps must be tied to concrete ticket or retrieval signals
+- cause-analysis checks stay scoped to the same selected family
+- low-support hypotheses degrade to `insufficient_evidence` instead of sounding confirmed
 - ambiguous follow-ups fall back safely instead of guessing
 - older chat history is summarized instead of being dumped into every resolver call
 
@@ -107,6 +110,10 @@ user message
   - `build_grounded_actions(...)`
   - `build_validation_from_actions(...)`
   - added to keep recommended actions specific and evidence-backed
+- Cause-analysis calibration helpers
+  - selected-family filtering for recommended checks and validation steps
+  - conservative hypothesis support checks before returning a ranked cause-analysis payload
+  - added so low-confidence root-cause statements degrade safely instead of sounding confirmed
 - `GroundedActionStep`
   - carries `step`, `text`, `reason`, and `evidence`
   - added so the backend can preserve why each step exists
@@ -140,6 +147,8 @@ user message
 - Comparison prompts work with the last two discussed tickets.
 - Generic checklist steps are filtered out when they are not grounded.
 - Weak or ambiguous evidence now falls back to insufficient evidence more cleanly.
+- Cause-analysis cards distinguish between confirmed cause and supported hypothesis more explicitly.
+- Similar-ticket no-match responses stay anchored to the source ticket in their summary.
 
 ### What Stayed The Same
 
@@ -231,6 +240,7 @@ python -m compileall backend/app/services/ai
 
 - Prompt: `Why is this problem happening for TW-MOCK-020?`
   - Expected: returns ranked causes tied to retrieved evidence for TW-MOCK-020
+  - Expected: if evidence is only partial, the payload clearly frames the top cause as a hypothesis rather than a confirmed root cause
 
 ### Insufficient evidence
 

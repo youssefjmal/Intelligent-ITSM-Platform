@@ -154,6 +154,7 @@ npm run build
 - Frontend deep-dive: `frontend/README.md`
 - SLA deep-dive: `docs/SLA_README.md`
 - AI handoff brief for ChatGPT/Claude: `docs/AI_HANDOFF_CONTEXT.md`
+- Chatbot/backend copilot hardening notes: `docs/CHATBOT_BACKEND_ENHANCEMENTS.md`
 - Shared AI resolver workflows and SLA advisory handover: `docs/WORK_RESUME_README.md` (see sections `26.2.1` and `26.3.1`)
 - Docker teammate setup: `docs/TEAMMATE_SETUP_README.md`
 - n8n workflow guide and setup/checklists: `docs/n8n/README.md`, `docs/n8n/n8n_env_config.md`, `docs/n8n/backend_n8n_integration_checklist.md`
