@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import logging
 import re
 from threading import Lock
@@ -12,17 +13,34 @@ import httpx
 from sqlalchemy import select, text as sa_text
 from sqlalchemy.orm import Session
 
+from app.core import cache as _cache
 from app.core.config import settings
 from app.models.kb_chunk import KBChunk
 
 EMBEDDING_DIM = 768
 _SPACE_RE = re.compile(r"\s+")
 _SEARCH_READY_CACHE_TTL_SECONDS = 120
+_KB_DATA_CACHE_TTL_SECONDS = 60
 _search_ready_cache_lock = Lock()
 _search_ready_cache_value: bool | None = None
 _search_ready_cache_at: dt.datetime | None = None
+_kb_data_cache_lock = Lock()
+_kb_data_cache_value: bool | None = None
+_kb_data_cache_at: dt.datetime | None = None
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_rollback(db: Session | None) -> None:
+    if db is None:
+        return
+    rollback = getattr(db, "rollback", None)
+    if not callable(rollback):
+        return
+    try:
+        rollback()
+    except Exception:  # noqa: BLE001
+        logger.debug("Embedding rollback cleanup failed.", exc_info=True)
 
 
 def _normalize_text(text: str) -> str:
@@ -45,6 +63,17 @@ def _utcnow() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
 
+def invalidate_kb_search_caches() -> None:
+    global _search_ready_cache_value, _search_ready_cache_at, _kb_data_cache_value, _kb_data_cache_at
+
+    with _search_ready_cache_lock:
+        _search_ready_cache_value = None
+        _search_ready_cache_at = None
+    with _kb_data_cache_lock:
+        _kb_data_cache_value = None
+        _kb_data_cache_at = None
+
+
 def _kb_search_ready(db: Session) -> bool:
     global _search_ready_cache_value, _search_ready_cache_at
 
@@ -62,6 +91,7 @@ def _kb_search_ready(db: Session) -> bool:
         has_table = bool(db.execute(sa_text("SELECT to_regclass('public.kb_chunks')")).scalar())
         ready = has_vector and has_table
     except Exception:
+        _safe_rollback(db)
         ready = False
 
     with _search_ready_cache_lock:
@@ -70,32 +100,123 @@ def _kb_search_ready(db: Session) -> bool:
     return ready
 
 
-def compute_embedding(text: str) -> list[float]:
-    """Compute an embedding using Ollama /api/embeddings."""
-    normalized = _normalize_text(text)
-    if not normalized:
-        raise ValueError("empty_text_for_embedding")
+def kb_has_data(db: Session) -> bool:
+    global _kb_data_cache_value, _kb_data_cache_at
 
+    if not _kb_search_ready(db):
+        return False
+
+    now = _utcnow()
+    with _kb_data_cache_lock:
+        if (
+            _kb_data_cache_value is not None
+            and _kb_data_cache_at is not None
+            and (now - _kb_data_cache_at).total_seconds() < _KB_DATA_CACHE_TTL_SECONDS
+        ):
+            return bool(_kb_data_cache_value)
+
+    try:
+        has_rows = bool(db.execute(sa_text("SELECT EXISTS (SELECT 1 FROM kb_chunks LIMIT 1)")).scalar())
+    except Exception:
+        _safe_rollback(db)
+        has_rows = False
+
+    with _kb_data_cache_lock:
+        _kb_data_cache_value = has_rows
+        _kb_data_cache_at = now
+    return has_rows
+
+
+def _embedding_cache_key(normalized: str) -> str:
+    return "itsm:embedding:" + hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _do_compute_embedding(normalized: str) -> list[float]:
+    """Low-level Ollama call. Input must already be normalized non-empty text."""
     if settings.OLLAMA_EMBEDDING_DIM != EMBEDDING_DIM:
         raise RuntimeError(
             f"invalid_config_embedding_dim: expected={EMBEDDING_DIM} got={settings.OLLAMA_EMBEDDING_DIM}"
         )
 
     url = f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/embeddings"
-    payload = {
-        "model": settings.OLLAMA_EMBED_MODEL,
-        "prompt": normalized,
-    }
-    timeout = httpx.Timeout(connect=5.0, read=45.0, write=20.0, pool=5.0)
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(url, json=payload)
-            response.raise_for_status()
-            data = response.json()
-    except httpx.HTTPError as exc:
-        raise RuntimeError("ollama_embedding_request_failed") from exc
+    timeout_seconds = max(5, int(settings.OLLAMA_EMBED_TIMEOUT_SECONDS))
+    timeout = httpx.Timeout(
+        connect=min(10.0, float(timeout_seconds)),
+        read=float(timeout_seconds),
+        write=20.0,
+        pool=10.0,
+    )
 
-    return _to_float_list(data.get("embedding"))
+    def request_embedding(*, num_gpu: int | None) -> list[float]:
+        payload: dict[str, Any] = {
+            "model": settings.OLLAMA_EMBED_MODEL,
+            "prompt": normalized,
+        }
+        if num_gpu is not None:
+            payload["options"] = {"num_gpu": int(num_gpu)}
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                response = client.post(url, json=payload)
+                response.raise_for_status()
+                data = response.json()
+        except httpx.TimeoutException as exc:
+            raise RuntimeError(
+                f"ollama_embedding_request_failed: timeout model={settings.OLLAMA_EMBED_MODEL} "
+                f"base_url={settings.OLLAMA_BASE_URL} num_gpu={num_gpu}"
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            body = (exc.response.text or "").strip().replace("\n", " ")
+            short_body = body[:240] + ("..." if len(body) > 240 else "")
+            raise RuntimeError(
+                f"ollama_embedding_request_failed: status={exc.response.status_code} "
+                f"model={settings.OLLAMA_EMBED_MODEL} num_gpu={num_gpu} body={short_body or '-'}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"ollama_embedding_request_failed: num_gpu={num_gpu} {exc}") from exc
+        except ValueError as exc:
+            raise RuntimeError(
+                f"ollama_embedding_request_failed: num_gpu={num_gpu} invalid_json_payload: {exc}"
+            ) from exc
+        return _to_float_list(data.get("embedding"))
+
+    preferred_num_gpu = int(settings.OLLAMA_EMBED_NUM_GPU)
+    primary_num_gpu: int | None = preferred_num_gpu if preferred_num_gpu >= 0 else None
+
+    # GPU-first (or Ollama default), then fail-safe retry on CPU.
+    try:
+        return request_embedding(num_gpu=primary_num_gpu)
+    except RuntimeError as exc:
+        if primary_num_gpu == 0:
+            raise
+        logger.warning(
+            "Embedding primary path failed; retrying on CPU once: model=%s primary_num_gpu=%s reason=%s",
+            settings.OLLAMA_EMBED_MODEL,
+            primary_num_gpu,
+            exc,
+        )
+        return request_embedding(num_gpu=0)
+
+
+def compute_embedding(text: str) -> list[float]:
+    """Compute an embedding vector for text.
+
+    Cache hierarchy:
+      L1 — lru_cache on callers in retrieval.py / problems.py (process-local, instant)
+      L2 — Redis keyed by sha256(normalized_text), TTL 24 h (survives restarts)
+      L3 — Ollama HTTP call (300 ms – 2 s)
+    """
+    normalized = _normalize_text(text)
+    if not normalized:
+        raise ValueError("empty_text_for_embedding")
+
+    key = _embedding_cache_key(normalized)
+    hit = _cache.get(key)
+    if hit is not None:
+        return hit  # list[float] decoded from JSON
+
+    vector = _do_compute_embedding(normalized)
+    _cache.set(key, vector, ttl=settings.CACHE_TTL_EMBEDDING)
+    return vector
 
 
 def upsert_kb_chunk(
@@ -195,6 +316,7 @@ def search_kb(
     *,
     source_type: str | None = None,
     jira_keys: list[str] | None = None,
+    query_embedding: list[float] | tuple[float, ...] | None = None,
 ) -> list[dict[str, Any]]:
     """Search KB chunks with cosine similarity over pgvector embeddings."""
     normalized_query = _normalize_text(query)
@@ -202,11 +324,17 @@ def search_kb(
         return []
     if not _kb_search_ready(db):
         return []
+    if not kb_has_data(db):
+        return []
 
     limit = max(1, min(int(top_k), 50))
     normalized_source_type = str(source_type or "").strip()
     normalized_keys = [str(key or "").strip() for key in (jira_keys or []) if str(key or "").strip()]
-    query_vector = compute_embedding(normalized_query)
+    if query_embedding is None:
+        query_vector = compute_embedding(normalized_query)
+    else:
+        raw_vector: Any = list(query_embedding) if isinstance(query_embedding, tuple) else query_embedding
+        query_vector = _to_float_list(raw_vector)
     distance_expr = KBChunk.embedding.cosine_distance(query_vector)
     stmt = (
         select(KBChunk, distance_expr.label("distance"))
@@ -222,9 +350,15 @@ def search_kb(
     return [_match_to_result(chunk, distance=float(distance) if distance is not None else None) for chunk, distance in rows]
 
 
-def search_kb_issues(db: Session, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+def search_kb_issues(
+    db: Session,
+    query: str,
+    top_k: int = 5,
+    *,
+    query_embedding: list[float] | tuple[float, ...] | None = None,
+) -> list[dict[str, Any]]:
     """Search issue-level KB chunks (source_type=jira_issue)."""
-    return search_kb(db, query, top_k=top_k, source_type="jira_issue")
+    return search_kb(db, query, top_k=top_k, source_type="jira_issue", query_embedding=query_embedding)
 
 
 def list_comments_for_jira_keys(
@@ -249,6 +383,7 @@ def list_comments_for_jira_keys(
             .order_by(KBChunk.updated_at.desc(), KBChunk.created_at.desc(), KBChunk.id.desc())
         ).scalars().all()
     except Exception:
+        _safe_rollback(db)
         return []
 
     counts: dict[str, int] = {}

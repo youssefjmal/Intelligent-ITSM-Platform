@@ -18,6 +18,7 @@ _AUTOMATION_ALLOWED_PREFIXES = (
     "/api/tickets",
     "/api/problems",
     "/api/notifications",
+    "/api/integrations/",
 )
 
 

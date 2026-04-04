@@ -5,8 +5,8 @@ from __future__ import annotations
 import datetime as dt
 from collections import Counter
 
-from app.models.enums import TicketPriority, TicketStatus
-from app.schemas.ai import TicketDraft
+from app.models.enums import TicketPriority, TicketStatus, TicketType
+from app.schemas.ai import AIChatTicketResult, AIChatTicketResults, TicketDraft
 from app.services.ai.intents import ACTIVE_STATUSES
 from app.services.jira_kb import build_jira_knowledge_block
 from app.services.tickets import compute_problem_insights
@@ -69,6 +69,7 @@ def _format_scope_summary(meta: dict, lang: str) -> str:
     statuses = meta.get("statuses") or set()
     priorities = meta.get("priorities") or set()
     categories = meta.get("categories") or set()
+    ticket_types = meta.get("ticket_types") or set()
     assignees = meta.get("assignees") or set()
     window_days = meta.get("window_days")
 
@@ -81,6 +82,22 @@ def _format_scope_summary(meta: dict, lang: str) -> str:
     if categories:
         labels = ", ".join(category.value for category in sorted(categories, key=lambda c: c.value))
         parts.append(("Category: " if lang == "en" else "Categorie: ") + labels)
+    if ticket_types:
+        type_labels = {
+            "en": {
+                TicketType.incident.value: "Incident",
+                TicketType.service_request.value: "Service request",
+            },
+            "fr": {
+                TicketType.incident.value: "Incident",
+                TicketType.service_request.value: "Demande de service",
+            },
+        }
+        labels = ", ".join(
+            type_labels.get(lang, {}).get(ticket_type.value, ticket_type.value)
+            for ticket_type in sorted(ticket_types, key=lambda item: item.value)
+        )
+        parts.append(("Type: " if lang == "en" else "Type: ") + labels)
     if assignees:
         labels = ", ".join(sorted(assignees))
         parts.append(("Assignee: " if lang == "en" else "Assigne: ") + labels)
@@ -107,12 +124,45 @@ def _format_ticket_digest(tickets: list, lang: str, *, header: str, limit: int =
     return "\n".join(lines)
 
 
+def _ticket_to_chat_result(ticket, lang: str) -> AIChatTicketResult:
+    priority = _priority_label(ticket.priority.value, lang)
+    status = _status_label(ticket.status.value, lang)
+    assignee = ticket.assignee or ("Unassigned" if lang == "en" else "Non assigne")
+    sla_status = getattr(ticket, "sla_status", None)
+    return AIChatTicketResult(
+        id=str(ticket.id),
+        title=str(ticket.title),
+        priority=priority,
+        status=status,
+        assignee=assignee,
+        sla_status=str(sla_status).strip().lower() if sla_status else None,
+    )
+
+
+def _build_ticket_results_payload(
+    tickets: list,
+    lang: str,
+    *,
+    header: str,
+    scope: str | None = None,
+    kind: str = "generic",
+) -> AIChatTicketResults:
+    return AIChatTicketResults(
+        kind=kind,
+        header=header,
+        scope=scope,
+        total_count=len(tickets),
+        tickets=[_ticket_to_chat_result(ticket, lang) for ticket in tickets],
+    )
+
+
 def _format_ticket_detail(ticket, lang: str) -> str:
     created = _format_created_at(ticket.created_at)
     updated = _format_created_at(ticket.updated_at)
     priority = _priority_label(ticket.priority.value, lang)
     status = _status_label(ticket.status.value, lang)
     category = ticket.category.value
+    ticket_type = getattr(getattr(ticket, "ticket_type", None), "value", getattr(ticket, "ticket_type", None)) or "unknown"
     assignee = ticket.assignee or ("Unassigned" if lang == "en" else "Non assigne")
     reporter = ticket.reporter or "N/A"
     tags = ", ".join(ticket.tags or []) or ("none" if lang == "en" else "aucun")
@@ -120,6 +170,7 @@ def _format_ticket_detail(ticket, lang: str) -> str:
         return (
             f"Ticket {ticket.id} details:\n"
             f"- Title: {ticket.title}\n"
+            f"- Type: {ticket_type}\n"
             f"- Status: {status}\n"
             f"- Priority: {priority}\n"
             f"- Category: {category}\n"
@@ -132,6 +183,7 @@ def _format_ticket_detail(ticket, lang: str) -> str:
     return (
         f"Details du ticket {ticket.id} :\n"
         f"- Titre: {ticket.title}\n"
+        f"- Type: {ticket_type}\n"
         f"- Statut: {status}\n"
         f"- Priorite: {priority}\n"
         f"- Categorie: {category}\n"
@@ -140,6 +192,27 @@ def _format_ticket_detail(ticket, lang: str) -> str:
         f"- Cree: {created}\n"
         f"- Mis a jour: {updated}\n"
         f"- Tags: {tags}"
+    )
+
+
+def _format_ticket_status_snapshot(ticket, lang: str) -> str:
+    priority = _priority_label(ticket.priority.value, lang)
+    status = _status_label(ticket.status.value, lang)
+    assignee = ticket.assignee or ("Unassigned" if lang == "en" else "Non assigne")
+    if lang == "en":
+        return (
+            f"Ticket {ticket.id} status:\n"
+            f"- Ticket ID: {ticket.id}\n"
+            f"- Status: {status}\n"
+            f"- Priority: {priority}\n"
+            f"- Assignee: {assignee}"
+        )
+    return (
+        f"Statut du ticket {ticket.id} :\n"
+        f"- Ticket ID: {ticket.id}\n"
+        f"- Statut: {status}\n"
+        f"- Priorite: {priority}\n"
+        f"- Assigne: {assignee}"
     )
 
 
@@ -327,9 +400,10 @@ def _ticket_to_summary(ticket, lang: str) -> TicketDraft | None:
         title=f"{ticket.id} - {ticket.title}",
         description=details,
         priority=ticket.priority,
+        ticket_type=getattr(ticket, "ticket_type", None) or TicketType.service_request,
         category=ticket.category,
-        tags=ticket.tags or [],
-        assignee=ticket.assignee,
+        tags=getattr(ticket, "tags", None) or [],
+        assignee=getattr(ticket, "assignee", None),
     )
 
 

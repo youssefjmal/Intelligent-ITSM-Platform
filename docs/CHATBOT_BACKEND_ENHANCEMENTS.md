@@ -7,6 +7,7 @@ This update strengthens the ITSM copilot in two areas that were limiting product
 1. Resolution guidance is now more specific and evidence-grounded.
 2. Conversation continuity now works across follow-up questions without degrading deterministic routing.
 3. Cause analysis is now more conservative about when a root cause is treated as confirmed versus only a supported hypothesis.
+4. Shared AI policy is now centralized so topic families, thresholds, confidence bands, prompt rules, and topic templates are no longer duplicated across multiple backend layers.
 
 These changes were needed because the earlier chatbot flow could still return generic troubleshooting steps such as "check logs" or "verify configuration" even when the right incident family had already been selected. The chat layer also relied too heavily on short-lived ticket memory, which made follow-up prompts such as "Why?" or "Show me the second one" unreliable.
 
@@ -75,19 +76,51 @@ user message
 8. The response payload exposes grounded action text, reason, and evidence references for the frontend.
 9. Older turns are summarized so routing quality is preserved across longer conversations.
 
+## Shared AI Policy Structure
+
+The chatbot hardening work now sits on top of a centralized internal policy layer. This was added to reduce brittle duplication while preserving route and payload behavior.
+
+### Canonical policy modules
+
+| Module | Responsibility | Used By |
+| --- | --- | --- |
+| `backend/app/services/ai/taxonomy.py` | Shared incident families, topic hints, category hints, and reusable AI vocabularies | retrieval, advisor, payload scoping, session topic detection |
+| `backend/app/services/ai/calibration.py` | Shared thresholds, confidence bands, scoring weights, and fallback cutoffs | retrieval, advisor, payloads, resolver, feedback, SLA advisory, orchestrator |
+| `backend/app/services/ai/topic_templates.py` | Topic-specific action, validation, and safe diagnostic templates | resolution advisor |
+| `backend/app/services/ai/conversation_policy.py` | Shared follow-up/reference hint vocabulary and bounded history defaults | chat session, intent detection |
+| `backend/app/services/ai/prompt_policy.py` | Shared strict evidence-grounding and formatter policy fragments | prompt builders, quick fixes |
+
+### Where to tune behavior now
+
+- Topic families and synonyms: `backend/app/services/ai/taxonomy.py`
+- Retrieval/advisor thresholds and confidence bands: `backend/app/services/ai/calibration.py`
+- Topic-specific fallback/validation wording: `backend/app/services/ai/topic_templates.py`
+- Follow-up and list-reference phrases: `backend/app/services/ai/conversation_policy.py`
+- Shared prompt policy text: `backend/app/services/ai/prompt_policy.py`
+
 ## Files Changed
 
 | File | Purpose | What Changed | Why |
 | --- | --- | --- | --- |
+| `backend/app/services/ai/taxonomy.py` | Shared AI taxonomy | Centralized topic families, category hints, and reusable AI vocabularies | Removes duplicated family hints across retrieval, advisor, payload, and session layers |
+| `backend/app/services/ai/calibration.py` | Shared AI calibration | Centralized retrieval/advisor thresholds, confidence bands, and SLA scoring cutoffs | Removes scattered magic numbers and keeps confidence mapping consistent |
+| `backend/app/services/ai/topic_templates.py` | Topic-template registry | Centralized family-specific action, validation, and safe diagnostic templates | Keeps topic-specific fallback behavior explicit and auditable |
+| `backend/app/services/ai/conversation_policy.py` | Conversation hint policy | Centralized follow-up, comparison, list, and ordinal phrase hints | Keeps session and intent behavior aligned |
+| `backend/app/services/ai/prompt_policy.py` | Shared prompt fragments | Centralized strict evidence-grounding and formatter guardrails | Removes duplicated business rules from prompt builders |
 | `backend/app/services/ai/chat_session.py` | Structured chat memory and contextual entity resolution | Added chat session dataclasses and helpers for bounded history, summaries, list references, and comparison references | Follow-up prompts now work without relying on raw transcript replay |
 | `backend/app/services/ai/orchestrator.py` | Main chat routing and response orchestration | Replaced the old single-ticket heuristic with structured session resolution, added comparison handling, and passed compact history context into resolver and formatter flows | Keeps routing deterministic while improving conversational continuity |
-| `backend/app/services/ai/resolution_advisor.py` | Evidence-backed recommendation builder | Added operational signal extraction, grounded action-step construction, generic-action rejection, and stronger insufficient-evidence fallback rules | Makes recommendations specific, testable, and tied to evidence |
-| `backend/app/services/ai/chat_payloads.py` | Structured API payload mapping | Added support for grounded action-step metadata with per-step reason and evidence | Preserves action grounding through the API layer |
+| `backend/app/services/ai/retrieval.py` | Unified RAG retrieval and clustering | Replaced duplicated topic/category vocab and inline scoring cutoffs with shared taxonomy/calibration imports | Keeps retrieval tuning in one place while preserving current ranking behavior |
+| `backend/app/services/ai/resolution_advisor.py` | Evidence-backed recommendation builder | Added operational signal extraction, grounded action-step construction, generic-action rejection, centralized topic templates, and shared confidence/threshold imports | Makes recommendations specific, testable, and tied to evidence without scattering family logic |
+| `backend/app/services/ai/chat_payloads.py` | Structured API payload mapping | Added support for grounded action-step metadata and shared taxonomy/confidence scoping | Preserves action grounding through the API layer and keeps family-scoped checks aligned |
 | `backend/app/services/ai/resolver.py` | Shared resolver response assembly | Preserved advisor-authored workflow steps and added compact conversation summary handling | Prevents grounded steps from being flattened into generic output |
-| `backend/app/services/ai/prompts.py` | Formatter and chat prompt rules | Added instructions to treat compact conversation context as authoritative and reject generic filler actions | Keeps formatter output aligned with deterministic backend constraints |
+| `backend/app/services/ai/intents.py` | Rule-first intent detection | Reused centralized conversation-policy hint vocabularies | Keeps chat/session intent behavior consistent |
+| `backend/app/services/ai/prompts.py` | Formatter and chat prompt rules | Added shared prompt-policy fragments and instructions to treat compact conversation context as authoritative and reject generic filler actions | Keeps formatter output aligned with deterministic backend constraints |
+| `backend/app/services/ai/quickfix.py` | Fast heuristic quick fixes | Reused centralized prompt policy constants | Removes duplicated quick-fix rules |
+| `backend/app/services/ai/ai_sla_risk.py` | Hybrid SLA advisory scoring | Reused centralized SLA calibration weights and thresholds | Keeps SLA scoring tunable in one place |
 | `backend/tests/test_chat_session.py` | Session and history regression tests | Added coverage for bounded history, summary retention, list references, and previous-ticket references | Verifies safe memory behavior |
 | `backend/tests/test_ai_routing_plan.py` | End-to-end chat routing tests | Added follow-up, positional reference, comparison, and grounded-action payload tests | Verifies chat continuity and structured response behavior |
 | `backend/tests/test_resolution_advisor.py` | Resolver/advisor precision tests | Added tests for token-rotation specificity, generic-action filtering, and low-signal insufficient-evidence fallback | Verifies recommendation quality improvements |
+| `backend/tests/test_ai_shared_policy.py` | Shared-policy regression tests | Added checks for taxonomy-scoped payload filtering, shared confidence bands, topic templates, and prompt fragments | Verifies that the new centralized policy modules stay in sync |
 | `.gitignore` | Repository safety rules | Added `.ops_backups/` to ignored local artifact paths | Prevents local backup dumps from being staged or pushed |
 
 ## Added vs Removed
@@ -117,6 +150,13 @@ user message
 - `GroundedActionStep`
   - carries `step`, `text`, `reason`, and `evidence`
   - added so the backend can preserve why each step exists
+- Shared AI policy modules
+  - `taxonomy.py`
+  - `calibration.py`
+  - `topic_templates.py`
+  - `conversation_policy.py`
+  - `prompt_policy.py`
+  - added so the retrieval/advisor/chat stack can reuse one source of truth for family vocab, thresholds, templates, follow-up hints, and prompt rules
 - New regression tests for history and action specificity
   - added to lock in the new behavior and protect against generic regressions
 
@@ -137,6 +177,8 @@ user message
   - behavior is consistent with prior API contracts while keeping richer internals
 - Prompt guidance was tightened
   - formatter output is still allowed, but it can no longer override resolver safety rules
+- Retrieval, advisor, payload, feedback, and SLA scoring now import shared calibration and taxonomy modules
+  - behavior is preserved as closely as possible, but the duplicated hardcoded values are now centralized
 
 ## Behavior Impact
 
@@ -188,6 +230,7 @@ pytest backend/tests/test_chat_session.py -q
 pytest backend/tests/test_resolution_advisor.py -q
 pytest backend/tests/test_ai_routing_plan.py -q
 pytest backend/tests/test_ai_resolver.py -q
+pytest backend/tests/test_ai_shared_policy.py -q
 ```
 
 Optional compile check:

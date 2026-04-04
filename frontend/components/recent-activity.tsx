@@ -4,7 +4,7 @@ import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
-import { CATEGORY_CONFIG, PRIORITY_CONFIG, type Ticket, STATUS_CONFIG } from "@/lib/ticket-data"
+import { CATEGORY_CONFIG, PRIORITY_CONFIG, TICKET_TYPE_CONFIG, type Ticket, STATUS_CONFIG } from "@/lib/ticket-data"
 import { useI18n } from "@/lib/i18n"
 import { Button } from "@/components/ui/button"
 import { ArrowRight } from "lucide-react"
@@ -85,6 +85,7 @@ export function RecentActivity({ tickets }: { tickets: Ticket[] }) {
                   </p>
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <MiniDetail label={locale === "fr" ? "Priorite" : "Priority"} value={PRIORITY_CONFIG[ticket.priority].label} />
+                    <MiniDetail label={locale === "fr" ? "Type" : "Type"} value={TICKET_TYPE_CONFIG[ticket.ticketType].label} />
                     <MiniDetail label={locale === "fr" ? "Categorie" : "Category"} value={CATEGORY_CONFIG[ticket.category].label} />
                     <MiniDetail label={locale === "fr" ? "Assigne" : "Assignee"} value={ticket.assignee || "-"} />
                     <MiniDetail label={locale === "fr" ? "Mise a jour" : "Updated"} value={formatDateTime(ticket.updatedAt, locale)} />

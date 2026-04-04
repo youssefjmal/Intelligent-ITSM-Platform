@@ -11,6 +11,7 @@ import { Gauge, Shuffle, Clock3, CheckCircle2, Bot, AlertTriangle } from "lucide
 import { useI18n } from "@/lib/i18n"
 import { fetchTicketPerformance, type TicketPerformancePayload } from "@/lib/tickets-api"
 import { type Ticket, type TicketCategory } from "@/lib/ticket-data"
+import { HoverDetails } from "@/components/hover-details"
 
 type Scope = "all" | "before" | "after"
 type CategoryFilter = TicketCategory | "all"
@@ -105,7 +106,7 @@ function computeLocalPerformance(
     ? Number(((autoAssignmentCorrect / autoAssignmentSamples) * 100).toFixed(2))
     : null
 
-  const classified = filtered.filter((ticket) => Boolean(ticket.predictedPriority || ticket.predictedCategory))
+  const classified = filtered.filter((ticket) => Boolean(ticket.predictedPriority || ticket.predictedTicketType || ticket.predictedCategory))
   const classificationSamples = classified.length
   let classificationCorrect = 0
   for (const ticket of classified) {
@@ -118,6 +119,10 @@ function computeLocalPerformance(
     if (ticket.predictedCategory) {
       checks += 1
       if (ticket.predictedCategory === ticket.category) matches += 1
+    }
+    if (ticket.predictedTicketType) {
+      checks += 1
+      if (ticket.predictedTicketType === ticket.ticketType) matches += 1
     }
     if (checks > 0 && checks === matches) classificationCorrect += 1
   }
@@ -293,6 +298,15 @@ export function PerformanceMetrics({ performance: initialPerformance, assignees,
       icon: Gauge,
       iconColor: "text-slate-300",
       iconBg: "bg-slate-700/70",
+      hoverDetails: [
+        { label: isFr ? "MTTR avant IA" : "MTTR before AI", value: formatHours(performance.mttr_hours.before) },
+        { label: isFr ? "MTTR apres IA" : "MTTR after AI", value: formatHours(performance.mttr_hours.after) },
+        { label: isFr ? "MTTR global" : "Global MTTR", value: formatHours(performance.mttr_global_hours) },
+        { label: isFr ? "Tickets resolus" : "Resolved tickets", value: String(performance.resolved_tickets) },
+      ],
+      hoverNote: isFr
+        ? `Variation estimee: ${formatDelta(performance.mttr_hours.before, performance.mttr_hours.after)} par rapport au cohort apres IA.`
+        : `Estimated change: ${formatDelta(performance.mttr_hours.before, performance.mttr_hours.after)} compared with the after-AI cohort.`,
     },
     {
       title: isFr ? "MTTR apres (smart)" : "MTTR after (smart)",
@@ -301,6 +315,15 @@ export function PerformanceMetrics({ performance: initialPerformance, assignees,
       icon: Bot,
       iconColor: "text-emerald-200",
       iconBg: "bg-emerald-900/70",
+      hoverDetails: [
+        { label: isFr ? "MTTR apres IA" : "MTTR after AI", value: formatHours(performance.mttr_hours.after) },
+        { label: isFr ? "MTTR avant IA" : "MTTR before AI", value: formatHours(performance.mttr_hours.before) },
+        { label: isFr ? "Debit resolu / semaine" : "Resolved throughput / week", value: String(performance.throughput_resolved_per_week) },
+        { label: isFr ? "Temps 1re action (moy.)" : "Avg. time to first action", value: formatHours(performance.avg_time_to_first_action_hours) },
+      ],
+      hoverNote: isFr
+        ? `Gain MTTR estime: ${formatDelta(performance.mttr_hours.before, performance.mttr_hours.after)}.`
+        : `Estimated MTTR improvement: ${formatDelta(performance.mttr_hours.before, performance.mttr_hours.after)}.`,
     },
     {
       title: isFr ? "Taux de reassignation" : "Reassignment rate",
@@ -309,6 +332,15 @@ export function PerformanceMetrics({ performance: initialPerformance, assignees,
       icon: Shuffle,
       iconColor: "text-amber-200",
       iconBg: "bg-amber-900/70",
+      hoverDetails: [
+        { label: isFr ? "Taux" : "Rate", value: formatPercent(performance.reassignment_rate) },
+        { label: isFr ? "Tickets reassignes" : "Reassigned tickets", value: String(performance.reassigned_tickets) },
+        { label: isFr ? "Backlog > seuil" : "Backlog above threshold", value: String(performance.backlog_open_over_days) },
+        { label: isFr ? "Seuil backlog" : "Backlog threshold", value: `${performance.backlog_threshold_days}d` },
+      ],
+      hoverNote: isFr
+        ? "Un taux de reassignation eleve signale souvent un triage initial fragile ou une mauvaise correspondance charge/competence."
+        : "A high reassignment rate usually signals weak initial triage or poor load-to-skill matching.",
     },
     {
       title: isFr ? "Temps 1re action" : "Time to first action",
@@ -317,6 +349,15 @@ export function PerformanceMetrics({ performance: initialPerformance, assignees,
       icon: Clock3,
       iconColor: "text-blue-200",
       iconBg: "bg-blue-900/70",
+      hoverDetails: [
+        { label: isFr ? "Moyenne" : "Average", value: formatHours(performance.avg_time_to_first_action_hours) },
+        { label: isFr ? "Mediane" : "Median", value: formatHours(performance.median_time_to_first_action_hours) },
+        { label: isFr ? "Tickets filtres" : "Filtered tickets", value: String(performance.total_tickets) },
+        { label: isFr ? "Tickets resolus" : "Resolved tickets", value: String(performance.resolved_tickets) },
+      ],
+      hoverNote: isFr
+        ? "Cet indicateur mesure la vitesse du premier mouvement operatoire, meme avant resolution complete."
+        : "This metric captures how quickly the first operational step happens, even before full resolution.",
     },
     {
       title: isFr ? "Taux de breach SLA" : "SLA breach rate",
@@ -330,6 +371,15 @@ export function PerformanceMetrics({ performance: initialPerformance, assignees,
       icon: AlertTriangle,
       iconColor: "text-rose-200",
       iconBg: "bg-rose-900/70",
+      hoverDetails: [
+        { label: isFr ? "Breach global" : "Overall breaches", value: `${performance.sla_breached_tickets}/${performance.sla_tickets_with_due}` },
+        { label: isFr ? "Taux 1re reponse" : "First response breach rate", value: formatPercent(performance.first_response_sla_breach_rate) },
+        { label: isFr ? "Taux resolution" : "Resolution breach rate", value: formatPercent(performance.resolution_sla_breach_rate) },
+        { label: isFr ? "Tickets eligibles" : "Eligible tickets", value: String(performance.sla_tickets_with_due) },
+      ],
+      hoverNote: isFr
+        ? "Compare les echecs SLA globaux, de premiere reponse et de resolution sur le perimetre IA filtre."
+        : "Compares overall, first-response, and resolution SLA failures across the filtered AI scope.",
     },
     {
       title: isFr ? "Classification correcte" : "Correct classification",
@@ -338,6 +388,15 @@ export function PerformanceMetrics({ performance: initialPerformance, assignees,
       icon: CheckCircle2,
       iconColor: "text-cyan-200",
       iconBg: "bg-cyan-900/70",
+      hoverDetails: [
+        { label: isFr ? "Classification" : "Classification", value: formatPercent(performance.classification_accuracy_rate) },
+        { label: isFr ? "Echantillons IA" : "AI samples", value: String(performance.classification_samples) },
+        { label: isFr ? "Auto-assign correcte" : "Correct auto-assignment", value: formatPercent(performance.auto_assignment_accuracy_rate) },
+        { label: isFr ? "Triage sans correction" : "No-correction triage", value: formatPercent(performance.auto_triage_no_correction_rate) },
+      ],
+      hoverNote: isFr
+        ? "Un ticket est compte comme correct seulement si toutes les predictions presentes correspondent aux valeurs finales."
+        : "A ticket is counted as correct only when every available prediction matches the final ticket fields.",
     },
   ]
 
@@ -476,31 +535,53 @@ export function PerformanceMetrics({ performance: initialPerformance, assignees,
             </div>
           ))}
         </div>
+      ) : performance.total_tickets === 0 ? (
+        <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-border/70 bg-muted/10 py-10 text-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted/40">
+            <svg className="h-6 w-6 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+          </div>
+          <p className="text-sm font-medium text-foreground">
+            {isFr ? "Aucune donnée pour ces filtres" : "No data for these filters"}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {isFr ? "Ajustez les filtres pour afficher les métriques IA." : "Adjust the filters to display AI metrics."}
+          </p>
+        </div>
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
           {cards.map((card) => (
-            <Card key={card.title} className="surface-card overflow-hidden rounded-2xl border-border/70">
-              <CardContent className="p-3.5">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="space-y-1">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{card.title}</p>
-                    <p className="text-xl font-bold text-foreground">{card.value}</p>
+            <HoverDetails
+              key={card.title}
+              title={card.title}
+              details={card.hoverDetails}
+              note={card.hoverNote}
+              className="block"
+            >
+              <Card className="surface-card overflow-hidden rounded-2xl border-border/70 transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md">
+                <CardContent className="p-3.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{card.title}</p>
+                      <p className="text-xl font-bold text-foreground">{card.value}</p>
+                    </div>
+                    <div className={`flex h-9 w-9 items-center justify-center rounded-xl ${card.iconBg}`}>
+                      <card.icon className={`h-4 w-4 ${card.iconColor}`} />
+                    </div>
                   </div>
-                  <div className={`flex h-9 w-9 items-center justify-center rounded-xl ${card.iconBg}`}>
-                    <card.icon className={`h-4 w-4 ${card.iconColor}`} />
-                  </div>
-                </div>
-                <p className="mt-2.5 text-[11px] text-muted-foreground">{card.subtitle}</p>
-              </CardContent>
-            </Card>
+                  <p className="mt-2.5 text-[11px] text-muted-foreground">{card.subtitle}</p>
+                </CardContent>
+              </Card>
+            </HoverDetails>
           ))}
         </div>
       )}
 
       <p className="text-[11px] text-muted-foreground">
         {isFr
-          ? "Condition (Classification correcte): seuls les tickets avec prediction IA (priorite et/ou categorie) sont echantillonnes. Un ticket est compte 'correct' si toutes les valeurs predites presentes correspondent aux valeurs finales du ticket."
-          : "Condition (Correct classification): only tickets with AI prediction (priority and/or category) are sampled. A ticket is counted as correct only if all predicted fields present match the ticket final values."}
+          ? "Condition (Classification correcte): seuls les tickets avec prediction IA (priorite, type ITIL et/ou categorie) sont echantillonnes. Un ticket est compte 'correct' si toutes les valeurs predites presentes correspondent aux valeurs finales du ticket."
+          : "Condition (Correct classification): only tickets with AI prediction (priority, ITIL type, and/or category) are sampled. A ticket is counted as correct only if all predicted fields present match the ticket final values."}
       </p>
     </section>
   )

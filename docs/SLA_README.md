@@ -348,8 +348,8 @@ Current behavior:
 
 Important note:
 
-1. This workflow currently sends email alerts.
-2. Microsoft Teams webhook fan-out is prepared in env docs but not present in this specific workflow JSON.
+1. This workflow sends email alerts and a best-effort Microsoft Teams message.
+2. Teams delivery is optional and uses `TEAMS_WEBHOOK_URL` from the n8n environment.
 
 ## 13. Concrete SLA examples
 
@@ -409,4 +409,3 @@ Before enabling SLA automation in an environment:
    - `POST /api/sla/run` with `dry_run=true`
    - `GET /api/sla/metrics`
    - `GET /api/notifications?source=sla`
-

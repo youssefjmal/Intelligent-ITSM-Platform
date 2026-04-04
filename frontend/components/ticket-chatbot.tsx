@@ -4,44 +4,55 @@
 import { useEffect, useRef, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import { ApiError, apiFetch } from "@/lib/api"
-import { Send, Bot, User, Sparkles, RotateCcw, Ticket, CheckCircle2, Lightbulb, AlertCircle, BookOpen, ThumbsUp, ThumbsDown } from "lucide-react"
+import { Send, Bot, User, Sparkles, RotateCcw, Ticket, CheckCircle2, Lightbulb, AlertCircle, BookOpen, ThumbsUp, ThumbsDown, ArrowUpRight } from "lucide-react"
 import { useI18n } from "@/lib/i18n"
 import { useAuth } from "@/lib/auth"
 import { useRouter } from "next/navigation"
+import { getBadgeStyle } from "@/lib/badge-utils"
+import { ConfidenceBar } from "@/components/ui/confidence-bar"
+import {
+  type ChatActionLink,
+  type ChatCauseCandidate,
+  type ChatConfidence,
+  type ChatRelatedTicketRef,
+  type ChatResponsePayload,
+  type ChatTicketResult,
+  type ProblemDetailPayload,
+  type ProblemLinkedTicketsPayload,
+  type ProblemListPayload,
+  type RecommendationListPayload,
+  type TicketDigestRow,
+  type TicketDraft,
+  type TicketListPayload,
+  type TicketResultsPayload,
+  normalizeResponsePayload,
+  payloadEntityId,
+  payloadEntityKind,
+  payloadInventoryKind,
+  payloadListedEntityIds,
+  ticketListPayloadToResults,
+} from "@/lib/chat-types"
 
 type ChatMessage = {
   id: string
   role: "user" | "assistant"
   content: string
   createdAt: string
+  sourceQuery?: string | null
   ticketDraft?: TicketDraft
   ticketAction?: string | null
   ragGrounding?: boolean
   suggestions?: SuggestionBundle
   draftContext?: DraftContext | null
   actions?: string[]
-}
-
-type TicketDraft = {
-  title: string
-  description: string
-  priority: "critical" | "high" | "medium" | "low"
-  category: "infrastructure" | "network" | "security" | "application" | "service_request" | "hardware" | "email" | "problem"
-  tags: string[]
-  assignee?: string | null
-}
-
-type TicketDigestRow = {
-  id: string
-  title: string
-  priority: string
-  status: string
-  assignee: string
+  ticketResults?: TicketResultsPayload | null
+  responsePayload?: ChatResponsePayload | null
 }
 
 type SuggestionTicket = {
@@ -80,11 +91,50 @@ type SolutionRecommendation = {
   reason?: string | null
 }
 
+type ResolutionEvidence = {
+  evidence_type: string
+  reference: string
+  excerpt?: string | null
+}
+
+type LLMGeneralAdvisoryInline = {
+  probable_causes: string[]
+  suggested_checks: string[]
+  escalation_hint: string | null
+  knowledge_source?: string
+  confidence?: number
+  language?: string
+}
+
+type ResolutionAdvice = {
+  recommended_action?: string | null
+  reasoning: string
+  probable_root_cause?: string | null
+  evidence_sources: ResolutionEvidence[]
+  tentative: boolean
+  confidence: number
+  confidence_band: string
+  source_label: string
+  recommendation_mode: string
+  action_relevance_score: number
+  filtered_weak_match: boolean
+  display_mode: "evidence_action" | "tentative_diagnostic" | "service_request" | "llm_general_knowledge" | "no_strong_match"
+  match_summary?: string | null
+  next_best_actions: string[]
+  workflow_steps?: string[]
+  validation_steps?: string[]
+  fallback_action?: string | null
+  missing_information?: string[]
+  response_text: string
+  llm_general_advisory?: LLMGeneralAdvisoryInline | null
+}
+
 type SuggestionBundle = {
   tickets: SuggestionTicket[]
   problems: SuggestionProblem[]
   kb_articles: SuggestionKb[]
   solution_recommendations?: SolutionRecommendation[]
+  resolution_advice?: ResolutionAdvice | null
   confidence: number
   source: "embedding" | "hybrid" | "llm_fallback" | string
 }
@@ -186,6 +236,25 @@ function statusBadgeClass(status: string): string {
   return "border-muted bg-muted/60 text-foreground"
 }
 
+function slaBadgeClass(status?: string | null): string {
+  const value = String(status || "").toLowerCase()
+  if (value === "breached") return "border-red-200 bg-red-500/10 text-red-700"
+  if (value === "at_risk") return "border-amber-200 bg-amber-500/10 text-amber-700"
+  if (value === "ok" || value === "completed") return "border-emerald-200 bg-emerald-500/10 text-emerald-700"
+  if (value === "paused") return "border-slate-200 bg-slate-500/10 text-slate-700"
+  return "border-muted bg-muted/60 text-foreground"
+}
+
+function slaStatusLabel(status: string | null | undefined, locale: string): string {
+  const value = String(status || "").toLowerCase()
+  if (value === "breached") return locale === "fr" ? "SLA depassee" : "SLA breached"
+  if (value === "at_risk") return locale === "fr" ? "SLA a risque" : "SLA at risk"
+  if (value === "ok") return locale === "fr" ? "SLA ok" : "SLA ok"
+  if (value === "completed") return locale === "fr" ? "SLA terminee" : "SLA completed"
+  if (value === "paused") return locale === "fr" ? "SLA en pause" : "SLA paused"
+  return locale === "fr" ? "SLA inconnue" : "SLA unknown"
+}
+
 function formatMessageTime(value: string, locale: string): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ""
@@ -215,6 +284,529 @@ function hasSuggestions(bundle?: SuggestionBundle): boolean {
     bundle.problems.length > 0 ||
     bundle.kb_articles.length > 0 ||
     (bundle.solution_recommendations || []).length > 0
+  )
+}
+
+function resolutionModeLabel(mode: ResolutionAdvice["display_mode"], locale: string): string {
+  if (mode === "evidence_action") {
+    return locale === "fr" ? "Resolution etayee" : "Evidence-backed resolution"
+  }
+  if (mode === "tentative_diagnostic") {
+    return locale === "fr" ? "Diagnostic prudent" : "Tentative diagnostic"
+  }
+  if (mode === "service_request") {
+    return locale === "fr" ? "Guidage de demande de service" : "Service request guidance"
+  }
+  if (mode === "llm_general_knowledge") {
+    return locale === "fr" ? "Connaissance generale" : "General knowledge"
+  }
+  return locale === "fr" ? "Pas de correspondance forte" : "No strong match"
+}
+
+function ticketResultsTitle(results: TicketResultsPayload, locale: string): string {
+  if (results.kind === "sla_risk") {
+    return locale === "fr" ? "Tickets a risque SLA eleve" : "High SLA risk tickets"
+  }
+  if (results.kind === "critical") {
+    return locale === "fr" ? "Tickets critiques" : "Critical tickets"
+  }
+  return results.header
+}
+
+function ticketCountLabel(count: number, locale: string): string {
+  if (locale === "fr") {
+    return `${count} ticket${count > 1 ? "s" : ""}`
+  }
+  return `${count} ticket${count === 1 ? "" : "s"}`
+}
+
+function moreTicketsLabel(results: TicketResultsPayload, count: number, locale: string): string {
+  if (results.kind === "sla_risk") {
+    return locale === "fr" ? `Voir ${count} tickets SLA de plus` : `View ${count} more SLA-risk tickets`
+  }
+  return locale === "fr" ? `Voir ${count} de plus` : `View ${count} more`
+}
+
+type TicketResultButtonProps = {
+  row: ChatTicketResult
+  locale: string
+  compact?: boolean
+  onOpenTicket: (ticketId: string) => void
+}
+
+function TicketResultButton({ row, locale, compact = false, onOpenTicket }: TicketResultButtonProps) {
+  const metadataRows = [
+    { label: locale === "fr" ? "Statut" : "Status", value: row.status },
+    { label: locale === "fr" ? "Priorite" : "Priority", value: row.priority },
+    { label: locale === "fr" ? "Assigne" : "Assignee", value: row.assignee },
+    row.ticket_type ? { label: locale === "fr" ? "Type" : "Type", value: row.ticket_type } : null,
+    row.category ? { label: locale === "fr" ? "Categorie" : "Category", value: row.category } : null,
+    row.sla_status ? { label: "SLA", value: slaStatusLabel(row.sla_status, locale) } : null,
+  ].filter((item): item is { label: string; value: string } => Boolean(item?.value))
+
+  return (
+    <HoverCard openDelay={120} closeDelay={80}>
+      <HoverCardTrigger asChild>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation()
+            onOpenTicket(row.id)
+          }}
+          className={`w-full rounded-xl border border-border bg-background/70 text-left transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:bg-accent/40 focus:outline-none focus:ring-2 focus:ring-primary/30 ${
+            compact ? "p-2.5" : "p-3"
+          }`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className={`font-semibold text-foreground ${compact ? "text-xs" : "text-sm"}`}>{row.id}</p>
+              <p className={`mt-1 line-clamp-2 text-foreground/90 ${compact ? "text-xs" : "text-[13px]"}`}>{row.title}</p>
+            </div>
+            <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-primary">
+              {locale === "fr" ? "Ouvrir" : "Open"}
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </span>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            <Badge variant="outline" className={`text-[10px] ${priorityBadgeClass(row.priority)}`}>
+              {row.priority}
+            </Badge>
+            <Badge variant="outline" className={`text-[10px] ${statusBadgeClass(row.status)}`}>
+              {row.status}
+            </Badge>
+            {row.ticket_type ? (
+              <Badge variant="outline" className="border-emerald-200 bg-emerald-500/10 text-[10px] text-emerald-700">
+                {row.ticket_type}
+              </Badge>
+            ) : null}
+            {row.category ? (
+              <Badge variant="outline" className="border-sky-200 bg-sky-500/10 text-[10px] text-sky-700">
+                {row.category}
+              </Badge>
+            ) : null}
+            {row.sla_status ? (
+              <Badge variant="outline" className={`text-[10px] ${slaBadgeClass(row.sla_status)}`}>
+                {slaStatusLabel(row.sla_status, locale)}
+              </Badge>
+            ) : null}
+            <Badge variant="outline" className="border-border bg-muted/60 text-[10px]">
+              {row.assignee}
+            </Badge>
+          </div>
+        </button>
+      </HoverCardTrigger>
+      <HoverCardContent align="start" className="w-[22rem] space-y-3 p-4">
+        <div className="space-y-1">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {locale === "fr" ? "Apercu du ticket" : "Ticket preview"}
+          </p>
+          <div className="space-y-1">
+            <p className="text-sm font-semibold text-foreground">{row.id}</p>
+            <p className="text-sm leading-6 text-foreground/90">{row.title}</p>
+          </div>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          {metadataRows.map((item) => (
+            <div key={`${row.id}-${item.label}`} className="rounded-lg border border-border/70 bg-muted/30 px-3 py-2">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{item.label}</p>
+              <p className="mt-1 text-xs text-foreground">{item.value}</p>
+            </div>
+          ))}
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          {locale === "fr" ? "Cliquez pour ouvrir la fiche complete du ticket." : "Click to open the full ticket page."}
+        </p>
+      </HoverCardContent>
+    </HoverCard>
+  )
+}
+
+type TicketResultsMessageProps = {
+  results: TicketResultsPayload
+  locale: string
+  onOpenTicket: (ticketId: string) => void
+}
+
+function TicketResultsMessage({ results, locale, onOpenTicket }: TicketResultsMessageProps) {
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const title = ticketResultsTitle(results, locale)
+  const visibleRows = results.tickets.slice(0, 3)
+  const overflowRows = results.tickets.slice(3)
+  const previewRows = overflowRows.slice(0, 5)
+
+  return (
+    <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+        <Badge variant="outline" className="text-[10px]">
+          {ticketCountLabel(results.total_count, locale)}
+        </Badge>
+      </div>
+      {results.scope ? <p className="text-[11px] text-muted-foreground">{results.scope}</p> : null}
+      <div className="space-y-2">
+        {visibleRows.map((row) => (
+          <TicketResultButton key={`ticket-result-${row.id}`} row={row} locale={locale} onOpenTicket={onOpenTicket} />
+        ))}
+      </div>
+      {overflowRows.length > 0 ? (
+        <div className="pt-0.5">
+          <HoverCard openDelay={100} closeDelay={90}>
+            <HoverCardTrigger asChild>
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setDialogOpen(true)
+                }}
+                className="inline-flex items-center gap-2 rounded-full border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30"
+              >
+                {moreTicketsLabel(results, overflowRows.length, locale)}
+              </button>
+            </HoverCardTrigger>
+            <HoverCardContent align="start" className="w-[26rem] space-y-2 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {locale === "fr" ? "Apercu rapide" : "Quick preview"}
+              </p>
+              <div className="space-y-2">
+                {previewRows.map((row) => (
+                  <TicketResultButton
+                    key={`ticket-preview-${row.id}`}
+                    row={row}
+                    locale={locale}
+                    compact
+                    onOpenTicket={onOpenTicket}
+                  />
+                ))}
+              </div>
+              {overflowRows.length > previewRows.length ? (
+                <p className="text-[11px] text-muted-foreground">
+                  {locale === "fr"
+                    ? `Cliquez pour voir les ${overflowRows.length} tickets restants.`
+                    : `Click to view all ${overflowRows.length} remaining tickets.`}
+                </p>
+              ) : null}
+            </HoverCardContent>
+          </HoverCard>
+
+          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+            <DialogContent className="max-w-3xl gap-0 overflow-hidden p-0">
+              <DialogHeader className="border-b border-border/70 px-6 py-4">
+                <DialogTitle className="text-base">{title}</DialogTitle>
+                <DialogDescription>
+                  {locale === "fr"
+                    ? `${overflowRows.length} ticket${overflowRows.length > 1 ? "s" : ""} supplementaire${overflowRows.length > 1 ? "s" : ""}`
+                    : `${overflowRows.length} additional ticket${overflowRows.length === 1 ? "" : "s"}`}
+                </DialogDescription>
+              </DialogHeader>
+              <div className="px-6 pb-6 pt-4">
+                <ScrollArea className="max-h-[60vh] pr-4">
+                  {overflowRows.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      {locale === "fr" ? "Aucun ticket supplementaire." : "No additional tickets."}
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {overflowRows.map((row) => (
+                        <TicketResultButton
+                          key={`ticket-dialog-${row.id}`}
+                          row={row}
+                          locale={locale}
+                          onOpenTicket={(ticketId) => {
+                            setDialogOpen(false)
+                            onOpenTicket(ticketId)
+                          }}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </ScrollArea>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+
+function ProblemListMessage({
+  payload,
+  locale,
+  onOpenProblem,
+}: {
+  payload: ProblemListPayload
+  locale: string
+  onOpenProblem: (problemId: string) => void
+}) {
+  const [showAll, setShowAll] = useState(false)
+  const visibleProblems = showAll ? payload.problems : payload.problems.slice(0, 5)
+
+  return (
+    <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          {payload.title || (locale === "fr" ? "Problemes" : "Problems")}
+        </p>
+        <Badge variant="outline" className="text-[10px]">{payload.total_count}</Badge>
+        {payload.status_filter ? <Badge variant="outline" className="text-[10px]">{payload.status_filter}</Badge> : null}
+      </div>
+      {payload.scope ? <p className="text-[11px] text-muted-foreground">{payload.scope}</p> : null}
+      <div className="overflow-x-auto rounded-lg border border-border/70">
+        <table className="w-full text-[12px]">
+          <thead>
+            <tr className="border-b border-border/70 bg-muted/30">
+              <th className="px-3 py-2 text-left font-semibold text-muted-foreground">ID</th>
+              <th className="px-3 py-2 text-left font-semibold text-muted-foreground">{locale === "fr" ? "Titre" : "Title"}</th>
+              <th className="px-3 py-2 text-left font-semibold text-muted-foreground">{locale === "fr" ? "Statut" : "Status"}</th>
+              <th className="px-3 py-2 text-right font-semibold text-muted-foreground">{locale === "fr" ? "Occurrences" : "Occurrences"}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleProblems.map((problem) => (
+              <tr
+                key={`pl-row-${problem.id}`}
+                className="cursor-pointer border-b border-border/40 transition-colors hover:bg-muted/20"
+                onClick={() => onOpenProblem(problem.id)}
+              >
+                <td className="px-3 py-2 font-mono text-[10px] text-muted-foreground">{problem.id}</td>
+                <td className="px-3 py-2 max-w-[200px] line-clamp-1 text-foreground">{problem.title}</td>
+                <td className="px-3 py-2">
+                  <span className={getBadgeStyle("problem_status", problem.status)}>{problem.status}</span>
+                </td>
+                <td className="px-3 py-2 text-right text-muted-foreground">{problem.occurrences_count}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {!showAll && payload.problems.length > 5 ? (
+        <button
+          type="button"
+          className="text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline underline-offset-2"
+          onClick={() => setShowAll(true)}
+        >
+          {locale === "fr" ? `Voir ${payload.problems.length - 5} probleme(s) de plus` : `View ${payload.problems.length - 5} more problems`}
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+
+function ProblemLinkedTicketsMessage({
+  payload,
+  locale,
+  onOpenTicket,
+}: {
+  payload: ProblemLinkedTicketsPayload
+  locale: string
+  onOpenTicket: (route: string) => void
+}) {
+  const [showAll, setShowAll] = useState(false)
+  const visibleTickets = showAll ? payload.tickets : payload.tickets.slice(0, 5)
+
+  return (
+    <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          {payload.title || (locale === "fr" ? "Tickets lies au probleme" : "Problem linked tickets")}
+        </p>
+        <Badge variant="outline" className="text-[10px]">{payload.problem_id}</Badge>
+        <Badge variant="outline" className="text-[10px]">{payload.total_count}</Badge>
+      </div>
+      <div className="space-y-2">
+        {visibleTickets.map((ticket) => (
+          <TicketResultButton
+            key={`problem-linked-${ticket.id}`}
+            row={{
+              id: ticket.id,
+              title: ticket.title,
+              status: ticket.status,
+              priority: ticket.priority,
+              assignee: ticket.assignee,
+            }}
+            locale={locale}
+            onOpenTicket={() => onOpenTicket(ticket.route)}
+          />
+        ))}
+      </div>
+      {!showAll && payload.tickets.length > 5 ? (
+        <button
+          type="button"
+          className="text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline underline-offset-2"
+          onClick={() => setShowAll(true)}
+        >
+          {locale === "fr" ? `Voir ${payload.tickets.length - 5} ticket(s) de plus` : `View ${payload.tickets.length - 5} more tickets`}
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+
+function RecommendationListMessage({
+  payload,
+  locale,
+  onOpenRecommendations,
+}: {
+  payload: RecommendationListPayload
+  locale: string
+  onOpenRecommendations: () => void
+}) {
+  const [showAll, setShowAll] = useState(false)
+  const visibleRecommendations = showAll ? payload.recommendations : payload.recommendations.slice(0, 5)
+
+  function getConfidenceBand(c: number): "high" | "medium" | "low" | "general_knowledge" {
+    if (c <= 0.25) return "general_knowledge"
+    if (c >= 0.78) return "high"
+    if (c >= 0.52) return "medium"
+    return "low"
+  }
+
+  return (
+    <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          {payload.title || (locale === "fr" ? "Recommandations" : "Recommendations")}
+        </p>
+        <Badge variant="outline" className="text-[10px]">{payload.total_count}</Badge>
+      </div>
+      {payload.scope ? <p className="text-[11px] text-muted-foreground">{payload.scope}</p> : null}
+      <div className="space-y-2">
+        {visibleRecommendations.map((rec) => (
+          <div key={`rl-rec-${rec.id}`} className="space-y-2 rounded-lg border border-border bg-background/70 p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="flex-1 text-[13px] font-semibold text-foreground">{rec.title}</p>
+              <Badge variant="outline" className="text-[10px]">{rec.type}</Badge>
+              <Badge variant="outline" className="text-[10px]">{rec.impact}</Badge>
+            </div>
+            <p className="line-clamp-2 text-[12px] text-muted-foreground">{rec.description}</p>
+            <ConfidenceBar confidence={rec.confidence} band={getConfidenceBand(rec.confidence)} size="sm" />
+          </div>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {!showAll && payload.recommendations.length > 5 ? (
+          <button
+            type="button"
+            className="text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline underline-offset-2"
+            onClick={() => setShowAll(true)}
+          >
+            {locale === "fr" ? `Voir ${payload.recommendations.length - 5} recommandation(s) de plus` : `View ${payload.recommendations.length - 5} more recommendations`}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="text-[12px] text-blue-600 transition-colors hover:text-blue-800"
+          onClick={onOpenRecommendations}
+        >
+          {locale === "fr" ? "Voir toutes les recommandations" : "View all recommendations"} →
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function confidenceBadgeClass(level: ChatConfidence["level"]): string {
+  if (level === "high") return "border-emerald-200 bg-emerald-500/10 text-emerald-700"
+  if (level === "medium") return "border-amber-200 bg-amber-500/10 text-amber-700"
+  return "border-red-200 bg-red-500/10 text-red-700"
+}
+
+function likelihoodBadgeClass(level: ChatCauseCandidate["likelihood"]): string {
+  if (level === "high") return "border-red-200 bg-red-500/10 text-red-700"
+  if (level === "medium") return "border-amber-200 bg-amber-500/10 text-amber-700"
+  return "border-slate-200 bg-slate-500/10 text-slate-700"
+}
+
+function structuredDateLabel(value: string | null | undefined, locale: string): string | null {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  return date.toLocaleString(locale === "fr" ? "fr-FR" : "en-US", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
+}
+
+function StructuredSection({
+  title,
+  items,
+}: {
+  title: string
+  items: string[]
+}) {
+  if (!items.length) return null
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+      <ul className="list-disc space-y-1 pl-4 text-[13px] leading-6 text-foreground/95">
+        {items.map((item, index) => (
+          <li key={`${title}-${index}`}>{item}</li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function ActionLinks({
+  links,
+  onOpenRoute,
+}: {
+  links: ChatActionLink[]
+  onOpenRoute: (route: string) => void
+}) {
+  if (!links.length) return null
+  return (
+    <div className="flex flex-wrap gap-2">
+      {links.map((link) => (
+        <Button
+          key={`${link.label}-${link.route}`}
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 rounded-full"
+          onClick={(event) => {
+            event.stopPropagation()
+            onOpenRoute(link.route)
+          }}
+        >
+          {link.label}
+        </Button>
+      ))}
+    </div>
+  )
+}
+
+function RelatedTicketChips({
+  tickets,
+  onOpenRoute,
+}: {
+  tickets: ChatRelatedTicketRef[]
+  onOpenRoute: (route: string) => void
+}) {
+  if (!tickets.length) return null
+  return (
+    <div className="flex flex-wrap gap-2">
+      {tickets.map((ticket) => (
+        <button
+          key={`${ticket.ticket_id}-${ticket.route}`}
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation()
+            onOpenRoute(ticket.route)
+          }}
+          className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-3 py-1 text-xs text-foreground transition-colors hover:border-primary/40 hover:bg-accent/50"
+        >
+          <span className="font-semibold">{ticket.ticket_id}</span>
+          <ArrowUpRight className="h-3 w-3 text-primary" />
+        </button>
+      ))}
+    </div>
   )
 }
 
@@ -271,6 +863,56 @@ function parseAssistantTextBlocks(content: string): AssistantTextBlock[] {
   return blocks
 }
 
+/**
+ * Formats chat messages as plain text for export.
+ * Handles both plain content and structured response payloads.
+ *
+ * @param messages - Array of ChatMessage objects
+ * @param ticketId - Optional ticket ID for the filename context
+ * @returns Formatted plain-text string
+ */
+function formatChatAsText(messages: ChatMessage[], ticketId: string | null): string {
+  const date = new Date().toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" })
+  const lines = [`--- Conversation IA exportée le ${date} ---`, ""]
+  for (const msg of messages) {
+    const time = msg.createdAt
+      ? new Date(msg.createdAt).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })
+      : ""
+    const role = msg.role === "user" ? "Agent" : "IA"
+    let text = ""
+    if (msg.content && msg.content.trim()) {
+      text = msg.content
+    } else if (msg.responsePayload && "summary" in msg.responsePayload) {
+      text = `[Structured] ${msg.responsePayload.summary}`
+    } else {
+      text = JSON.stringify(msg.responsePayload || "").slice(0, 200)
+    }
+    lines.push(`[${time}] ${role}: ${text}`)
+  }
+  return lines.join("\n")
+}
+
+/**
+ * Triggers a browser download of the chat as a .txt file.
+ *
+ * @param messages - Array of ChatMessage objects
+ * @param ticketId - Optional ticket ID for the filename
+ */
+function downloadChatTxt(messages: ChatMessage[], ticketId: string | null) {
+  const text = formatChatAsText(messages, ticketId)
+  const date = new Date().toISOString().split("T")[0]
+  const filename = ticketId ? `chat-${ticketId}-${date}.txt` : `chat-${date}.txt`
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
 export function TicketChatbot() {
   const { t, locale } = useI18n()
   const { user, hasPermission } = useAuth()
@@ -278,19 +920,66 @@ export function TicketChatbot() {
   const [input, setInput] = useState("")
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(false)
-  const [creatingId, setCreatingId] = useState<string | null>(null)
+  const [exportMenuOpen, setExportMenuOpen] = useState(false)
+  const [exportSuccess, setExportSuccess] = useState(false)
+  // pendingSuggestion holds the suggestion awaiting explicit user confirmation
+  // before it is applied to the ticket draft.  null means no confirmation is
+  // currently shown.  This gate exists because this is a copilot, not an agent
+  // — no action should be taken on the user's behalf without confirmation.
+  const [pendingSuggestion, setPendingSuggestion] = useState<{
+    messageId: string
+    solution: string
+    sourceId: string
+  } | null>(null)
   const [criticalOverflowRows, setCriticalOverflowRows] = useState<TicketDigestRow[]>([])
   const [criticalOverflowLoaded, setCriticalOverflowLoaded] = useState(false)
   const [criticalOverflowLoading, setCriticalOverflowLoading] = useState(false)
   const [feedbackSubmitting, setFeedbackSubmitting] = useState<Record<string, boolean>>({})
   const scrollRef = useRef<HTMLDivElement>(null)
+  const endOfMessagesRef = useRef<HTMLDivElement>(null)
+  const chatAbortRef = useRef<AbortController | null>(null)
 
-  const quickPrompts = [
-    t("chat.prompt1"),
-    t("chat.prompt2"),
-    t("chat.prompt3"),
-    t("chat.prompt4"),
-  ]
+  // Derive the last mentioned ticket ID from structured response payloads
+  const lastTicketId: string | null = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const payload = messages[i].responsePayload
+      if (!payload) continue
+      if ("ticket_id" in payload && typeof payload.ticket_id === "string") {
+        return payload.ticket_id
+      }
+    }
+    return null
+  })()
+
+  function resolveSourceQuery(messageId: string): string {
+    const index = messages.findIndex((message) => message.id === messageId)
+    if (index === -1) return ""
+    const current = messages[index]
+    if (current.sourceQuery) return current.sourceQuery
+    for (let i = index - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        return messages[i].content || ""
+      }
+    }
+    return ""
+  }
+
+  async function copyToComments(msgs: ChatMessage[], ticketId: string) {
+    const text = formatChatAsText(msgs, ticketId)
+    try {
+      const res = await fetch(`/api/tickets/${ticketId}/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: text, author: "IA Export" }),
+      })
+      if (res.ok) {
+        setExportSuccess(true)
+        setTimeout(() => setExportSuccess(false), 3000)
+      }
+    } catch {
+      console.warn("[chatExport] copy to comments failed")
+    }
+  }
 
   async function loadCriticalOverflowRows() {
     if (criticalOverflowLoaded || criticalOverflowLoading) return
@@ -358,9 +1047,33 @@ export function TicketChatbot() {
     }
   }
 
+  /**
+   * Initiates the apply flow for a chat-suggested fix.
+   * Does NOT apply immediately — sets pendingSuggestion to trigger an inline
+   * confirmation UI.  The actual application only happens after explicit user
+   * confirmation via _doApplySuggestion.
+   *
+   * Also clears any in-progress confirmation if the source changes, so that
+   * sending a new chat message (which triggers a new suggestion) automatically
+   * dismisses a stale confirmation row.
+   *
+   * This gate exists because this is a copilot, not an agent.  No action
+   * should be taken on the user's behalf without confirmation.
+   */
   function handleApplySuggestion(messageId: string, solution: string, sourceId: string) {
     const normalized = solution.trim()
     if (!normalized) return
+    setPendingSuggestion({ messageId, solution: normalized, sourceId })
+  }
+
+  /**
+   * Performs the actual draft mutation after the user has confirmed the apply.
+   * Contains the original apply logic moved from handleApplySuggestion.
+   *
+   * Called only from the inline confirmation "Confirm" button, never directly.
+   */
+  function _doApplySuggestion(messageId: string, solution: string, sourceId: string) {
+    setPendingSuggestion(null)
     setMessages((prev) =>
       prev.map((item) => {
         if (item.id !== messageId) return item
@@ -371,7 +1084,7 @@ export function TicketChatbot() {
             ...item,
             ticketDraft: {
               ...item.ticketDraft,
-              description: `${item.ticketDraft.description}\n\n${marker}\n${normalized}`.trim(),
+              description: `${item.ticketDraft.description}\n\n${marker}\n${solution}`.trim(),
             },
           }
         }
@@ -380,7 +1093,7 @@ export function TicketChatbot() {
     )
     setInput((current) => {
       if (current.trim()) return current
-      return `Create a ticket for this issue. Suggested fix: ${normalized}`
+      return `Create a ticket for this issue. Suggested fix: ${solution}`
     })
   }
 
@@ -447,7 +1160,573 @@ export function TicketChatbot() {
   }
 
   function renderAssistantMessage(message: ChatMessage) {
+    const isUserMessage = message.role === "user"
+    const payload = message.responsePayload
+    if (payload) {
+      if (payload.type === "ticket_status") {
+        const updatedAt = structuredDateLabel(payload.updated_at, locale)
+        return (
+          <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+            <div className="space-y-1">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{payload.ticket_id}</p>
+              <p className="text-sm font-semibold text-foreground">{payload.title}</p>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              <Badge variant="outline" className={`text-[10px] ${statusBadgeClass(payload.status)}`}>
+                {payload.status}
+              </Badge>
+              <Badge variant="outline" className={`text-[10px] ${priorityBadgeClass(payload.priority)}`}>
+                {payload.priority}
+              </Badge>
+              {payload.sla_state ? (
+                <Badge variant="outline" className={`text-[10px] ${slaBadgeClass(payload.sla_state)}`}>
+                  {slaStatusLabel(payload.sla_state, locale)}
+                </Badge>
+              ) : null}
+              <Badge variant="outline" className="border-border bg-muted/60 text-[10px]">
+                {payload.assignee}
+              </Badge>
+            </div>
+            <p className="text-[13px] leading-6 text-foreground/95">{payload.summary}</p>
+            {updatedAt ? <p className="text-[11px] text-muted-foreground">{locale === "fr" ? `Mis a jour: ${updatedAt}` : `Updated: ${updatedAt}`}</p> : null}
+            <ActionLinks links={payload.actions} onOpenRoute={(route) => router.push(route)} />
+          </div>
+        )
+      }
+
+      if (payload.type === "ticket_details") {
+        const createdAt = structuredDateLabel(payload.created_at, locale)
+        const updatedAt = structuredDateLabel(payload.updated_at, locale)
+        return (
+          <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+            <div className="space-y-1">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{payload.ticket_id}</p>
+              <p className="text-sm font-semibold text-foreground">{payload.title}</p>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              <Badge variant="outline" className={`text-[10px] ${statusBadgeClass(payload.status)}`}>
+                {payload.status}
+              </Badge>
+              <Badge variant="outline" className={`text-[10px] ${priorityBadgeClass(payload.priority)}`}>
+                {payload.priority}
+              </Badge>
+              {payload.ticket_type ? (
+                <Badge variant="outline" className="text-[10px] border-emerald-200 bg-emerald-500/10 text-emerald-700">
+                  {payload.ticket_type}
+                </Badge>
+              ) : null}
+              {payload.sla?.state ? (
+                <Badge variant="outline" className={`text-[10px] ${slaBadgeClass(payload.sla.state)}`}>
+                  {slaStatusLabel(payload.sla.state, locale)}
+                </Badge>
+              ) : null}
+              <Badge variant="outline" className="border-border bg-muted/60 text-[10px]">
+                {payload.assignee}
+              </Badge>
+              {payload.reporter ? (
+                <Badge variant="outline" className="border-border bg-muted/60 text-[10px]">
+                  {payload.reporter}
+                </Badge>
+              ) : null}
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                {locale === "fr" ? "Description" : "Description"}
+              </p>
+              <p className="whitespace-pre-wrap text-[13px] leading-6 text-foreground/95">{payload.description}</p>
+            </div>
+            <div className="grid gap-2 text-[11px] text-muted-foreground sm:grid-cols-2">
+              {payload.ticket_type ? <p>{locale === "fr" ? `Type: ${payload.ticket_type}` : `Type: ${payload.ticket_type}`}</p> : null}
+              {payload.category ? <p>{locale === "fr" ? `Categorie: ${payload.category}` : `Category: ${payload.category}`}</p> : null}
+              {createdAt ? <p>{locale === "fr" ? `Cree: ${createdAt}` : `Created: ${createdAt}`}</p> : null}
+              {updatedAt ? <p>{locale === "fr" ? `Mis a jour: ${updatedAt}` : `Updated: ${updatedAt}`}</p> : null}
+              {payload.sla?.remaining_human ? (
+                <p>{locale === "fr" ? `SLA restant: ${payload.sla.remaining_human}` : `SLA remaining: ${payload.sla.remaining_human}`}</p>
+              ) : null}
+            </div>
+            {payload.recent_comments.length ? (
+              <div className="space-y-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {locale === "fr" ? "Commentaires recents" : "Recent comments"}
+                </p>
+                <div className="space-y-2">
+                  {payload.recent_comments.map((comment, index) => (
+                    <div key={`comment-${index}`} className="rounded-xl border border-border/70 bg-background/70 p-3">
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+                        {comment.author ? <span className="font-medium text-foreground/85">{comment.author}</span> : null}
+                        {comment.created_at ? <span>{structuredDateLabel(comment.created_at, locale)}</span> : null}
+                      </div>
+                      <p className="mt-1.5 text-[13px] leading-6 text-foreground/95">{comment.content}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            {payload.related_entities.length ? (
+              <div className="space-y-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {locale === "fr" ? "Entites liees" : "Related entities"}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {payload.related_entities.map((entity) => (
+                    <button
+                      key={`${entity.entity_type}-${entity.entity_id}`}
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        router.push(entity.route)
+                      }}
+                      className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-3 py-1 text-xs text-foreground transition-colors hover:border-primary/40 hover:bg-accent/50"
+                    >
+                      <span className="font-semibold">{entity.entity_id}</span>
+                      <span className="text-muted-foreground">{entity.relation || entity.entity_type}</span>
+                      <ArrowUpRight className="h-3 w-3 text-primary" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            <ActionLinks links={payload.actions} onOpenRoute={(route) => router.push(route)} />
+          </div>
+        )
+      }
+
+      if (payload.type === "ticket_list") {
+        const results = ticketListPayloadToResults(payload)
+        return (
+          <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline" className="text-[10px]">
+                {locale === "fr" ? `${payload.summary_metrics.open_count} actifs` : `${payload.summary_metrics.open_count} active`}
+              </Badge>
+              <Badge variant="outline" className="text-[10px]">
+                {locale === "fr" ? `${payload.summary_metrics.critical_count} critiques` : `${payload.summary_metrics.critical_count} critical`}
+              </Badge>
+            </div>
+            {payload.top_recommendation ? (
+              <div className="rounded-xl border border-border/70 bg-background/70 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {locale === "fr" ? "Recommandation principale" : "Top recommendation"}
+                </p>
+                <p className="mt-1 text-[13px] leading-6 text-foreground/95">{payload.top_recommendation.summary}</p>
+                <Badge variant="outline" className="mt-2 text-[10px]">
+                  {locale === "fr" ? "Confiance" : "Confidence"} {Math.round(payload.top_recommendation.confidence * 100)}%
+                </Badge>
+              </div>
+            ) : null}
+            <TicketResultsMessage results={results} locale={locale} onOpenTicket={(ticketId) => router.push(`/tickets/${ticketId}`)} />
+          </div>
+        )
+      }
+
+      if (payload.type === "resolution_advice") {
+        return (
+          <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+            {payload.ticket_id ? <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{payload.ticket_id}</p> : null}
+            <div className="rounded-xl border border-border/70 bg-background/70 p-3">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                {locale === "fr" ? "Resume" : "Summary"}
+              </p>
+              <p className="mt-1 text-[13px] leading-6 text-foreground/95">{payload.summary}</p>
+            </div>
+            {payload.recommended_actions.length ? (
+              <div className="space-y-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {locale === "fr" ? "Actions recommandees" : "Recommended actions"}
+                </p>
+                <div className="space-y-2">
+                  {payload.recommended_actions.map((step) => (
+                    <div key={`advice-step-${step.step}`} className="rounded-xl border border-border/70 bg-background/70 p-3">
+                      <p className="text-[13px] font-semibold text-foreground">
+                        {locale === "fr" ? `Etape ${step.step}` : `Step ${step.step}`} - {step.text}
+                      </p>
+                      {step.reason ? <p className="mt-1 text-[12px] leading-6 text-muted-foreground">{step.reason}</p> : null}
+                      {step.evidence.length ? (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {step.evidence.map((evidence, index) => (
+                            <Badge key={`evidence-${step.step}-${index}`} variant="outline" className="text-[10px]">
+                              {evidence}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            <StructuredSection title={locale === "fr" ? "Pourquoi cela correspond" : "Why this matches"} items={payload.why_this_matches} />
+            <StructuredSection title={locale === "fr" ? "Validation" : "Validation"} items={payload.validation_steps} />
+            <StructuredSection title={locale === "fr" ? "Etapes suivantes" : "Next steps"} items={payload.next_steps} />
+            {payload.related_tickets.length ? (
+              <div className="space-y-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {locale === "fr" ? "Tickets lies" : "Related tickets"}
+                </p>
+                <RelatedTicketChips tickets={payload.related_tickets} onOpenRoute={(route) => router.push(route)} />
+              </div>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline" className={`text-[10px] ${confidenceBadgeClass(payload.confidence.level)}`}>
+                {locale === "fr" ? "Confiance" : "Confidence"}: {payload.confidence.level}
+              </Badge>
+              <p className="text-[12px] text-muted-foreground">{payload.confidence.reason}</p>
+            </div>
+          </div>
+        )
+      }
+
+      if (payload.type === "cause_analysis") {
+        return (
+          <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+            {payload.ticket_id ? <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{payload.ticket_id}</p> : null}
+            <div className="rounded-xl border border-border/70 bg-background/70 p-3">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                {locale === "fr" ? "Analyse" : "Analysis"}
+              </p>
+              <p className="mt-1 text-[13px] leading-6 text-foreground/95">{payload.summary}</p>
+            </div>
+            <div className="space-y-2">
+              {payload.possible_causes.map((cause, index) => (
+                <div key={`cause-${index}`} className="rounded-xl border border-border/70 bg-background/70 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-[13px] font-semibold text-foreground">{cause.title}</p>
+                    <Badge variant="outline" className={`text-[10px] ${likelihoodBadgeClass(cause.likelihood)}`}>
+                      {locale === "fr" ? "Probabilite" : "Likelihood"}: {cause.likelihood}
+                    </Badge>
+                  </div>
+                  <p className="mt-1 text-[12px] leading-6 text-muted-foreground">{cause.explanation}</p>
+                  {cause.evidence.length ? (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {cause.evidence.map((evidence, evidenceIndex) => (
+                        <Badge key={`cause-evidence-${index}-${evidenceIndex}`} variant="outline" className="text-[10px]">
+                          {evidence}
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : null}
+                  {cause.related_tickets.length ? (
+                    <div className="mt-2">
+                      <RelatedTicketChips tickets={cause.related_tickets} onOpenRoute={(route) => router.push(route)} />
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+            <StructuredSection title={locale === "fr" ? "Controles recommandes" : "Recommended checks"} items={payload.recommended_checks} />
+            <StructuredSection title={locale === "fr" ? "Validation" : "Validation"} items={payload.validation_steps} />
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline" className={`text-[10px] ${confidenceBadgeClass(payload.confidence.level)}`}>
+                {locale === "fr" ? "Confiance" : "Confidence"}: {payload.confidence.level}
+              </Badge>
+              <p className="text-[12px] text-muted-foreground">{payload.confidence.reason}</p>
+            </div>
+          </div>
+        )
+      }
+
+      if (payload.type === "similar_tickets") {
+        return (
+          <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+            {payload.source_ticket_id ? <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{payload.source_ticket_id}</p> : null}
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {locale === "fr" ? "Tickets similaires" : "Similar tickets"}
+            </p>
+            <div className="space-y-2">
+              {payload.matches.map((match) => (
+                <button
+                  key={`similar-${match.ticket_id}`}
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    router.push(match.route)
+                  }}
+                  className="w-full rounded-xl border border-border bg-background/70 p-3 text-left transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:bg-accent/40"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-foreground">{match.ticket_id}</p>
+                    <Badge variant="outline" className="text-[10px]">
+                      {locale === "fr" ? "Score" : "Score"} {Math.round(match.match_score * 100)}%
+                    </Badge>
+                  </div>
+                  <p className="mt-1 text-[13px] text-foreground/95">{match.title}</p>
+                  <p className="mt-1 text-[12px] leading-6 text-muted-foreground">{match.match_reason}</p>
+                  {match.status ? (
+                    <Badge variant="outline" className={`mt-2 text-[10px] ${statusBadgeClass(match.status)}`}>
+                      {match.status}
+                    </Badge>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          </div>
+        )
+      }
+
+      if (payload.type === "assignment_recommendation") {
+        return (
+          <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+            {payload.ticket_id ? <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{payload.ticket_id}</p> : null}
+            <div className="flex flex-wrap gap-2">
+              {payload.current_assignee ? (
+                <Badge variant="outline" className="text-[10px]">
+                  {locale === "fr" ? `Actuel: ${payload.current_assignee}` : `Current: ${payload.current_assignee}`}
+                </Badge>
+              ) : null}
+              {payload.recommended_assignee ? (
+                <Badge variant="outline" className="text-[10px]">
+                  {locale === "fr" ? `Recommande: ${payload.recommended_assignee}` : `Recommended: ${payload.recommended_assignee}`}
+                </Badge>
+              ) : null}
+            </div>
+            <StructuredSection title={locale === "fr" ? "Raisonnement" : "Reasoning"} items={payload.reasoning} />
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline" className={`text-[10px] ${confidenceBadgeClass(payload.confidence.level)}`}>
+                {locale === "fr" ? "Confiance" : "Confidence"}: {payload.confidence.level}
+              </Badge>
+              <p className="text-[12px] text-muted-foreground">{payload.confidence.reason}</p>
+            </div>
+          </div>
+        )
+      }
+
+      if (payload.type === "insufficient_evidence") {
+        return (
+          <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+            <div className="rounded-xl border border-amber-200 bg-amber-500/10 p-3">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-700">
+                {locale === "fr" ? "Preuves insuffisantes" : "Insufficient evidence"}
+              </p>
+              <p className="mt-1 text-[13px] leading-6 text-foreground/95">{payload.summary}</p>
+            </div>
+            <StructuredSection title={locale === "fr" ? "Faits connus" : "Known facts"} items={payload.known_facts} />
+            <StructuredSection title={locale === "fr" ? "Signaux manquants" : "Missing signals"} items={payload.missing_signals} />
+            <StructuredSection title={locale === "fr" ? "Controles recommandes" : "Recommended next checks"} items={payload.recommended_next_checks} />
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline" className={`text-[10px] ${confidenceBadgeClass(payload.confidence.level)}`}>
+                {locale === "fr" ? "Confiance" : "Confidence"}: {payload.confidence.level}
+              </Badge>
+              <p className="text-[12px] text-muted-foreground">{payload.confidence.reason}</p>
+            </div>
+          </div>
+        )
+      }
+    }
+
+    if (payload) {
+      if (payload.type === "problem_detail") {
+        const pd = payload as ProblemDetailPayload
+        const lastSeen = pd.last_seen_at ? structuredDateLabel(pd.last_seen_at, locale) : null
+        return (
+          <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-mono text-gray-600">{pd.problem_id}</span>
+              <p className="text-sm font-semibold text-foreground">{pd.title}</p>
+              <span className={getBadgeStyle("problem_status", pd.status)}>{pd.status}</span>
+            </div>
+            <div className="flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+              <span>{locale === "fr" ? `Occurrences: ${pd.occurrences_count}` : `Occurrences: ${pd.occurrences_count}`}</span>
+              <span>{locale === "fr" ? `Actifs: ${pd.active_count}` : `Active: ${pd.active_count}`}</span>
+              {lastSeen ? <span>{locale === "fr" ? `Dernier vu: ${lastSeen}` : `Last seen: ${lastSeen}`}</span> : null}
+            </div>
+            {pd.root_cause ? (
+              <div className="border-l-[3px] border-teal-500 pl-3 py-2 bg-teal-50 dark:bg-teal-900/20 rounded-r">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-teal-700 dark:text-teal-400">{locale === "fr" ? "Cause racine" : "Root cause"}</p>
+                <p className="mt-0.5 text-[12px] text-teal-900 dark:text-teal-200">{pd.root_cause}</p>
+              </div>
+            ) : pd.ai_probable_cause ? (
+              <div className="border-l-[3px] border-dashed border-gray-400 dark:border-gray-600 pl-3 py-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">{locale === "fr" ? "Cause probable IA" : "AI probable cause"}</p>
+                <p className="mt-0.5 text-[12px] text-gray-700 dark:text-gray-300">{pd.ai_probable_cause}</p>
+              </div>
+            ) : null}
+            {pd.workaround ? (
+              <div className="border-l-[3px] border-amber-500 pl-3 py-2 bg-amber-50 dark:bg-amber-900/20 rounded-r">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">{locale === "fr" ? "Contournement" : "Workaround"}</p>
+                <p className="mt-0.5 text-[12px] text-amber-900 dark:text-amber-200">{pd.workaround}</p>
+              </div>
+            ) : null}
+            {pd.permanent_fix ? (
+              <div className="border-l-[3px] border-green-500 pl-3 py-2 bg-green-50 dark:bg-green-900/20 rounded-r">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-green-700 dark:text-green-400">{locale === "fr" ? "Correction permanente" : "Permanent fix"}</p>
+                <p className="mt-0.5 text-[12px] text-green-900 dark:text-green-200">{pd.permanent_fix}</p>
+              </div>
+            ) : null}
+            <p className="text-[11px] text-muted-foreground">
+              {locale === "fr" ? `${pd.linked_ticket_count} ticket(s) lié(s)` : `${pd.linked_ticket_count} linked ticket(s)`}
+            </p>
+            {pd.action_links && pd.action_links.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {pd.action_links.map((link, i) => (
+                  <Button
+                    key={`pd-link-${i}`}
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 rounded-full text-[10px]"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      if (link.route) {
+                        router.push(link.route)
+                        return
+                      }
+                      if (link.intent === "problem_linked_tickets") {
+                        sendMessage(`show linked tickets for ${pd.problem_id}`)
+                      }
+                    }}
+                  >
+                    {link.label}
+                  </Button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        )
+      }
+
+      if (payload.type === "problem_list") {
+        const pl = payload as ProblemListPayload
+        return (
+          <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {locale === "fr" ? "Problèmes" : "Problems"}
+              </p>
+              <Badge variant="outline" className="text-[10px]">{pl.total_count}</Badge>
+              {pl.status_filter ? <Badge variant="outline" className="text-[10px]">{pl.status_filter}</Badge> : null}
+            </div>
+            <div className="overflow-x-auto rounded-lg border border-border/70">
+              <table className="w-full text-[12px]">
+                <thead>
+                  <tr className="border-b border-border/70 bg-muted/30">
+                    <th className="px-3 py-2 text-left font-semibold text-muted-foreground">ID</th>
+                    <th className="px-3 py-2 text-left font-semibold text-muted-foreground">{locale === "fr" ? "Titre" : "Title"}</th>
+                    <th className="px-3 py-2 text-left font-semibold text-muted-foreground">{locale === "fr" ? "Statut" : "Status"}</th>
+                    <th className="px-3 py-2 text-right font-semibold text-muted-foreground">{locale === "fr" ? "Occurrences" : "Occurrences"}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pl.problems.slice(0, 5).map((problem) => (
+                    <tr
+                      key={`pl-row-${problem.id}`}
+                      className="cursor-pointer border-b border-border/40 hover:bg-muted/20 transition-colors"
+                      onClick={() => sendMessage(`tell me about ${problem.id}`)}
+                    >
+                      <td className="px-3 py-2 font-mono text-[10px] text-muted-foreground">{problem.id}</td>
+                      <td className="px-3 py-2 text-foreground line-clamp-1 max-w-[200px]">{problem.title}</td>
+                      <td className="px-3 py-2">
+                        <span className={getBadgeStyle("problem_status", problem.status)}>{problem.status}</span>
+                      </td>
+                      <td className="px-3 py-2 text-right text-muted-foreground">{problem.occurrences_count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {pl.problems.length > 5 ? (
+              <button
+                type="button"
+                className="text-[11px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline transition-colors"
+                onClick={() => sendMessage(locale === "fr" ? `voir les problemes page 2` : `show problems page 2`)}
+              >
+                {locale === "fr" ? `+${pl.problems.length - 5} autres problèmes` : `+${pl.problems.length - 5} more problems`}
+              </button>
+            ) : null}
+          </div>
+        )
+      }
+
+      if (payload.type === "problem_linked_tickets") {
+        const linked = payload as ProblemLinkedTicketsPayload
+        return (
+          <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {locale === "fr" ? "Tickets lies au probleme" : "Problem linked tickets"}
+              </p>
+              <Badge variant="outline" className="text-[10px]">{linked.problem_id}</Badge>
+              <Badge variant="outline" className="text-[10px]">{linked.total_count}</Badge>
+            </div>
+            <div className="space-y-2">
+              {linked.tickets.slice(0, 5).map((ticket) => (
+                <TicketResultButton
+                  key={`problem-linked-${ticket.id}`}
+                  row={{
+                    id: ticket.id,
+                    title: ticket.title,
+                    status: ticket.status,
+                    priority: ticket.priority,
+                    assignee: ticket.assignee,
+                  }}
+                  locale={locale}
+                  onOpenTicket={() => router.push(ticket.route)}
+                />
+              ))}
+            </div>
+            {linked.tickets.length > 5 ? (
+              <button
+                type="button"
+                className="text-[11px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline transition-colors"
+                onClick={() => sendMessage(locale === "fr" ? `montre les tickets lies a ${linked.problem_id}` : `show linked tickets for ${linked.problem_id}`)}
+              >
+                {locale === "fr" ? `+${linked.tickets.length - 5} tickets de plus` : `+${linked.tickets.length - 5} more tickets`}
+              </button>
+            ) : null}
+          </div>
+        )
+      }
+
+      if (payload.type === "recommendation_list") {
+        const rl = payload as RecommendationListPayload
+        function getConfidenceBand(c: number): "high" | "medium" | "low" | "general_knowledge" {
+          if (c <= 0.25) return "general_knowledge"
+          if (c >= 0.78) return "high"
+          if (c >= 0.52) return "medium"
+          return "low"
+        }
+        return (
+          <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {locale === "fr" ? "Recommandations" : "Recommendations"}
+              </p>
+              <Badge variant="outline" className="text-[10px]">{rl.total_count}</Badge>
+            </div>
+            <div className="space-y-2">
+              {rl.recommendations.map((rec) => (
+                <div key={`rl-rec-${rec.id}`} className="rounded-lg border border-border bg-background/70 p-3 space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-[13px] font-semibold text-foreground flex-1">{rec.title}</p>
+                    <Badge variant="outline" className="text-[10px]">{rec.type}</Badge>
+                    <Badge variant="outline" className="text-[10px]">{rec.impact}</Badge>
+                  </div>
+                  <p className="text-[12px] text-muted-foreground line-clamp-2">{rec.description}</p>
+                  <ConfidenceBar confidence={rec.confidence} band={getConfidenceBand(rec.confidence)} size="sm" />
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="text-[12px] text-blue-600 hover:text-blue-800 transition-colors"
+              onClick={() => router.push("/recommendations")}
+            >
+              {locale === "fr" ? "Voir toutes les recommandations" : "View all recommendations"} →
+            </button>
+          </div>
+        )
+      }
+    }
+
     if (message.ticketAction === "show_ticket") {
+      if (message.ticketResults?.tickets?.length) {
+        return (
+          <TicketResultsMessage
+            results={message.ticketResults}
+            locale={locale}
+            onOpenTicket={(ticketId) => router.push(`/tickets/${ticketId}`)}
+          />
+        )
+      }
       const parsed = parseTicketDigest(message.content)
       if (parsed) {
         const isCriticalDigest = isCriticalDigestHeader(parsed.header)
@@ -546,15 +1825,18 @@ export function TicketChatbot() {
     }
     const blocks = parseAssistantTextBlocks(message.content)
     if (!blocks.length) {
-      return <div className="whitespace-pre-wrap">{message.content}</div>
+      return <div className={`whitespace-pre-wrap ${isUserMessage ? "text-white" : ""}`}>{message.content}</div>
     }
     return (
-      <div className="space-y-2.5 break-words text-[13px] leading-6">
+      <div className={`space-y-2.5 break-words text-[13px] leading-6 ${isUserMessage ? "text-white" : ""}`}>
         {blocks.map((block, index) => {
           if (block.kind === "list") {
             if (block.ordered) {
               return (
-                <ol key={`assistant-block-ordered-${index}`} className="list-decimal space-y-1.5 pl-5 text-foreground/95">
+                <ol
+                  key={`assistant-block-ordered-${index}`}
+                  className={`list-decimal space-y-1.5 pl-5 ${isUserMessage ? "text-white" : "text-foreground/95"}`}
+                >
                   {block.items.map((item, itemIndex) => (
                     <li key={`assistant-block-ordered-item-${index}-${itemIndex}`}>{item}</li>
                   ))}
@@ -562,7 +1844,10 @@ export function TicketChatbot() {
               )
             }
             return (
-              <ul key={`assistant-block-bullet-${index}`} className="list-disc space-y-1.5 pl-5 text-foreground/95">
+              <ul
+                key={`assistant-block-bullet-${index}`}
+                className={`list-disc space-y-1.5 pl-5 ${isUserMessage ? "text-white" : "text-foreground/95"}`}
+              >
                 {block.items.map((item, itemIndex) => (
                   <li key={`assistant-block-bullet-item-${index}-${itemIndex}`}>{item}</li>
                 ))}
@@ -573,7 +1858,15 @@ export function TicketChatbot() {
           return (
             <p
               key={`assistant-block-paragraph-${index}`}
-              className={isHeadingLine ? "font-semibold text-foreground" : "text-foreground/95"}
+              className={
+                isHeadingLine
+                  ? isUserMessage
+                    ? "font-semibold text-white"
+                    : "font-semibold text-foreground"
+                  : isUserMessage
+                    ? "text-white"
+                    : "text-foreground/95"
+              }
             >
               {block.text}
             </p>
@@ -584,9 +1877,7 @@ export function TicketChatbot() {
   }
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
+    endOfMessagesRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
   }, [messages, loading])
 
   useEffect(() => {
@@ -595,9 +1886,22 @@ export function TicketChatbot() {
     setCriticalOverflowLoading(false)
   }, [locale])
 
+  // Abort any in-flight chat request when the component unmounts (navigation away)
+  useEffect(() => {
+    return () => {
+      chatAbortRef.current?.abort()
+    }
+  }, [])
+
   async function sendMessage(text: string) {
     const normalized = text.trim()
     if (!normalized || loading) return
+    // Abort any previous in-flight request before starting a new one
+    chatAbortRef.current?.abort()
+    chatAbortRef.current = new AbortController()
+    // Dismiss any pending apply-confirmation when the user sends a new message.
+    // The stale confirmation would no longer be actionable after context changes.
+    setPendingSuggestion(null)
     const userMessage: ChatMessage = {
       id: `m-${Date.now()}`,
       role: "user",
@@ -611,12 +1915,22 @@ export function TicketChatbot() {
     try {
       const payloadMessages = nextMessages
         .slice(-MAX_CHAT_MESSAGES)
-        .map((m) => ({ role: m.role, content: m.content.slice(0, MAX_CHAT_CONTENT_LEN) }))
+        .map((m) => ({
+          role: m.role,
+          content: m.content.slice(0, MAX_CHAT_CONTENT_LEN),
+          response_payload_type: m.responsePayload?.type ?? null,
+          entity_kind: payloadEntityKind(m.responsePayload ?? null),
+          entity_id: payloadEntityId(m.responsePayload ?? null),
+          inventory_kind: payloadInventoryKind(m.responsePayload ?? null),
+          listed_entity_ids: payloadListedEntityIds(m.responsePayload ?? null),
+        }))
       const result = await apiFetch<{
         reply: string
         message?: string
         action?: string
         ticket?: TicketDraft
+        ticket_results?: TicketResultsPayload | null
+        response_payload?: ChatResponsePayload | null
         rag_grounding?: boolean
         suggestions?: SuggestionBundle
         draft_context?: DraftContext | null
@@ -627,10 +1941,12 @@ export function TicketChatbot() {
           messages: payloadMessages,
           locale,
         }),
+        signal: chatAbortRef.current?.signal,
       })
       const ticketDraft = result.ticket
         ? {
             ...result.ticket,
+            ticket_type: result.ticket.ticket_type || "service_request",
             description: result.draft_context?.pre_filled_description || result.ticket.description,
           }
         : undefined
@@ -641,15 +1957,20 @@ export function TicketChatbot() {
           role: "assistant",
           content: normalizeAssistantReply(result.message || result.reply, locale),
           createdAt: new Date().toISOString(),
+          sourceQuery: normalized,
           ticketDraft,
           ticketAction: result.action ?? null,
           ragGrounding: Boolean(result.rag_grounding),
           suggestions: result.suggestions,
           draftContext: result.draft_context ?? null,
           actions: result.actions || [],
+          ticketResults: result.ticket_results ?? null,
+          responsePayload: normalizeResponsePayload(result.response_payload),
         },
       ])
     } catch (error) {
+      // Ignore abort errors — they happen on intentional navigation or new message send
+      if (error instanceof DOMException && error.name === "AbortError") return
       setMessages((prev) => [
         ...prev,
         {
@@ -657,6 +1978,7 @@ export function TicketChatbot() {
           role: "assistant",
           content: getChatErrorMessage(error),
           createdAt: new Date().toISOString(),
+          sourceQuery: normalized,
         },
       ])
     } finally {
@@ -672,131 +1994,246 @@ export function TicketChatbot() {
     sendMessage(prompt)
   }
 
-  async function handleCreateTicket(messageId: string, draft: TicketDraft) {
-    if (!user) return
-    setCreatingId(messageId)
-    try {
-      const title = (draft.title || "").trim().slice(0, 120)
-      const description = (draft.description || "").trim().slice(0, 4000)
-      const tags = (draft.tags || []).map((tag) => String(tag || "").trim()).filter(Boolean).slice(0, 10)
-      const assignee = (draft.assignee || "").trim() || user.name
-      if (title.length < 3 || description.length < 5) {
-        throw new Error("invalid_draft_payload")
-      }
-      const created = await apiFetch<{ id: string }>("/tickets", {
-        method: "POST",
-        body: JSON.stringify({
-          title,
-          description,
-          priority: draft.priority,
-          category: draft.category,
-          assignee,
-          reporter: user.name,
-          tags,
-        }),
-      })
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `m-${Date.now()}-created`,
-          role: "assistant",
-          content: `${t("chat.ticketCreated")} ${created.id}`,
-          createdAt: new Date().toISOString(),
-        },
-      ])
-      router.push(`/tickets/${created.id}`)
-      router.refresh()
-    } catch (error) {
-      if (error instanceof ApiError) {
-        const detail = error.detail || "request_failed"
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `m-${Date.now()}-error`,
-            role: "assistant",
-            content: `${t("chat.ticketCreateError")} (${detail})`,
-            createdAt: new Date().toISOString(),
-          },
-        ])
-        return
-      }
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `m-${Date.now()}-error`,
-          role: "assistant",
-          content: t("chat.ticketCreateError"),
-          createdAt: new Date().toISOString(),
-        },
-      ])
-    } finally {
-      setCreatingId(null)
-    }
-  }
-
   return (
-    <Card className="surface-card flex h-[calc(100vh-13rem)] flex-col overflow-hidden rounded-3xl">
-      <div className="h-1.5 bg-gradient-to-r from-primary via-emerald-500 to-amber-500" />
-      <CardHeader className="shrink-0 border-b border-border/70 pb-3">
-        <CardTitle className="flex items-center gap-2 text-base font-semibold text-foreground">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10">
-            <Bot className="h-4 w-4 text-primary" />
+    <Card className="surface-card flex h-[calc(100vh-13rem)] flex-col overflow-hidden rounded-2xl border border-border/60 shadow-sm">
+      {/* Top accent bar */}
+      <div className="h-1 bg-gradient-to-r from-primary via-emerald-500 to-amber-400 shrink-0" />
+
+      {/* Header */}
+      <CardHeader className="shrink-0 border-b border-border/60 px-4 py-3">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2.5 text-sm font-semibold text-foreground">
+            <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary/20 to-primary/5 ring-1 ring-primary/20">
+              <Bot className="h-4 w-4 text-primary" />
+              <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full bg-emerald-500 ring-1 ring-background" />
+            </div>
+            <div>
+              <p className="leading-tight">{t("chat.title")}</p>
+              <p className="text-[10px] font-normal text-muted-foreground leading-tight">
+                {messages.length > 0
+                  ? (locale === "fr" ? `${messages.filter(m => m.role === "user").length} message${messages.filter(m => m.role === "user").length > 1 ? "s" : ""}` : `${messages.filter(m => m.role === "user").length} message${messages.filter(m => m.role === "user").length > 1 ? "s" : ""}`)
+                  : (locale === "fr" ? "Prêt" : "Ready")}
+              </p>
+            </div>
+          </CardTitle>
+
+          <div className="flex items-center gap-1.5">
+            {messages.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setMessages([])}
+                className="flex h-7 w-7 items-center justify-center rounded-lg border border-border/60 text-muted-foreground hover:border-border hover:text-foreground transition-colors"
+                title={locale === "fr" ? "Nouvelle conversation" : "New conversation"}
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </button>
+            )}
+            {messages.length > 0 && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setExportMenuOpen((o) => !o)}
+                  className="flex h-7 items-center gap-1.5 rounded-lg border border-border/60 px-2 text-[11px] text-muted-foreground hover:border-border hover:text-foreground transition-colors"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-3 h-3">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+                  </svg>
+                  {locale === "fr" ? "Export" : "Export"}
+                </button>
+                {exportMenuOpen && (
+                  <div className="absolute right-0 top-full mt-1 w-56 rounded-lg border border-border bg-background shadow-lg z-50 overflow-hidden">
+                    {lastTicketId && (
+                      <button
+                        type="button"
+                        onClick={() => { void copyToComments(messages, lastTicketId); setExportMenuOpen(false); }}
+                        className="w-full text-left text-[12px] px-3 py-2 hover:bg-accent transition-colors"
+                      >
+                        {locale === "fr" ? "Copier vers les commentaires" : "Copy to ticket comments"}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => { downloadChatTxt(messages, lastTicketId); setExportMenuOpen(false); }}
+                      className="w-full text-left text-[12px] px-3 py-2 hover:bg-accent transition-colors"
+                    >
+                      {locale === "fr" ? "Télécharger (.txt)" : "Download (.txt)"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-          {t("chat.title")}
-        </CardTitle>
-        <p className="text-xs text-muted-foreground">{t("chat.subtitle")}</p>
+        </div>
+        {exportSuccess && (
+          <p className="mt-1 text-[11px] text-emerald-600 font-medium">
+            {locale === "fr" ? "Conversation ajoutée aux commentaires ✓" : "Conversation added to comments ✓"}
+          </p>
+        )}
       </CardHeader>
 
       <CardContent className="flex flex-1 flex-col overflow-hidden p-0">
         <ScrollArea className="flex-1 px-4 py-4 sm:px-5" ref={scrollRef}>
           {messages.length === 0 ? (
-            <div className="flex h-full flex-col items-center justify-center py-12">
-              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
-                <Sparkles className="h-7 w-7 text-primary" />
+            <div className="flex flex-col gap-5 py-6 px-2">
+              {/* Welcome */}
+              <div className="flex flex-col items-center gap-2 text-center px-4">
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/20 to-emerald-500/10 ring-1 ring-primary/20">
+                  <Sparkles className="h-5 w-5 text-primary" />
+                </div>
+                <p className="text-[15px] font-semibold text-foreground">
+                  {locale === "fr" ? "Bonjour, que puis-je faire pour vous ?" : "Hi, what can I help you with?"}
+                </p>
+                <p className="text-[12px] text-muted-foreground">
+                  {locale === "fr" ? "Choisissez un raccourci ou posez votre question directement." : "Pick a shortcut below or type your question."}
+                </p>
               </div>
-              <h3 className="mb-1 text-base font-semibold text-foreground">{t("chat.howHelp")}</h3>
-              <p className="mb-6 max-w-sm text-center text-sm text-muted-foreground">{t("chat.helpDesc")}</p>
-              <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
-                {quickPrompts.map((prompt) => (
-                  <button
-                    key={prompt}
-                    type="button"
-                    onClick={() => handleQuickPrompt(prompt)}
-                    className="rounded-xl border border-border bg-card/80 p-3 text-left text-xs text-foreground transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:bg-accent/60"
-                  >
-                    {prompt}
-                  </button>
-                ))}
-              </div>
+
+              {/* Grouped shortcuts */}
+              {(locale === "fr" ? [
+                {
+                  group: "🎫 Tickets",
+                  items: [
+                    { label: "Critiques", msg: "Tickets critiques" },
+                    { label: "Haute priorité", msg: "Tickets haute priorité" },
+                    { label: "Ouverts", msg: "Tickets ouverts" },
+                    { label: "En cours", msg: "Tickets en cours" },
+                    { label: "Récents", msg: "Tickets récents" },
+                    { label: "Résolus", msg: "Tickets résolus" },
+                  ],
+                },
+                {
+                  group: "📂 Catégories",
+                  items: [
+                    { label: "Réseau", msg: "Tickets réseau" },
+                    { label: "Email", msg: "Tickets email" },
+                    { label: "Sécurité", msg: "Tickets sécurité" },
+                    { label: "Matériel", msg: "Tickets matériel" },
+                    { label: "Application", msg: "Tickets application" },
+                    { label: "Infrastructure", msg: "Tickets infrastructure" },
+                  ],
+                },
+                {
+                  group: "⚠️ SLA & Risques",
+                  items: [
+                    { label: "SLA à risque", msg: "Tickets SLA à risque" },
+                    { label: "SLA dépassée", msg: "Tickets SLA dépassée" },
+                    { label: "Résumé SLA", msg: "Résumé SLA" },
+                  ],
+                },
+                {
+                  group: "🔁 Problèmes & IA",
+                  items: [
+                    { label: "Tous les problèmes", msg: "Quels sont les problèmes ?" },
+                    { label: "Problèmes ouverts", msg: "Problèmes ouverts" },
+                    { label: "Erreurs connues", msg: "Erreurs connues" },
+                    { label: "Solutions récurrentes", msg: "Solutions récurrentes" },
+                    { label: "Mes recommandations", msg: "Mes recommandations" },
+                  ],
+                },
+                {
+                  group: "📊 Analytiques",
+                  items: [
+                    { label: "Résumé de la semaine", msg: "Résumé de la semaine" },
+                    { label: "Plus fréquents", msg: "Tickets les plus fréquents" },
+                    { label: "Combien de tickets ?", msg: "Combien de tickets ouverts ?" },
+                    { label: "Créer un ticket", msg: "Créer un ticket" },
+                  ],
+                },
+              ] : [
+                {
+                  group: "🎫 Tickets",
+                  items: [
+                    { label: "Critical", msg: "Critical tickets" },
+                    { label: "High priority", msg: "High priority tickets" },
+                    { label: "Open", msg: "Open tickets" },
+                    { label: "In progress", msg: "In progress tickets" },
+                    { label: "Recent", msg: "Recent tickets" },
+                    { label: "Resolved", msg: "Resolved tickets" },
+                  ],
+                },
+                {
+                  group: "📂 Categories",
+                  items: [
+                    { label: "Network", msg: "Network tickets" },
+                    { label: "Email", msg: "Email tickets" },
+                    { label: "Security", msg: "Security tickets" },
+                    { label: "Hardware", msg: "Hardware tickets" },
+                    { label: "Application", msg: "Application tickets" },
+                    { label: "Infrastructure", msg: "Infrastructure tickets" },
+                  ],
+                },
+                {
+                  group: "⚠️ SLA & Risk",
+                  items: [
+                    { label: "SLA at risk", msg: "SLA at risk tickets" },
+                    { label: "SLA breached", msg: "SLA breached tickets" },
+                    { label: "SLA summary", msg: "SLA summary" },
+                  ],
+                },
+                {
+                  group: "🔁 Problems & AI",
+                  items: [
+                    { label: "All problems", msg: "Show problems" },
+                    { label: "Open problems", msg: "Open problems" },
+                    { label: "Known errors", msg: "Known errors" },
+                    { label: "Recurring solutions", msg: "Recurring solutions" },
+                    { label: "My recommendations", msg: "My recommendations" },
+                  ],
+                },
+                {
+                  group: "📊 Analytics",
+                  items: [
+                    { label: "Weekly summary", msg: "Weekly summary" },
+                    { label: "Most frequent", msg: "Most common ticket types" },
+                    { label: "How many tickets?", msg: "How many open tickets?" },
+                    { label: "Create a ticket", msg: "Create a ticket" },
+                  ],
+                },
+              ]).map(({ group, items }) => (
+                <div key={group} className="px-1">
+                  <p className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/70">
+                    {group}
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {items.map(({ label, msg }) => (
+                      <button
+                        key={label}
+                        type="button"
+                        onClick={() => sendMessage(msg)}
+                        className="rounded-lg border border-border/60 bg-card px-2.5 py-1.5 text-[12px] text-foreground/80 shadow-sm transition-all hover:-translate-y-px hover:border-primary/40 hover:bg-accent hover:text-foreground hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           ) : (
             <div className="space-y-4">
               {messages.map((message) => {
                 const isUser = message.role === "user"
-                const draft = message.ticketDraft
                 const parsedDigest = !isUser && message.ticketAction === "show_ticket"
                   ? parseTicketDigest(message.content)
                   : null
-                const criticalResponse = Boolean(parsedDigest && isCriticalDigestHeader(parsedDigest.header))
-                const showDraftCard = Boolean(draft && message.ticketAction === "create_ticket")
-                const canCreate = showDraftCard && hasPermission("create_ticket")
+                const criticalResponse = Boolean(parsedDigest && isCriticalDigestHeader(parsedDigest.header) && !message.ticketResults)
                 const timestamp = formatMessageTime(message.createdAt, locale)
 
                 return (
                   <div key={message.id} className="space-y-2">
-                    <div className={`flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
+                    <div className={`flex gap-2.5 ${isUser ? "justify-end" : "justify-start"}`}>
                       {!isUser && (
-                        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10">
+                        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 ring-1 ring-primary/10">
                           <Bot className="h-3.5 w-3.5 text-primary" />
                         </div>
                       )}
 
                       <div className={`flex max-w-[88%] flex-col sm:max-w-[82%] ${isUser ? "items-end" : "items-start"}`}>
                         <div
-                          className={`break-words rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed shadow-sm ${
+                          className={`break-words text-sm leading-relaxed shadow-sm ${
                             isUser
-                              ? "bg-gradient-to-br from-primary to-emerald-700 text-primary-foreground"
-                              : `border border-border/70 bg-gradient-to-br from-card via-card to-muted/30 text-foreground ${criticalResponse ? "cursor-pointer hover:border-primary/40 hover:bg-card" : ""}`
+                              ? "rounded-2xl rounded-tr-sm bg-gradient-to-br from-primary to-primary/80 px-3.5 py-2.5 text-primary-foreground"
+                              : `rounded-2xl rounded-tl-sm border border-border/60 bg-card px-3.5 py-2.5 text-foreground ${criticalResponse ? "cursor-pointer hover:border-primary/40" : ""}`
                           }`}
                           onClick={() => {
                             if (criticalResponse) {
@@ -852,6 +2289,136 @@ export function TicketChatbot() {
                               ) : null}
                             </div>
 
+                            {message.suggestions?.resolution_advice ? (
+                              message.suggestions.resolution_advice.display_mode === "llm_general_knowledge" &&
+                              message.suggestions.resolution_advice.llm_general_advisory ? (
+                                // llm_general_knowledge bubble — blue/info scheme, no Apply button
+                                <div className="rounded-lg border border-sky-200 bg-sky-50/80 p-3">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Badge variant="outline" className="border-sky-300 bg-sky-100 text-[10px] text-sky-700">
+                                      {resolutionModeLabel(message.suggestions.resolution_advice.display_mode, locale)}
+                                    </Badge>
+                                  </div>
+                                  {/* Probable causes */}
+                                  {message.suggestions.resolution_advice.llm_general_advisory.probable_causes?.length ? (
+                                    <div className="mt-2">
+                                      <p className="text-[10px] font-semibold uppercase tracking-wide text-sky-700">
+                                        {locale === "fr" ? "Causes probables" : "Probable causes"}
+                                      </p>
+                                      <ul className="mt-1 space-y-1">
+                                        {message.suggestions.resolution_advice.llm_general_advisory.probable_causes.slice(0, 3).map((cause, idx) => (
+                                          <li key={`llm-cause-${message.id}-${idx}`} className="flex gap-2 text-[11px] leading-relaxed text-sky-900">
+                                            <span className="select-none text-sky-400">•</span>
+                                            <span>{cause}</span>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  ) : null}
+                                  {/* Suggested diagnostic steps */}
+                                  {message.suggestions.resolution_advice.llm_general_advisory.suggested_checks?.length ? (
+                                    <div className="mt-2">
+                                      <p className="text-[10px] font-semibold uppercase tracking-wide text-sky-700">
+                                        {locale === "fr" ? "Etapes de diagnostic" : "Diagnostic steps"}
+                                      </p>
+                                      <ol className="mt-1 space-y-1">
+                                        {message.suggestions.resolution_advice.llm_general_advisory.suggested_checks.slice(0, 4).map((check, idx) => (
+                                          <li key={`llm-check-${message.id}-${idx}`} className="flex gap-2 text-[11px] leading-relaxed text-sky-900">
+                                            <span className="font-semibold text-sky-500">{idx + 1}.</span>
+                                            <span>{check}</span>
+                                          </li>
+                                        ))}
+                                      </ol>
+                                    </div>
+                                  ) : null}
+                                  {/* Escalation hint */}
+                                  {message.suggestions.resolution_advice.llm_general_advisory.escalation_hint ? (
+                                    <div className="mt-2 rounded border border-amber-200 bg-amber-50/80 p-2">
+                                      <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                                        {locale === "fr" ? "Conseil d'escalade" : "Escalation guidance"}
+                                      </p>
+                                      <p className="mt-0.5 text-[11px] leading-relaxed text-amber-900">
+                                        {message.suggestions.resolution_advice.llm_general_advisory.escalation_hint}
+                                      </p>
+                                    </div>
+                                  ) : null}
+                                  {/* Disclaimer */}
+                                  <p className="mt-2 text-[10px] italic text-muted-foreground">
+                                    {locale === "fr"
+                                      ? "Avis basé sur les connaissances générales en IT — pas sur votre historique de tickets."
+                                      : "Advisory based on general IT knowledge — not your ticket history."}
+                                  </p>
+                                </div>
+                              ) : (
+                                // Standard resolution advice bubble (evidence_action, tentative_diagnostic, no_strong_match)
+                                <div className="rounded-lg border border-border bg-background/70 p-3">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Badge variant="outline" className="text-[10px]">
+                                      {resolutionModeLabel(message.suggestions.resolution_advice.display_mode, locale)}
+                                    </Badge>
+                                    <Badge variant="outline" className="text-[10px]">
+                                      {Math.round((message.suggestions.resolution_advice.confidence || 0) * 100)}%
+                                    </Badge>
+                                    <Badge variant="outline" className="text-[10px]">
+                                      {message.suggestions.resolution_advice.recommendation_mode}
+                                    </Badge>
+                                  </div>
+                                  <p className="mt-2 text-xs font-semibold text-foreground">
+                                    <Sparkles className="mr-1 inline h-3.5 w-3.5 text-emerald-500" />
+                                    {message.suggestions.resolution_advice.recommended_action ||
+                                      message.suggestions.resolution_advice.fallback_action ||
+                                      (locale === "fr" ? "Aucune action prioritaire" : "No primary action")}
+                                  </p>
+                                  {message.suggestions.resolution_advice.reasoning ? (
+                                    <p className="mt-1 text-[11px] text-muted-foreground">
+                                      {message.suggestions.resolution_advice.reasoning}
+                                    </p>
+                                  ) : null}
+                                  {message.suggestions.resolution_advice.validation_steps?.length ? (
+                                    <div className="mt-2 space-y-1">
+                                      <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                        {locale === "fr" ? "Validation" : "Validation"}
+                                      </p>
+                                      {message.suggestions.resolution_advice.validation_steps.slice(0, 2).map((step, idx) => (
+                                        <p key={`validation-${message.id}-${idx}`} className="text-[11px] text-foreground/90">
+                                          <CheckCircle2 className="mr-1 inline h-3.5 w-3.5 text-emerald-600" />
+                                          {step}
+                                        </p>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                  {message.suggestions.resolution_advice.next_best_actions?.length ? (
+                                    <div className="mt-2 space-y-1">
+                                      <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                                        {locale === "fr" ? "Etapes suivantes" : "Next steps"}
+                                      </p>
+                                      {message.suggestions.resolution_advice.next_best_actions.slice(0, 2).map((step, idx) => (
+                                        <p key={`next-step-${message.id}-${idx}`} className="text-[11px] text-foreground/90">
+                                          <AlertCircle className="mr-1 inline h-3.5 w-3.5 text-amber-600" />
+                                          {step}
+                                        </p>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                  {message.suggestions.resolution_advice.evidence_sources?.length ? (
+                                    <div className="mt-2 flex flex-wrap gap-1.5">
+                                      {message.suggestions.resolution_advice.evidence_sources.slice(0, 3).map((evidence, idx) => (
+                                        <Badge key={`evidence-${message.id}-${idx}`} variant="outline" className="text-[10px]">
+                                          {evidence.reference}
+                                        </Badge>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                  {message.suggestions.resolution_advice.missing_information?.length ? (
+                                    <p className="mt-2 text-[11px] text-muted-foreground">
+                                      {locale === "fr" ? "Informations manquantes :" : "Missing information:"}{" "}
+                                      {message.suggestions.resolution_advice.missing_information.slice(0, 2).join(" ; ")}
+                                    </p>
+                                  ) : null}
+                                </div>
+                              )
+                            ) : null}
+
                             {message.suggestions?.tickets?.slice(0, 2).map((row) => (
                               <div key={`ticket-sug-${message.id}-${row.id}`} className="rounded-lg border border-border bg-background/70 p-2.5">
                                 <div className="flex items-center justify-between gap-2">
@@ -882,7 +2449,7 @@ export function TicketChatbot() {
                             ))}
 
                             {(message.suggestions?.solution_recommendations || []).slice(0, 2).map((rec, idx) => {
-                              const userQuery = [...messages].reverse().find((m) => m.role === "user")?.content || ""
+                              const userQuery = resolveSourceQuery(message.id)
                               const upKey = `${message.id}-${rec.source}-${rec.source_id || rec.text.slice(0, 24)}-helpful`
                               const downKey = `${message.id}-${rec.source}-${rec.source_id || rec.text.slice(0, 24)}-not_helpful`
                               return (
@@ -970,155 +2537,171 @@ export function TicketChatbot() {
                       </div>
 
                       {isUser && (
-                        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-foreground/10">
-                          <User className="h-3.5 w-3.5 text-foreground" />
+                        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 ring-1 ring-primary/10">
+                          <User className="h-3.5 w-3.5 text-primary" />
                         </div>
                       )}
                     </div>
 
-                    {showDraftCard && draft && (
-                      <div className={`${isUser ? "mr-10 ml-auto" : "ml-10"} w-full max-w-2xl rounded-2xl border border-border/80 bg-card/90 p-4 shadow-sm`}>
-                        <div className="mb-3 flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2">
-                            <Ticket className="h-4 w-4 text-primary" />
-                            <span className="text-sm font-semibold text-foreground">{t("chat.ticketDraft")}</span>
-                          </div>
-                          {!canCreate && (
-                            <Badge variant="outline" className="border-border bg-muted/60 text-[10px]">
-                              Preview
-                            </Badge>
-                          )}
-                        </div>
-                        <div className="space-y-3">
-                          <div className="rounded-lg border border-border bg-background/60 p-2.5">
-                            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                              {t("chat.ticketTitle")}
-                            </p>
-                            <p className="text-sm font-medium text-foreground">{draft.title}</p>
-                          </div>
-                          <div className="rounded-lg border border-border bg-background/60 p-2.5">
-                            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                              {t("chat.ticketDescription")}
-                            </p>
-                            <p className="whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
-                              {draft.description}
-                            </p>
-                          </div>
-                          <div className="flex flex-wrap gap-2">
-                            <Badge variant="outline" className={`text-[10px] ${priorityBadgeClass(t(`priority.${draft.priority}` as "priority.medium"))}`}>
-                              {t(`priority.${draft.priority}` as "priority.medium")}
-                            </Badge>
-                            <Badge variant="outline" className="border-border bg-muted/60 text-[10px]">
-                              {t(`category.${draft.category}` as "category.service_request")}
-                            </Badge>
-                            {draft.assignee && (
-                              <Badge variant="outline" className="border-border bg-muted/60 text-[10px]">
-                                {t("chat.ticketAssignee")}: {draft.assignee}
-                              </Badge>
-                            )}
-                          </div>
-                          {draft.tags.length > 0 && (
-                            <div>
-                              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                {t("chat.ticketTags")}
-                              </p>
-                              <div className="flex flex-wrap gap-1.5">
-                                {draft.tags.map((tag) => (
-                                  <Badge key={tag} variant="secondary" className="text-[10px]">
-                                    {tag}
-                                  </Badge>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                        {message.ticketAction === "create_ticket" && !hasPermission("create_ticket") && (
-                          <p className="mt-3 text-xs text-muted-foreground">
-                            {locale === "fr"
-                              ? "Vous pouvez previsualiser le brouillon, mais votre role ne peut pas creer de ticket."
-                              : "You can preview this draft, but your role cannot create tickets."}
-                          </p>
-                        )}
-                        {canCreate && (
-                          <div className="mt-3">
-                            <Button
-                              type="button"
-                              size="sm"
-                              className="h-9 gap-2 rounded-xl"
-                              disabled={creatingId === message.id}
-                              onClick={() => handleCreateTicket(message.id, draft)}
-                            >
-                              {creatingId === message.id ? (
-                                <RotateCcw className="h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                <CheckCircle2 className="h-3.5 w-3.5" />
-                              )}
-                              {t("chat.createTicket")}
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
                 )
               })}
 
               {loading && (
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10">
+                <div className="flex items-start gap-2.5">
+                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 ring-1 ring-primary/10">
                     <Bot className="h-3.5 w-3.5 text-primary" />
                   </div>
-                  <div className="rounded-2xl border border-border/70 bg-card/90 px-3.5 py-2.5">
-                    <div className="flex items-center gap-1.5">
-                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary/60" />
-                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary/60 [animation-delay:0.1s]" />
-                      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-primary/60 [animation-delay:0.2s]" />
-                      <span className="ml-1 text-[10px] text-muted-foreground">
-                        {locale === "fr" ? "Assistant en train d'ecrire..." : "Assistant is typing..."}
-                      </span>
-                    </div>
+                  <div className="rounded-2xl rounded-tl-sm border border-border/60 bg-card px-4 py-3 shadow-sm flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary/60 animate-dot-bounce" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary/60 animate-dot-bounce-delay-1" />
+                    <span className="w-1.5 h-1.5 rounded-full bg-primary/60 animate-dot-bounce-delay-2" />
                   </div>
                 </div>
               )}
+              <div ref={endOfMessagesRef} />
             </div>
           )}
         </ScrollArea>
 
-        <div className="shrink-0 border-t border-border/70 bg-card/75 p-3">
+        {/* Inline apply-confirmation row.
+            Shown when the user clicks "Apply" on a suggestion card.
+            Requires explicit Confirm before the draft is mutated.
+            Dismissed automatically when the user sends a new message. */}
+        {pendingSuggestion ? (
+          <div className="shrink-0 border-t border-amber-200 bg-amber-50/80 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="flex-1 text-[11px] text-amber-900">
+                <span className="font-semibold">
+                  {locale === "fr" ? "Appliquer au brouillon ?" : "Apply to draft?"}
+                </span>
+                {" — "}
+                {pendingSuggestion.solution.length > 80
+                  ? `${pendingSuggestion.solution.slice(0, 80)}…`
+                  : pendingSuggestion.solution}
+              </p>
+              <div className="flex shrink-0 gap-1.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-7 px-2 text-[10px]"
+                  onClick={() =>
+                    _doApplySuggestion(
+                      pendingSuggestion.messageId,
+                      pendingSuggestion.solution,
+                      pendingSuggestion.sourceId,
+                    )
+                  }
+                >
+                  {locale === "fr" ? "Confirmer" : "Confirm"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-[10px]"
+                  onClick={() => setPendingSuggestion(null)}
+                >
+                  {locale === "fr" ? "Annuler" : "Cancel"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {/* Persistent shortcut strip — scrollable, shown when conversation is active */}
+        {messages.length > 0 && (
+          <div className="shrink-0 border-t border-border/40 bg-muted/20 px-3 py-2 overflow-x-auto scrollbar-hide">
+            <div className="flex gap-1.5 min-w-max">
+              {(locale === "fr" ? [
+                { label: "🔴 Critiques", msg: "Tickets critiques" },
+                { label: "🔥 Haute priorité", msg: "Tickets haute priorité" },
+                { label: "📂 Ouverts", msg: "Tickets ouverts" },
+                { label: "🌐 Réseau", msg: "Tickets réseau" },
+                { label: "📧 Email", msg: "Tickets email" },
+                { label: "🔒 Sécurité", msg: "Tickets sécurité" },
+                { label: "🖥️ Matériel", msg: "Tickets matériel" },
+                { label: "⚙️ Application", msg: "Tickets application" },
+                { label: "⚠️ SLA à risque", msg: "Tickets SLA à risque" },
+                { label: "🚨 SLA dépassée", msg: "Tickets SLA dépassée" },
+                { label: "🔁 Problèmes", msg: "Quels sont les problèmes ?" },
+                { label: "⚡ Erreurs connues", msg: "Erreurs connues" },
+                { label: "💡 Recommandations", msg: "Mes recommandations" },
+                { label: "📊 Semaine", msg: "Résumé de la semaine" },
+                { label: "➕ Créer", msg: "Créer un ticket" },
+              ] : [
+                { label: "🔴 Critical", msg: "Critical tickets" },
+                { label: "🔥 High priority", msg: "High priority tickets" },
+                { label: "📂 Open", msg: "Open tickets" },
+                { label: "🌐 Network", msg: "Network tickets" },
+                { label: "📧 Email", msg: "Email tickets" },
+                { label: "🔒 Security", msg: "Security tickets" },
+                { label: "🖥️ Hardware", msg: "Hardware tickets" },
+                { label: "⚙️ Application", msg: "Application tickets" },
+                { label: "⚠️ SLA at risk", msg: "SLA at risk tickets" },
+                { label: "🚨 SLA breached", msg: "SLA breached tickets" },
+                { label: "🔁 Problems", msg: "Show problems" },
+                { label: "⚡ Known errors", msg: "Known errors" },
+                { label: "💡 Recommendations", msg: "My recommendations" },
+                { label: "📊 Weekly", msg: "Weekly summary" },
+                { label: "➕ Create", msg: "Create a ticket" },
+              ]).map(({ label, msg }) => (
+                <button
+                  key={label}
+                  type="button"
+                  disabled={loading}
+                  onClick={() => sendMessage(msg)}
+                  className="whitespace-nowrap rounded-full border border-border/50 bg-background/80 px-2.5 py-1 text-[11px] text-muted-foreground transition-all hover:border-primary/50 hover:bg-primary/5 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Input area */}
+        <div className="shrink-0 border-t border-border/60 bg-card/80 px-3 py-2.5">
           <div className="flex items-center gap-2">
-            {messages.length > 0 && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => setMessages([])}
-                className="h-9 w-9 shrink-0 rounded-xl p-0"
-              >
-                <RotateCcw className="h-4 w-4" />
-                <span className="sr-only">{t("chat.reset")}</span>
-              </Button>
-            )}
-            <Input
-              placeholder={t("chat.placeholder")}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault()
-                  handleSend()
-                }
-              }}
-              disabled={loading}
-              className="h-10 flex-1 rounded-xl bg-background/80"
-            />
+            <div className="relative flex-1">
+              <Input
+                placeholder={loading
+                  ? (locale === "fr" ? "Traitement en cours…" : "Processing…")
+                  : (locale === "fr" ? "Posez une question ou choisissez un raccourci…" : "Ask a question or pick a shortcut…")}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault()
+                    handleSend()
+                  }
+                }}
+                disabled={loading}
+                className="h-9 rounded-xl bg-background/90 pr-8 text-[13px] placeholder:text-muted-foreground/60"
+              />
+              {input.trim() && !loading && (
+                <button
+                  type="button"
+                  onClick={() => setInput("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+                  tabIndex={-1}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                    <path d="M5.28 4.22a.75.75 0 0 0-1.06 1.06L6.94 8l-2.72 2.72a.75.75 0 1 0 1.06 1.06L8 9.06l2.72 2.72a.75.75 0 1 0 1.06-1.06L9.06 8l2.72-2.72a.75.75 0 0 0-1.06-1.06L8 6.94 5.28 4.22Z" />
+                  </svg>
+                </button>
+              )}
+            </div>
             <Button
               type="button"
               onClick={handleSend}
               disabled={!input.trim() || loading}
               size="sm"
-              className="h-10 w-10 shrink-0 rounded-xl bg-primary p-0 text-primary-foreground hover:bg-primary/90"
+              className="h-9 w-9 shrink-0 rounded-xl bg-primary p-0 text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
-              <Send className="h-4 w-4" />
+              {loading
+                ? <span className="h-3.5 w-3.5 rounded-full border-2 border-primary-foreground/40 border-t-primary-foreground animate-spin" />
+                : <Send className="h-3.5 w-3.5" />}
               <span className="sr-only">{t("chat.send")}</span>
             </Button>
           </div>

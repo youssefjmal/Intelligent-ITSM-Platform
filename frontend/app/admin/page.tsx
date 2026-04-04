@@ -7,6 +7,7 @@ import { useI18n } from "@/lib/i18n"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
@@ -82,6 +83,18 @@ function historyValue(value: unknown): string {
   return String(value)
 }
 
+function dateRangeStartMs(value: string): number | null {
+  if (!value) return null
+  const parsed = new Date(`${value}T00:00:00`).getTime()
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+function dateRangeEndMs(value: string): number | null {
+  if (!value) return null
+  const parsed = new Date(`${value}T23:59:59.999`).getTime()
+  return Number.isNaN(parsed) ? null : parsed
+}
+
 export default function AdminPage() {
   const { user, hasPermission, getAllUsers, updateUserRole, updateUserSeniority, deleteUser } = useAuth()
   const { t, locale } = useI18n()
@@ -89,6 +102,12 @@ export default function AdminPage() {
   const [emails, setEmails] = useState<EmailRecord[]>([])
   const [history, setHistory] = useState<TicketHistoryEvent[]>([])
   const [actionError, setActionError] = useState<string | null>(null)
+  const [userSearch, setUserSearch] = useState("")
+  const [userRoleFilter, setUserRoleFilter] = useState<"all" | UserRole>("all")
+  const [userSeniorityFilter, setUserSeniorityFilter] = useState<"all" | UserSeniority>("all")
+  const [historySearch, setHistorySearch] = useState("")
+  const [historyDateFrom, setHistoryDateFrom] = useState("")
+  const [historyDateTo, setHistoryDateTo] = useState("")
 
   useEffect(() => {
     getAllUsers().then(setUsers).catch(() => {})
@@ -109,6 +128,55 @@ export default function AdminPage() {
       .then(setHistory)
       .catch(() => setHistory([]))
   }, [hasPermission])
+
+  const normalizedUserSearch = userSearch.trim().toLowerCase()
+  const filteredUsers = users.filter((candidate) => {
+    if (userRoleFilter !== "all" && candidate.role !== userRoleFilter) return false
+    if (userSeniorityFilter !== "all" && candidate.seniorityLevel !== userSeniorityFilter) return false
+    if (!normalizedUserSearch) return true
+
+    const haystack = [
+      candidate.name,
+      candidate.email,
+      candidate.role,
+      candidate.seniorityLevel,
+      ...candidate.specializations,
+    ]
+      .join(" ")
+      .toLowerCase()
+
+    return haystack.includes(normalizedUserSearch)
+  })
+
+  const historyFromMs = dateRangeStartMs(historyDateFrom)
+  const historyToMs = dateRangeEndMs(historyDateTo)
+  const normalizedHistorySearch = historySearch.trim().toLowerCase()
+  const filteredHistory = history.filter((event) => {
+    const createdAtMs = new Date(event.createdAt).getTime()
+    if (historyFromMs !== null && !Number.isNaN(createdAtMs) && createdAtMs < historyFromMs) return false
+    if (historyToMs !== null && !Number.isNaN(createdAtMs) && createdAtMs > historyToMs) return false
+    if (!normalizedHistorySearch) return true
+
+    const changesText = event.changes
+      .map((change) => `${change.field} ${historyValue(change.before)} ${historyValue(change.after)}`)
+      .join(" ")
+      .toLowerCase()
+    const haystack = [
+      event.ticketId,
+      event.actor,
+      event.action || "",
+      event.eventType,
+      historyActionLabel(event, locale),
+      changesText,
+    ]
+      .join(" ")
+      .toLowerCase()
+
+    return haystack.includes(normalizedHistorySearch)
+  })
+
+  const hasUserFilters = Boolean(normalizedUserSearch) || userRoleFilter !== "all" || userSeniorityFilter !== "all"
+  const hasHistoryFilters = Boolean(normalizedHistorySearch) || Boolean(historyDateFrom) || Boolean(historyDateTo)
 
   if (!hasPermission("view_admin")) {
     return (
@@ -181,7 +249,10 @@ export default function AdminPage() {
           <p className="section-caption">{t("nav.admin")}</p>
           <h2 className="mt-2 text-3xl font-bold text-foreground text-balance sm:text-4xl">{t("admin.title")}</h2>
           <p className="mt-2 max-w-3xl text-sm text-muted-foreground sm:text-base">{t("admin.subtitle")}</p>
-          <div className="mt-3">
+          <div className="mt-3 flex gap-2 flex-wrap">
+            <Button asChild variant="outline" size="sm">
+              <Link href="/admin/ai-governance">Gouvernance IA</Link>
+            </Button>
             <Button asChild variant="outline" size="sm">
               <Link href="/admin/notifications-debug">Notifications debug</Link>
             </Button>
@@ -198,11 +269,62 @@ export default function AdminPage() {
                 {t("admin.users")}
               </CardTitle>
               <p className="text-sm text-muted-foreground">
-                {users.length} {t("admin.totalUsers")}
+                {filteredUsers.length}/{users.length} {t("admin.totalUsers")}
               </p>
             </div>
           </CardHeader>
           <CardContent>
+            <div className="mb-4 flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3 sm:flex-row sm:flex-wrap sm:items-center">
+              <Input
+                value={userSearch}
+                onChange={(event) => setUserSearch(event.target.value)}
+                placeholder={locale === "fr" ? "Rechercher nom, email ou specialisation" : "Search name, email, or specialization"}
+                className="h-9 w-full sm:max-w-sm"
+              />
+              <Select value={userRoleFilter} onValueChange={(value) => setUserRoleFilter(value as "all" | UserRole)}>
+                <SelectTrigger className="h-9 w-full sm:w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{locale === "fr" ? "Tous les roles" : "All roles"}</SelectItem>
+                  <SelectItem value="admin">{t("auth.admin")}</SelectItem>
+                  <SelectItem value="agent">{t("auth.agent")}</SelectItem>
+                  <SelectItem value="user">{t("auth.user")}</SelectItem>
+                  <SelectItem value="viewer">{t("auth.viewer")}</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select
+                value={userSeniorityFilter}
+                onValueChange={(value) => setUserSeniorityFilter(value as "all" | UserSeniority)}
+              >
+                <SelectTrigger className="h-9 w-full sm:w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{locale === "fr" ? "Toutes seniorites" : "All seniority levels"}</SelectItem>
+                  {SENIORITY_OPTIONS.map((level) => (
+                    <SelectItem key={`filter-${level}`} value={level}>
+                      {t(`seniority.${level}` as "seniority.intern")}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {hasUserFilters && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-9"
+                  onClick={() => {
+                    setUserSearch("")
+                    setUserRoleFilter("all")
+                    setUserSeniorityFilter("all")
+                  }}
+                >
+                  {t("general.clear")}
+                </Button>
+              )}
+            </div>
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
@@ -217,136 +339,197 @@ export default function AdminPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {users.map((u) => (
-                    <TableRow key={u.id} className="hover:bg-muted/30">
-                      <TableCell className="font-medium text-foreground">
-                        <div className="flex items-center gap-2">
-                          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary text-xs font-bold shrink-0">
-                            {u.name
-                              .split(" ")
-                              .map((n) => n[0])
-                              .join("")
-                              .toUpperCase()
-                              .slice(0, 2)}
-                          </div>
-                          <div>
-                            <p className="text-sm font-medium text-foreground">{u.name}</p>
-                            {user?.id === u.id && (
-                              <span className="text-[10px] text-primary font-medium">({t("admin.you")})</span>
-                            )}
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground font-mono">
-                        {u.email}
-                      </TableCell>
-                      <TableCell>
-                        <Select
-                          value={u.role}
-                          onValueChange={(v) => handleRoleChange(u.id, v as UserRole)}
-                          disabled={u.id === user?.id}
-                        >
-                          <SelectTrigger className="w-36 h-8 text-xs">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="admin">{t("auth.admin")}</SelectItem>
-                            <SelectItem value="agent">{t("auth.agent")}</SelectItem>
-                            <SelectItem value="user">{t("auth.user")}</SelectItem>
-                            <SelectItem value="viewer">{t("auth.viewer")}</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </TableCell>
-                      <TableCell>
-                        <Select
-                          value={u.seniorityLevel}
-                          onValueChange={(v) => handleSeniorityChange(u.id, v as UserSeniority)}
-                        >
-                          <SelectTrigger className="w-36 h-8 text-xs">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {SENIORITY_OPTIONS.map((level) => (
-                              <SelectItem key={`${u.id}-${level}`} value={level}>
-                                {t(`seniority.${level}` as "seniority.intern")}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {u.role === "viewer" || u.specializations.length === 0 ? (
-                          "-"
-                        ) : (
-                          <div className="flex flex-wrap gap-1">
-                            {u.specializations.map((spec) => (
-                              <Badge key={`${u.id}-${spec}`} variant="secondary" className="text-[10px]">
-                                {spec.replace(/_/g, " ")}
-                              </Badge>
-                            ))}
-                          </div>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {new Date(u.createdAt).toLocaleDateString(locale === "fr" ? "fr-FR" : "en-US", {
-                          day: "2-digit",
-                          month: "short",
-                          year: "numeric",
-                        })}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {u.id !== user?.id && (
-                          <AlertDialog>
-                            <AlertDialogTrigger asChild>
-                              <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-destructive hover:text-destructive">
-                                <Trash2 className="h-3.5 w-3.5" />
-                                <span className="sr-only">{t("admin.deleteUser")}</span>
-                              </Button>
-                            </AlertDialogTrigger>
-                            <AlertDialogContent>
-                              <AlertDialogHeader>
-                                <AlertDialogTitle>{t("admin.deleteUser")} {u.name} ?</AlertDialogTitle>
-                                <AlertDialogDescription>
-                                  {t("admin.deleteConfirm")}
-                                </AlertDialogDescription>
-                              </AlertDialogHeader>
-                              <AlertDialogFooter>
-                                <AlertDialogCancel>{t("form.cancel")}</AlertDialogCancel>
-                                <AlertDialogAction
-                                  onClick={() => handleDelete(u.id)}
-                                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                                >
-                                  {t("general.confirm")}
-                                </AlertDialogAction>
-                              </AlertDialogFooter>
-                            </AlertDialogContent>
-                          </AlertDialog>
-                        )}
+                  {filteredUsers.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={7} className="py-6 text-center text-sm text-muted-foreground">
+                        {locale === "fr" ? "Aucun utilisateur ne correspond aux filtres." : "No users match the current filters."}
                       </TableCell>
                     </TableRow>
-                  ))}
+                  ) : (
+                    filteredUsers.map((u) => (
+                      <TableRow key={u.id} className="hover:bg-[var(--color-background-secondary)] transition-all duration-150">
+                        <TableCell className="font-medium text-foreground">
+                          <div className="flex items-center gap-2">
+                            <span className={`w-2 h-2 rounded-full inline-block flex-shrink-0 ${(u as any).is_available !== false ? "bg-[#1D9E75]" : "bg-[#888780]"}`} title={(u as any).is_available !== false ? "Disponible" : "Indisponible"} />
+                            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary text-xs font-bold shrink-0">
+                              {u.name
+                                .split(" ")
+                                .map((n) => n[0])
+                                .join("")
+                                .toUpperCase()
+                                .slice(0, 2)}
+                            </div>
+                            <div>
+                              <p className="text-sm font-medium text-foreground">{u.name}</p>
+                              {user?.id === u.id && (
+                                <span className="text-[10px] text-primary font-medium">({t("admin.you")})</span>
+                              )}
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground font-mono">
+                          {u.email}
+                        </TableCell>
+                        <TableCell>
+                          <Select
+                            value={u.role}
+                            onValueChange={(v) => handleRoleChange(u.id, v as UserRole)}
+                            disabled={u.id === user?.id}
+                          >
+                            <SelectTrigger className="w-36 h-8 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="admin">{t("auth.admin")}</SelectItem>
+                              <SelectItem value="agent">{t("auth.agent")}</SelectItem>
+                              <SelectItem value="user">{t("auth.user")}</SelectItem>
+                              <SelectItem value="viewer">{t("auth.viewer")}</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                        <TableCell>
+                          <Select
+                            value={u.seniorityLevel}
+                            onValueChange={(v) => handleSeniorityChange(u.id, v as UserSeniority)}
+                          >
+                            <SelectTrigger className="w-36 h-8 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {SENIORITY_OPTIONS.map((level) => (
+                                <SelectItem key={`${u.id}-${level}`} value={level}>
+                                  {t(`seniority.${level}` as "seniority.intern")}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {u.role === "viewer" || u.specializations.length === 0 ? (
+                            "-"
+                          ) : (
+                            <div className="flex flex-wrap gap-1">
+                              {u.specializations.map((spec) => (
+                                <Badge key={`${u.id}-${spec}`} variant="secondary" className="text-[10px]">
+                                  {spec.replace(/_/g, " ")}
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {new Date(u.createdAt).toLocaleDateString(locale === "fr" ? "fr-FR" : "en-US", {
+                            day: "2-digit",
+                            month: "short",
+                            year: "numeric",
+                          })}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {u.id !== user?.id && (
+                            <AlertDialog>
+                              <AlertDialogTrigger asChild>
+                                <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-destructive hover:text-destructive">
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                  <span className="sr-only">{t("admin.deleteUser")}</span>
+                                </Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>{t("admin.deleteUser")} {u.name} ?</AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    {t("admin.deleteConfirm")}
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel>{t("form.cancel")}</AlertDialogCancel>
+                                  <AlertDialogAction
+                                    onClick={() => handleDelete(u.id)}
+                                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                  >
+                                    {t("general.confirm")}
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
                 </TableBody>
               </Table>
             </div>
           </CardContent>
         </Card>
 
+        <div className="border-t border-[var(--color-border-tertiary)] pt-6 mt-6" />
+
         <Card className="surface-card">
           <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base font-semibold text-foreground">
-              <History className="h-5 w-5 text-primary" />
-              {locale === "fr" ? "Historique tickets" : "Ticket history"}
-            </CardTitle>
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="flex items-center gap-2 text-base font-semibold text-foreground">
+                <History className="h-5 w-5 text-primary" />
+                {locale === "fr" ? "Historique tickets" : "Ticket history"}
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                {filteredHistory.length}/{history.length}
+              </p>
+            </div>
           </CardHeader>
           <CardContent>
-            {history.length === 0 ? (
+            <div className="mb-4 flex flex-col gap-3 rounded-xl border border-border/70 bg-muted/20 p-3 sm:flex-row sm:flex-wrap sm:items-center">
+              <Input
+                value={historySearch}
+                onChange={(event) => setHistorySearch(event.target.value)}
+                placeholder={locale === "fr" ? "Rechercher ticket, acteur ou changement" : "Search ticket, actor, or change"}
+                className="h-9 w-full sm:max-w-sm"
+              />
+              <Input
+                type="date"
+                value={historyDateFrom}
+                onChange={(event) => setHistoryDateFrom(event.target.value)}
+                className="h-9 w-full sm:w-44"
+              />
+              <Input
+                type="date"
+                value={historyDateTo}
+                onChange={(event) => setHistoryDateTo(event.target.value)}
+                className="h-9 w-full sm:w-44"
+              />
+              {hasHistoryFilters && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-9"
+                  onClick={() => {
+                    setHistorySearch("")
+                    setHistoryDateFrom("")
+                    setHistoryDateTo("")
+                  }}
+                >
+                  {t("general.clear")}
+                </Button>
+              )}
+            </div>
+            {filteredHistory.length === 0 ? (
               <p className="py-4 text-center text-sm text-muted-foreground">
-                {locale === "fr" ? "Aucun evenement de ticket pour le moment." : "No ticket events yet."}
+                {locale === "fr" ? "Aucun evenement ne correspond aux filtres." : "No ticket events match the current filters."}
               </p>
             ) : (
               <div className="space-y-3">
-                {history.map((event) => (
-                  <div key={event.id} className="rounded-lg border border-border bg-muted/20 p-3">
+                {filteredHistory.map((event) => {
+                  const _action = (event.action || "").toLowerCase()
+                  const _historyBorder =
+                    _action === "resolved" || _action === "closed"
+                      ? "border-l-[3px] border-l-[#1D9E75]"
+                      : _action === "status_changed" || _action === "status_aligned_from_jira" || _action === "triage_updated"
+                      ? "border-l-[3px] border-l-[#378ADD]"
+                      : _action.includes("problem") || event.changes?.some((c) => c.field === "problem_id")
+                      ? "border-l-[3px] border-l-[#534AB7]"
+                      : ""
+                  return (
+                  <div key={event.id} className={`rounded-lg border border-border bg-muted/20 p-3 ${_historyBorder}`}>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className="text-sm font-medium text-foreground">
                         <Link href={`/tickets/${event.ticketId}`} className="text-primary hover:underline">
@@ -354,7 +537,7 @@ export default function AdminPage() {
                         </Link>{" "}
                         - {historyActionLabel(event, locale)}
                       </p>
-                      <span className="text-xs text-muted-foreground">
+                      <span className="text-[12px] text-muted-foreground">
                         {new Date(event.createdAt).toLocaleString(locale === "fr" ? "fr-FR" : "en-US")}
                       </span>
                     </div>
@@ -372,7 +555,8 @@ export default function AdminPage() {
                       </div>
                     )}
                   </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </CardContent>

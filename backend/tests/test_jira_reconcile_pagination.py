@@ -115,3 +115,69 @@ def test_reconcile_detects_project_key_when_missing(monkeypatch) -> None:
     assert result.project_key == "AUTO"
     assert observed_jql
     assert 'project = "AUTO"' in observed_jql[0]
+
+
+def test_reconcile_handles_missing_total_with_full_first_page(monkeypatch) -> None:
+    calls: list[int] = []
+    upserted: list[str] = []
+
+    class FakeJiraClient:
+        def search_jql(self, *, jql: str, start_at: int, max_results: int, fields: str):  # noqa: ANN001
+            calls.append(start_at)
+            if start_at == 0:
+                return {
+                    "issues": [
+                        {"key": "P-1", "fields": {"updated": "2026-02-14T10:00:00.000+0000"}},
+                        {"key": "P-2", "fields": {"updated": "2026-02-14T10:01:00.000+0000"}},
+                    ],
+                }
+            if start_at == 2:
+                return {
+                    "issues": [
+                        {"key": "P-3", "fields": {"updated": "2026-02-14T10:02:00.000+0000"}},
+                    ],
+                }
+            return {"issues": []}
+
+        def get_issue(self, issue_key: str, *, fields: str):  # noqa: ANN001
+            return {
+                "id": issue_key.replace("P-", ""),
+                "key": issue_key,
+                "fields": {
+                    "summary": f"Issue {issue_key}",
+                    "description": "desc",
+                    "status": {"name": "Open", "statusCategory": {"key": "new"}},
+                    "priority": {"name": "Medium"},
+                    "issuetype": {"name": "Incident"},
+                    "labels": [],
+                    "components": [],
+                    "assignee": {"displayName": "Agent"},
+                    "reporter": {"displayName": "Reporter"},
+                    "created": "2026-02-14T10:00:00.000+0000",
+                    "updated": "2026-02-14T10:02:00.000+0000",
+                    "comment": {"comments": [], "total": 0},
+                },
+            }
+
+    def fake_upsert_bundle(_db, issue, jira_client):  # noqa: ANN001
+        upserted.append(issue["key"])
+        return service.SyncCounts(tickets_upserted=1)
+
+    fake_state = SimpleNamespace(
+        project_key="DEMO",
+        last_synced_at=dt.datetime(2026, 2, 14, 9, 0, tzinfo=dt.timezone.utc),
+        last_error=None,
+        updated_at=dt.datetime(2026, 2, 14, 9, 0, tzinfo=dt.timezone.utc),
+    )
+
+    monkeypatch.setattr(service, "JiraClient", FakeJiraClient)
+    monkeypatch.setattr(service, "_upsert_issue_bundle", fake_upsert_bundle)
+    monkeypatch.setattr(service, "_resolve_sync_state", lambda db, project_key: fake_state)
+    monkeypatch.setattr(service.settings, "JIRA_SYNC_PAGE_SIZE", 2)
+
+    result = service.reconcile(_FakeDb(), JiraReconcileRequest(project_key="DEMO"))
+
+    assert result.issues_seen == 3
+    assert result.tickets_upserted == 3
+    assert calls == [0, 2]
+    assert upserted == ["P-1", "P-2", "P-3"]

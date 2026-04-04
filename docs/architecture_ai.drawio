@@ -1,0 +1,317 @@
+<mxfile host="app.diagrams.net" modified="2026-04-03" version="21.0.0">
+  <diagram name="AI Architecture" id="ai-arch">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1654" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- TITLE -->
+        <mxCell id="title" value="ITSM AI Copilot — AI Pipeline Architecture" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="380" y="15" width="800" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- ============================= -->
+        <!-- PIPELINE 1: CLASSIFICATION   -->
+        <!-- ============================= -->
+        <mxCell id="cls-zone" value="Pipeline 1 — AI Classification  (classifier.py)" style="swimlane;startSize=30;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="40" y="70" width="760" height="300" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cls-input" value="Input&#xa;title + description" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=11;" vertex="1" parent="cls-zone">
+          <mxGeometry x="20" y="60" width="130" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cls-pgvec" value="pgvector Search&#xa;kb_chunks cosine similarity&#xa;threshold ≥ 0.72" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="cls-zone">
+          <mxGeometry x="200" y="50" width="150" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cls-strong" value="Strong matches found?" style="rhombus;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="cls-zone">
+          <mxGeometry x="400" y="55" width="150" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cls-semantic" value="Semantic Decision&#xa;(decision_source = semantic)&#xa;infer priority/category/type&#xa;from matched tickets" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="cls-zone">
+          <mxGeometry x="590" y="40" width="155" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cls-llm" value="Build prompt →&#xa;ollama_generate()&#xa;qwen3:4b JSON mode" style="rounded=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="cls-zone">
+          <mxGeometry x="400" y="150" width="150" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cls-parse" value="extract_json()&#xa;+ schema validation" style="rounded=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="cls-zone">
+          <mxGeometry x="580" y="150" width="130" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cls-fallback" value="Rule-based fallback&#xa;_rule_based_classify()&#xa;keyword matching&#xa;(decision_source = fallback)" style="rounded=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="cls-zone">
+          <mxGeometry x="200" y="150" width="155" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cls-guardrail" value="apply_category_guardrail()&#xa;prevents wrong overrides" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="cls-zone">
+          <mxGeometry x="400" y="240" width="155" height="45" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cls-log" value="&#xa;_log_classification()&#xa;→ ai_classification_logs" style="rounded=1;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=11;fontStyle=1;" vertex="1" parent="cls-zone">
+          <mxGeometry x="590" y="235" width="150" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Edges in classification pipeline -->
+        <mxCell id="ce1" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="cls-input" target="cls-pgvec" parent="cls-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce2" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="cls-pgvec" target="cls-strong" parent="cls-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce3" value="YES" style="edgeStyle=orthogonalEdgeStyle;fontSize=10;fontStyle=1;strokeColor=#82b366;" edge="1" source="cls-strong" target="cls-semantic" parent="cls-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce4" value="NO" style="edgeStyle=orthogonalEdgeStyle;fontSize=10;fontStyle=1;strokeColor=#9673a6;" edge="1" source="cls-strong" target="cls-llm" parent="cls-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce5" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="cls-llm" target="cls-parse" parent="cls-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce6" value="LLM fails" style="edgeStyle=orthogonalEdgeStyle;fontSize=10;strokeColor=#b85450;" edge="1" source="cls-llm" target="cls-fallback" parent="cls-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce7" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="cls-parse" target="cls-guardrail" parent="cls-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ce8" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="cls-guardrail" target="cls-log" parent="cls-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ============================= -->
+        <!-- PIPELINE 2: CHAT / RAG        -->
+        <!-- ============================= -->
+        <mxCell id="chat-zone" value="Pipeline 2 — Chat + RAG  (orchestrator.py → resolver.py → resolution_advisor.py)" style="swimlane;startSize=30;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="40" y="390" width="1180" height="310" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ch-req" value="ChatRequest&#xa;messages[] + locale" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=11;" vertex="1" parent="chat-zone">
+          <mxGeometry x="20" y="80" width="120" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ch-intent" value="classify_intent()&#xa;intents.py&#xa;regex + keyword matching&#xa;NEGATION_WINDOW=4" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="chat-zone">
+          <mxGeometry x="170" y="65" width="140" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ch-route" value="Intent Router" style="rhombus;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="chat-zone">
+          <mxGeometry x="340" y="70" width="130" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- Structural intents -->
+        <mxCell id="ch-struct" value="Structural Intents&#xa;ticket_search / ticket_detail&#xa;problem_listing / problem_detail&#xa;create_ticket / update_ticket&#xa;sla_query / recommendation_listing" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="chat-zone">
+          <mxGeometry x="340" y="175" width="180" height="110" as="geometry" />
+        </mxCell>
+
+        <!-- General question path -->
+        <mxCell id="ch-resolve" value="resolve_chat_guidance()&#xa;resolver.py" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=11;" vertex="1" parent="chat-zone">
+          <mxGeometry x="540" y="70" width="140" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ch-retrieve" value="unified_retrieve()&#xa;pgvector search&#xa;resolved tickets + KB chunks&#xa;top_k=5" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="chat-zone">
+          <mxGeometry x="700" y="55" width="150" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ch-advisor" value="build_resolution_advice()&#xa;resolution_advisor.py" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=11;" vertex="1" parent="chat-zone">
+          <mxGeometry x="870" y="55" width="150" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- 5 display modes -->
+        <mxCell id="ch-modes" value="5 Display Modes" style="swimlane;startSize=25;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="chat-zone">
+          <mxGeometry x="870" y="135" width="290" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="dm1" value="evidence_action&#xa;resolved ticket found, high conf." style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="ch-modes">
+          <mxGeometry x="10" y="30" width="130" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="dm2" value="tentative_diagnostic&#xa;partial match, moderate conf." style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="ch-modes">
+          <mxGeometry x="150" y="30" width="130" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="dm3" value="service_request&#xa;SR routing detected" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" vertex="1" parent="ch-modes">
+          <mxGeometry x="10" y="75" width="130" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="dm4" value="llm_general_knowledge&#xa;no KB match, pure LLM (0.25)" style="rounded=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;" vertex="1" parent="ch-modes">
+          <mxGeometry x="150" y="75" width="130" height="35" as="geometry" />
+        </mxCell>
+        <mxCell id="dm5" value="no_strong_match&#xa;low conf., triage advised" style="rounded=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="ch-modes">
+          <mxGeometry x="80" y="118" width="130" height="35" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ch-format" value="build_chat_reply()&#xa;formatters.py&#xa;localize (fr/en)" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="chat-zone">
+          <mxGeometry x="540" y="220" width="140" height="55" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ch-resp" value="ChatResponse&#xa;reply + response_payload&#xa;rag_grounding + suggestions" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=11;" vertex="1" parent="chat-zone">
+          <mxGeometry x="340" y="230" width="160" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- Chat edges -->
+        <mxCell id="che1" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="ch-req" target="ch-intent" parent="chat-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="che2" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="ch-intent" target="ch-route" parent="chat-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="che3" value="structural" style="edgeStyle=orthogonalEdgeStyle;fontSize=10;" edge="1" source="ch-route" target="ch-struct" parent="chat-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="che4" value="general" style="edgeStyle=orthogonalEdgeStyle;fontSize=10;" edge="1" source="ch-route" target="ch-resolve" parent="chat-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="che5" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="ch-resolve" target="ch-retrieve" parent="chat-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="che6" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="ch-retrieve" target="ch-advisor" parent="chat-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="che7" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="ch-advisor" target="ch-modes" parent="chat-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="che8" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="ch-modes" target="ch-format" parent="chat-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="che9" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="ch-format" target="ch-resp" parent="chat-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ============================= -->
+        <!-- PIPELINE 3: EMBEDDING CACHE   -->
+        <!-- ============================= -->
+        <mxCell id="emb-zone" value="Pipeline 3 — Embedding + Two-Level Cache  (embeddings.py)" style="swimlane;startSize=30;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="840" y="70" width="420" height="300" as="geometry" />
+        </mxCell>
+
+        <mxCell id="emb-in" value="compute_embedding(text)" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=11;" vertex="1" parent="emb-zone">
+          <mxGeometry x="20" y="55" width="170" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="emb-l1" value="L1: @lru_cache&#xa;(process-local, instant)" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="emb-zone">
+          <mxGeometry x="210" y="50" width="170" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="emb-l2key" value="L2 key:&#xa;itsm:embedding:{sha256(text)}" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="emb-zone">
+          <mxGeometry x="20" y="125" width="170" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="emb-redis" value="Redis GET&#xa;(TTL = 86400s = 24h)" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="emb-zone">
+          <mxGeometry x="210" y="120" width="170" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="emb-hit" value="Cache HIT&#xa;return list[float]" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="emb-zone">
+          <mxGeometry x="210" y="200" width="170" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="emb-ollama" value="Ollama&#xa;nomic-embed-text&#xa;768 dimensions" style="rounded=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=11;" vertex="1" parent="emb-zone">
+          <mxGeometry x="20" y="200" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="emb-store" value="Redis SET (24h)&#xa;→ return vector" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="emb-zone">
+          <mxGeometry x="20" y="255" width="150" height="35" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ee1" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="emb-in" target="emb-l1" parent="emb-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ee2" value="L1 miss" style="edgeStyle=orthogonalEdgeStyle;fontSize=10;" edge="1" source="emb-in" target="emb-l2key" parent="emb-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ee3" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="emb-l2key" target="emb-redis" parent="emb-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ee4" value="HIT" style="edgeStyle=orthogonalEdgeStyle;fontSize=10;strokeColor=#82b366;" edge="1" source="emb-redis" target="emb-hit" parent="emb-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ee5" value="MISS" style="edgeStyle=orthogonalEdgeStyle;fontSize=10;strokeColor=#9673a6;" edge="1" source="emb-redis" target="emb-ollama" parent="emb-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ee6" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="emb-ollama" target="emb-store" parent="emb-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ============================= -->
+        <!-- PIPELINE 4: PROBLEM DETECTION -->
+        <!-- ============================= -->
+        <mxCell id="prob-zone" value="Pipeline 4 — Auto Problem Detection  (problems.py → link_ticket_to_problem)" style="swimlane;startSize=30;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="40" y="720" width="1180" height="200" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pr-trigger" value="Ticket saved / updated&#xa;(Jira sync or triage)" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=11;" vertex="1" parent="prob-zone">
+          <mxGeometry x="20" y="70" width="150" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pr-simkey" value="compute_similarity_key()&#xa;title + category + tags" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="prob-zone">
+          <mxGeometry x="200" y="65" width="150" height="55" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pr-existing" value="Find existing problem&#xa;_find_similar_problem()" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="prob-zone">
+          <mxGeometry x="380" y="65" width="140" height="55" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pr-match" value="Match found?" style="rhombus;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="prob-zone">
+          <mxGeometry x="545" y="65" width="120" height="55" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pr-link" value="Link ticket to&#xa;existing problem" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="prob-zone">
+          <mxGeometry x="690" y="50" width="120" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pr-candidates" value="_recent_similar_tickets()&#xa;hybrid similarity ≥ 0.45&#xa;lexical (Jaccard) + semantic (cosine)" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="prob-zone">
+          <mxGeometry x="545" y="140" width="185" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pr-threshold" value="count ≥ 5?&#xa;PROBLEM_TRIGGER_MIN_COUNT" style="rhombus;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="prob-zone">
+          <mxGeometry x="755" y="130" width="140" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pr-create" value="get_or_create_problem()&#xa;link all candidates&#xa;recompute_problem_stats()" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=11;" vertex="1" parent="prob-zone">
+          <mxGeometry x="920" y="130" width="160" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pr-none" value="No problem yet&#xa;(return None)" style="rounded=1;fillColor=#f5f5f5;strokeColor=#666;fontSize=11;" vertex="1" parent="prob-zone">
+          <mxGeometry x="920" y="50" width="120" height="45" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pre1" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="pr-trigger" target="pr-simkey" parent="prob-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pre2" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="pr-simkey" target="pr-existing" parent="prob-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pre3" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="pr-existing" target="pr-match" parent="prob-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pre4" value="YES" style="edgeStyle=orthogonalEdgeStyle;fontSize=10;fontStyle=1;strokeColor=#82b366;" edge="1" source="pr-match" target="pr-link" parent="prob-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pre5" value="NO" style="edgeStyle=orthogonalEdgeStyle;fontSize=10;fontStyle=1;strokeColor=#9673a6;" edge="1" source="pr-match" target="pr-candidates" parent="prob-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pre6" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="pr-candidates" target="pr-threshold" parent="prob-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pre7" value="YES" style="edgeStyle=orthogonalEdgeStyle;fontSize=10;fontStyle=1;strokeColor=#82b366;" edge="1" source="pr-threshold" target="pr-create" parent="prob-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="pre8" value="NO" style="edgeStyle=orthogonalEdgeStyle;fontSize=10;fontStyle=1;strokeColor=#b85450;" edge="1" source="pr-threshold" target="pr-none" parent="prob-zone">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ============================= -->
+        <!-- SHARED LEGEND                 -->
+        <!-- ============================= -->
+        <mxCell id="legend" value="Legend" style="swimlane;startSize=25;fillColor=#f5f5f5;strokeColor=#666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1280" y="70" width="200" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="leg1" value="LLM (Ollama / qwen3:4b)" style="rounded=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;" vertex="1" parent="legend">
+          <mxGeometry x="10" y="30" width="180" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="leg2" value="Vector DB / pgvector search" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" vertex="1" parent="legend">
+          <mxGeometry x="10" y="63" width="180" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="leg3" value="Success / confident result" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="legend">
+          <mxGeometry x="10" y="96" width="180" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="leg4" value="Cache / Redis" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="legend">
+          <mxGeometry x="10" y="129" width="180" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="leg5" value="Fallback / low confidence" style="rounded=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="legend">
+          <mxGeometry x="10" y="162" width="180" height="25" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -9,7 +10,36 @@ from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
-from app.schemas.ai import AIIncidentCluster, AIResolutionAdvice, AIResolutionEvidence
+from app.schemas.ai import (
+    AIIncidentCluster,
+    AILLMGeneralAdvisory,
+    AIResolutionAdvice,
+    AIResolutionEvidence,
+    GuidanceContract,
+    RetrievalResult,
+)
+from app.services.ai.calibration import confidence_band
+from app.services.ai.routing_validation import validate_ticket_routing_for_ticket
+from app.services.ai.service_requests import (
+    service_request_profile_from_ticket,
+    service_request_profile_similarity,
+)
+
+logger = logging.getLogger(__name__)
+
+# Tokens that indicate a negation context around an attempted-step keyword.
+# Used by _has_negation_near_match to avoid adding actions to the
+# "already tried" list when the user says they have NOT done something.
+# Example: "I haven't restarted the service" → do NOT add "restart" to attempted list.
+NEGATION_MARKERS: frozenset[str] = frozenset({
+    "not", "never", "haven't", "hasn't", "didn't", "don't",
+    "doesn't", "no", "n't", "cannot", "can't",
+})
+
+# Number of tokens to check on each side of a keyword match when detecting
+# negation.  4 is conservative — sufficient for standard negation constructions
+# like "I haven't X" or "I did not X yet".  Increase only with test coverage.
+NEGATION_WINDOW_SIZE: int = 4
 
 _ATTEMPT_KEYWORDS = {
     "already",
@@ -80,7 +110,7 @@ _VALIDATION_HINTS = {
 class ResolverOutput:
     mode: str
     retrieval_query: str
-    retrieval: dict[str, Any]
+    retrieval: RetrievalResult
     advice: AIResolutionAdvice | None
     recommended_action: str | None
     reasoning: str | None
@@ -95,6 +125,7 @@ class ResolverOutput:
     fallback_action: str | None = None
     confidence: float = 0.0
     missing_information: list[str] = field(default_factory=list)
+    guidance_contract: GuidanceContract | None = None
 
 
 def _normalize_line(value: Any) -> str:
@@ -177,7 +208,62 @@ def _step_tokens(text: str) -> set[str]:
     }
 
 
+def _has_negation_near_match(tokens: list[str], match_index: int, window: int = NEGATION_WINDOW_SIZE) -> bool:
+    """Check whether a negation marker appears within a token window around a match.
+
+    Used to prevent false positives in attempted-step detection when the user
+    says "I haven't tried X" — the word "tried" should not add X to the
+    attempted list if a negation is nearby.
+
+    Negation markers are defined in the module-level ``NEGATION_MARKERS``
+    frozenset.  The window size is controlled by ``NEGATION_WINDOW_SIZE``.
+
+    Args:
+        tokens: List of whitespace-split tokens from the sentence (lowercased).
+        match_index: Index of the matched keyword token in the list.
+        window: Number of tokens to check on each side of the match.
+                Defaults to ``NEGATION_WINDOW_SIZE`` (4).
+
+    Returns:
+        True if a negation marker is found within the window.  When True,
+        the matched action should NOT be added to the attempted list.
+
+    Edge cases:
+        - If ``tokens`` is empty or ``match_index`` is out of range, returns
+          False so that the caller's conservative default (add to list) applies.
+        - Contractions like "haven't" are checked as whole lowercased tokens.
+    """
+    if not tokens or match_index < 0 or match_index >= len(tokens):
+        return False
+    start = max(0, match_index - window)
+    end = min(len(tokens), match_index + window + 1)
+    window_tokens = tokens[start:end]
+    return any(tok in NEGATION_MARKERS for tok in window_tokens)
+
+
 def _extract_attempted_steps(conversation_state: Any) -> list[str]:
+    """Extract sentences from recent user messages that describe already-attempted steps.
+
+    Searches the last 10 user messages for sentences containing attempt keywords
+    (e.g. "already", "tried", "restarted").  Before adding a sentence to the
+    attempted list, negation detection is applied: if a negation marker from
+    ``NEGATION_MARKERS`` appears within ``NEGATION_WINDOW_SIZE`` tokens of
+    the matched keyword, the sentence is skipped.
+
+    This prevents the resolver from treating "I haven't restarted the service"
+    as evidence that a restart was already attempted.
+
+    Negation window size: controlled by ``NEGATION_WINDOW_SIZE`` constant.
+    Conservative default: when a sentence is too short to tokenize reliably,
+    it is NOT added to the attempted list.
+
+    Args:
+        conversation_state: Dict, list, or object containing a ``messages``
+                            attribute/key with the conversation history.
+
+    Returns:
+        De-duplicated list of up to 6 attempted-step sentences (most recent first).
+    """
     attempted: list[str] = []
     for message in _iter_conversation_messages(conversation_state)[-10:]:
         if _message_role(message) != "user":
@@ -191,8 +277,34 @@ def _extract_attempted_steps(conversation_state: Any) -> list[str]:
             if not normalized:
                 continue
             lowered = normalized.casefold()
-            if any(keyword in lowered for keyword in _ATTEMPT_KEYWORDS):
+            # Tokenize by whitespace for negation detection.
+            tokens = lowered.split()
+            for keyword in _ATTEMPT_KEYWORDS:
+                if keyword not in lowered:
+                    continue
+                # Find the position of this keyword token in the token list
+                # so we can check the surrounding window for negation markers.
+                try:
+                    match_index = tokens.index(keyword)
+                except ValueError:
+                    # Keyword matched as substring; check all token positions.
+                    match_index = next(
+                        (i for i, tok in enumerate(tokens) if tok.startswith(keyword) or keyword in tok),
+                        -1,
+                    )
+                if match_index == -1:
+                    # Cannot locate keyword in token list — skip conservatively.
+                    continue
+                if _has_negation_near_match(tokens, match_index):
+                    logger.debug(
+                        "Skipped attempted step %r — negation detected near match in %r.",
+                        keyword,
+                        normalized[:80],
+                    )
+                    break  # negation found in this sentence; skip entire sentence
+                # No negation found — record this sentence as an attempted step.
                 attempted.append(normalized)
+                break  # one keyword match per sentence is sufficient
     deduped: list[str] = []
     seen: set[str] = set()
     for item in attempted:
@@ -240,16 +352,28 @@ def build_ticket_retrieval_query(
         _normalize_line(getattr(ticket, "title", "")),
         _normalize_line(getattr(ticket, "description", "")),
     ]
+    summary_context = _normalize_line(getattr(ticket, "summary_context", ""))
+    if summary_context:
+        lines.append(f"current_summary={summary_context}")
+    comment_context = _normalize_line(getattr(ticket, "comment_context", ""))
+    if comment_context:
+        lines.append(f"current_comments={comment_context}")
+    resolution_context = _normalize_line(getattr(ticket, "resolution_context", ""))
+    if resolution_context:
+        lines.append(f"current_resolution={resolution_context}")
     if include_priority:
         priority = getattr(ticket, "priority", None)
         status = getattr(ticket, "status", None)
         category = getattr(ticket, "category", None)
+        ticket_type = getattr(ticket, "ticket_type", None)
         if priority is not None:
             lines.append(f"priority={getattr(priority, 'value', priority)}")
         if status is not None:
             lines.append(f"status={getattr(status, 'value', status)}")
         if category is not None:
             lines.append(f"category={getattr(category, 'value', category)}")
+        if ticket_type is not None:
+            lines.append(f"ticket_type={getattr(ticket_type, 'value', ticket_type)}")
     question = _normalize_line(user_question)
     if question:
         lines.append(question)
@@ -298,22 +422,96 @@ def build_problem_retrieval_query(
     return "\n".join(line for line in lines if line).strip()
 
 
+def build_manual_triage_advice_payload(
+    *,
+    reason: str,
+    lang: str = "en",
+    source_label: str = "cross_check",
+    next_checks: list[str] | None = None,
+) -> dict[str, Any]:
+    checks = [
+        _normalize_line(item)
+        for item in list(next_checks or [])
+        if _normalize_line(item)
+    ]
+    if not checks:
+        checks = (
+            [
+                "Confirmez d'abord si le ticket correspond a un incident actif ou a une demande de service planifiee.",
+                "Ajoutez un signal technique ou un livrable attendu supplementaire avant de choisir le flux de resolution.",
+            ]
+            if lang == "fr"
+            else [
+                "Confirm first whether the ticket is a live incident or a planned service request.",
+                "Add one more technical signal or explicit requested outcome before choosing the remediation path.",
+            ]
+        )
+    confidence = 0.18
+    confidence_text = confidence_band(confidence)
+    return {
+        "recommended_action": None,
+        "reasoning": _normalize_line(reason),
+        "probable_root_cause": None,
+        "root_cause": None,
+        "supporting_context": None,
+        "why_this_matches": [],
+        "evidence_sources": [],
+        "tentative": False,
+        "confidence": confidence,
+        "confidence_band": confidence_text,
+        "confidence_label": confidence_text,
+        "source_label": source_label,
+        "recommendation_mode": "insufficient_evidence",
+        "mode": "manual_triage",
+        "display_mode": "manual_triage",
+        "match_summary": None,
+        "next_best_actions": checks,
+        "validation_steps": checks[:2],
+        "base_recommended_action": None,
+        "base_next_best_actions": [],
+        "base_validation_steps": [],
+        "action_refinement_source": "none",
+        "fallback_action": None,
+        "missing_information": [_normalize_line(reason)] if _normalize_line(reason) else [],
+        "response_text": _normalize_line(reason),
+    }
+
+
 def candidate_tickets_for_ticket(ticket: Any, visible_tickets: list[Any], *, limit: int = 18) -> list[Any]:
     ticket_id = getattr(ticket, "id", None)
     ticket_category = getattr(ticket, "category", None)
     ticket_problem_id = getattr(ticket, "problem_id", None)
-    if ticket_category is None and ticket_problem_id is None:
+    ticket_type = getattr(ticket, "ticket_type", None)
+    base_is_service_request = validate_ticket_routing_for_ticket(ticket).use_service_request_guidance
+    base_profile = service_request_profile_from_ticket(ticket) if base_is_service_request else None
+    if ticket_category is None and ticket_problem_id is None and ticket_type is None:
         return list(visible_tickets[:limit])
-    prioritized = [
-        row
-        for row in visible_tickets
-        if getattr(row, "id", None) != ticket_id
-        and (getattr(row, "category", None) == ticket_category or (ticket_problem_id and getattr(row, "problem_id", None) == ticket_problem_id))
-    ]
-    if len(prioritized) < limit:
-        extra = [row for row in visible_tickets if getattr(row, "id", None) != ticket_id and row not in prioritized]
-        prioritized.extend(extra)
-    return prioritized[:limit]
+
+    scored: list[tuple[float, int, Any]] = []
+    for index, row in enumerate(visible_tickets):
+        if getattr(row, "id", None) == ticket_id:
+            continue
+        score = 0.0
+        if ticket_problem_id and getattr(row, "problem_id", None) == ticket_problem_id:
+            score += 8
+        if ticket_type is not None and getattr(row, "ticket_type", None) == ticket_type:
+            score += 6
+        if ticket_category is not None and getattr(row, "category", None) == ticket_category:
+            score += 4
+        row_is_service_request = validate_ticket_routing_for_ticket(row).use_service_request_guidance
+        if base_is_service_request and row_is_service_request:
+            score += 3
+            row_profile = service_request_profile_from_ticket(row)
+            profile_similarity = service_request_profile_similarity(base_profile, row_profile)
+            score += profile_similarity * 12.0
+            if base_profile.family and row_profile.family and base_profile.family != row_profile.family:
+                score -= 2.5
+        elif base_is_service_request and not row_is_service_request:
+            score -= 2
+        scored.append((score, -index, row))
+
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [row for _, _, row in scored[:limit]]
 
 
 def _build_workflow_steps(
@@ -327,6 +525,19 @@ def _build_workflow_steps(
     action = _normalize_line(recommended_action)
     if action:
         steps.append(action)
+    if mode == "service_request":
+        for item in next_best_actions:
+            normalized = _normalize_line(item)
+            if not normalized or normalized.casefold() == action.casefold():
+                continue
+            steps.append(normalized)
+        if len(steps) < 2:
+            steps.append(
+                "Confirm the request owner and prerequisites before completion."
+                if lang == "en"
+                else "Confirmez le responsable de la demande et les prerequis avant la cloture."
+            )
+        return steps[:4]
     if mode == "no_strong_match":
         steps.extend(next_best_actions[:3])
         return steps[:4]
@@ -361,6 +572,12 @@ def _build_validation_steps(
             validations.append(normalized)
     if validations:
         return validations[:3]
+    if mode == "service_request":
+        return [
+            "Confirm the planned task was completed on the expected schedule and documented on the ticket."
+            if lang == "en"
+            else "Confirmez que la tache planifiee a ete realisee a la cadence attendue et documentee sur le ticket.",
+        ]
     if mode == "evidence_action":
         return [
             "Confirm the affected service is stable after the change."
@@ -382,7 +599,7 @@ def _build_validation_steps(
 
 
 def _build_missing_information(retrieval: dict[str, Any], *, mode: str, lang: str) -> list[str]:
-    if mode == "evidence_action":
+    if mode in {"evidence_action", "service_request"}:
         return []
     rows: list[str] = []
     if not list(retrieval.get("similar_tickets") or []):
@@ -420,7 +637,12 @@ def _build_response_text(
     lang: str,
 ) -> str:
     lines: list[str] = []
-    if mode == "evidence_action":
+    if mode == "service_request":
+        if lang == "fr":
+            lines.append(f"Guidage de demande de service: {recommended_action or fallback_action or 'Aucune action precise.'}")
+        else:
+            lines.append(f"Service request guidance: {recommended_action or fallback_action or 'No concrete action available.'}")
+    elif mode == "evidence_action":
         if lang == "fr":
             lines.append(f"Action recommandee: {recommended_action or fallback_action or 'Aucune action precise.'}")
         else:
@@ -521,6 +743,27 @@ def build_resolution_advice_model(
         ),
         conversation_state=conversation_state,
     )[:3]
+    base_recommended_action = _normalize_line(advice_payload.get("base_recommended_action")) or None
+    explicit_base_next_best_actions = [
+        _normalize_line(item)
+        for item in list(advice_payload.get("base_next_best_actions") or [])
+        if _normalize_line(item)
+    ]
+    base_next_best_actions = explicit_base_next_best_actions[:4]
+    explicit_base_validation_steps = [
+        _normalize_line(item)
+        for item in list(advice_payload.get("base_validation_steps") or [])
+        if _normalize_line(item)
+    ]
+    base_validation_steps = explicit_base_validation_steps[:3]
+    action_refinement_source = _normalize_line(advice_payload.get("action_refinement_source")) or "none"
+    if action_refinement_source == "none":
+        if base_recommended_action is None:
+            base_recommended_action = recommended_action
+        if not base_next_best_actions:
+            base_next_best_actions = list(next_best_actions)
+        if not base_validation_steps:
+            base_validation_steps = list(validation_steps)
     fallback_action = _normalize_line(advice_payload.get("fallback_action")) or None
     if not fallback_action:
         if display_mode == "tentative_diagnostic":
@@ -533,9 +776,7 @@ def build_resolution_advice_model(
         if _normalize_line(item)
     ][:3]
     confidence = _clamp_unit_confidence(float(advice_payload.get("confidence") or 0.0))
-    confidence_band = _normalize_line(advice_payload.get("confidence_band")) or (
-        "high" if confidence >= 0.78 else "medium" if confidence >= 0.52 else "low"
-    )
+    confidence_band_label = _normalize_line(advice_payload.get("confidence_band")) or confidence_band(confidence)
     response_text = _normalize_line(advice_payload.get("response_text")) or _build_response_text(
         mode=display_mode,
         recommended_action=recommended_action,
@@ -545,7 +786,7 @@ def build_resolution_advice_model(
         fallback_action=fallback_action,
         missing_information=missing_information,
         confidence=confidence,
-        confidence_band=confidence_band,
+        confidence_band=confidence_band_label,
         lang=lang,
     )
     return AIResolutionAdvice(
@@ -562,8 +803,8 @@ def build_resolution_advice_model(
         evidence_sources=evidence_sources,
         tentative=bool(advice_payload.get("tentative", False)),
         confidence=confidence,
-        confidence_band=confidence_band,
-        confidence_label=_normalize_line(advice_payload.get("confidence_label")) or confidence_band,
+        confidence_band=confidence_band_label,
+        confidence_label=_normalize_line(advice_payload.get("confidence_label")) or confidence_band_label,
         source_label=_normalize_line(advice_payload.get("source_label")) or default_source_label,
         recommendation_mode=_normalize_line(advice_payload.get("recommendation_mode")) or "fallback_rules",
         action_relevance_score=_clamp_unit_confidence(float(advice_payload.get("action_relevance_score") or 0.0)),
@@ -572,6 +813,10 @@ def build_resolution_advice_model(
         display_mode=display_mode,
         match_summary=_normalize_line(advice_payload.get("match_summary")) or None,
         next_best_actions=next_best_actions,
+        base_recommended_action=base_recommended_action,
+        base_next_best_actions=base_next_best_actions,
+        base_validation_steps=base_validation_steps,
+        action_refinement_source=action_refinement_source,
         incident_cluster=(
             AIIncidentCluster(
                 count=max(0, int((advice_payload.get("incident_cluster") or {}).get("count") or 0)),
@@ -587,6 +832,12 @@ def build_resolution_advice_model(
         fallback_action=fallback_action,
         missing_information=missing_information,
         response_text=response_text,
+        llm_general_advisory=(
+            AILLMGeneralAdvisory.model_validate(advice_payload.get("llm_general_advisory"))
+            if isinstance(advice_payload.get("llm_general_advisory"), dict)
+            else None
+        ),
+        knowledge_source=_normalize_line(advice_payload.get("knowledge_source")) or None,
     )
 
 
@@ -624,6 +875,10 @@ def resolution_advice_to_payload(advice: AIResolutionAdvice | None) -> dict[str,
         "display_mode": advice.display_mode,
         "match_summary": advice.match_summary,
         "next_best_actions": list(advice.next_best_actions),
+        "base_recommended_action": advice.base_recommended_action,
+        "base_next_best_actions": list(advice.base_next_best_actions),
+        "base_validation_steps": list(advice.base_validation_steps),
+        "action_refinement_source": advice.action_refinement_source,
         "incident_cluster": (
             {
                 "count": advice.incident_cluster.count,
@@ -639,6 +894,12 @@ def resolution_advice_to_payload(advice: AIResolutionAdvice | None) -> dict[str,
         "fallback_action": advice.fallback_action,
         "missing_information": list(advice.missing_information),
         "response_text": advice.response_text,
+        "llm_general_advisory": (
+            advice.llm_general_advisory.model_dump(mode="json")
+            if advice.llm_general_advisory is not None
+            else None
+        ),
+        "knowledge_source": advice.knowledge_source,
     }
 
 
@@ -674,7 +935,9 @@ def resolve_ticket_advice(
         visible_tickets=candidates,
         top_k=top_k,
         solution_quality=solution_quality,
+        exclude_ids=[str(getattr(ticket, "id", "") or "").strip()],
     )
+    retrieval = RetrievalResult.coerce(retrieval)
     default_source_label = _normalize_line((retrieval or {}).get("source")) or "fallback_rules"
     advice_payload = advice_builder(retrieval, lang=lang)
     advice = build_resolution_advice_model(
@@ -757,6 +1020,7 @@ def resolve_problem_advice(
         top_k=top_k,
         solution_quality=solution_quality,
     )
+    retrieval = RetrievalResult.coerce(retrieval)
     default_source_label = _normalize_line((retrieval or {}).get("source")) or "fallback_rules"
     advice_payload = advice_builder(retrieval, lang=lang)
     advice = build_resolution_advice_model(

@@ -17,12 +17,65 @@ def _severity_color(severity: str) -> str:
     return "#2563eb"
 
 
+def _entity_label(notification: Notification) -> str:
+    metadata = notification.metadata_json or {}
+    ticket_id = str(metadata.get("ticket_id") or "").strip()
+    problem_id = str(metadata.get("problem_id") or "").strip()
+    ticket_title = str(metadata.get("ticket_title") or "").strip()
+    if ticket_id and ticket_title:
+        return f"{ticket_id} - {ticket_title}"
+    if ticket_id:
+        return ticket_id
+    if problem_id:
+        return problem_id
+    return notification.title
+
+
+def _reason_text(notification: Notification) -> str:
+    event_type = str(notification.event_type or "").strip().lower()
+    metadata = notification.metadata_json or {}
+    if event_type == "ticket_assigned":
+        return "You received this because you were assigned to the ticket."
+    if event_type == "ticket_reassigned":
+        return "You received this because the ticket assignment changed."
+    if event_type == "ticket_commented":
+        return "You received this because a tracked ticket has a new comment."
+    if event_type == "mention":
+        return "You received this because you were mentioned in a ticket comment."
+    if event_type == "ticket_resolved":
+        return "You received this because the ticket resolution status changed."
+    if event_type in {"sla_at_risk", "ai_sla_risk_high"}:
+        return "You received this because the ticket is approaching SLA risk."
+    if event_type == "sla_breached":
+        return "You received this because the ticket breached SLA."
+    if event_type.startswith("problem_"):
+        return "You received this because the ticket is tied to a broader problem record."
+    actor = str(metadata.get("actor") or "").strip()
+    if actor:
+        return f"You received this because of an update from {actor}."
+    return "You are receiving this because your notification preferences allow this alert."
+
+
+def _primary_cta(notification: Notification) -> str:
+    link = str(notification.link or "")
+    if "/tickets/" in link:
+        return "Open Ticket"
+    if "/problems/" in link:
+        return "Open Problem"
+    return "Open Notification Center"
+
+
 def _build_notification_html(*, notification: Notification, frontend_base_url: str, mark_read_url: str) -> str:
     severity = str(notification.severity or "info").lower()
     color = _severity_color(severity)
     view_url = f"{frontend_base_url.rstrip('/')}{notification.link or '/notifications'}"
     title = escape(notification.title)
     body = escape(str(notification.body or ""))
+    event_type = escape(str(notification.event_type or "system_alert").replace("_", " ").title())
+    entity_label = escape(_entity_label(notification))
+    why_text = escape(_reason_text(notification))
+    cta_text = escape(_primary_cta(notification))
+    created_at = escape(str(notification.created_at))
     return f"""\
 <!doctype html>
 <html>
@@ -36,15 +89,18 @@ def _build_notification_html(*, notification: Notification, frontend_base_url: s
             <tr>
               <td style="padding:18px;">
                 <h2 style="margin:0 0 8px;font-size:18px;">{title}</h2>
-                <p style="margin:0 0 14px;font-size:13px;color:#475569;">Severity: {escape(severity.upper())}</p>
+                <p style="margin:0 0 6px;font-size:13px;color:#475569;">Type: {event_type}</p>
+                <p style="margin:0 0 6px;font-size:13px;color:#475569;">Severity: {escape(severity.upper())}</p>
+                <p style="margin:0 0 14px;font-size:13px;color:#475569;">Reference: {entity_label}</p>
                 <p style="margin:0 0 18px;font-size:14px;line-height:1.6;">{body}</p>
+                <p style="margin:0 0 14px;font-size:13px;line-height:1.5;color:#334155;"><strong>Why you received this:</strong> {why_text}</p>
                 <p style="margin:0 0 10px;">
-                  <a href="{escape(view_url, quote=True)}" style="display:inline-block;background:#0f766e;color:#fff;text-decoration:none;padding:10px 14px;border-radius:8px;font-weight:600;">View in Portal</a>
+                  <a href="{escape(view_url, quote=True)}" style="display:inline-block;background:#0f766e;color:#fff;text-decoration:none;padding:10px 14px;border-radius:8px;font-weight:600;">{cta_text}</a>
                 </p>
                 <p style="margin:0 0 16px;">
                   <a href="{escape(mark_read_url, quote=True)}" style="display:inline-block;background:#334155;color:#fff;text-decoration:none;padding:9px 13px;border-radius:8px;font-weight:600;">Mark as Read</a>
                 </p>
-                <p style="margin:0;font-size:12px;color:#64748b;">You're receiving this because your notification preferences allow this alert level.</p>
+                <p style="margin:0;font-size:12px;color:#64748b;">Generated at: {created_at}</p>
               </td>
             </tr>
           </table>
@@ -60,8 +116,11 @@ def _build_notification_text(*, notification: Notification, frontend_base_url: s
     view_url = f"{frontend_base_url.rstrip('/')}{notification.link or '/notifications'}"
     return (
         f"[ITSM] {notification.title}\n\n"
+        f"Type: {notification.event_type}\n"
         f"Severity: {notification.severity}\n"
         f"Source: {notification.source or 'system'}\n\n"
+        f"Reference: {_entity_label(notification)}\n"
+        f"Why you received this: {_reason_text(notification)}\n\n"
         f"{notification.body or ''}\n\n"
         f"View in portal: {view_url}\n"
     )
@@ -131,4 +190,3 @@ def deliver_notification_email(
         return ok, None if ok else "smtp_send_failed"
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
-

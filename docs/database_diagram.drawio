@@ -1,0 +1,672 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net" modified="2026-03-27T00:00:00.000Z" agent="7.0" version="20.2.0" etag="ABC123">
+  <diagram name="Database Schema" id="diagram1">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2200" pageHeight="1600" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Group 1: Users & Auth (top-left) -->
+
+        <!-- users table -->
+        <mxCell id="users_header" value="users" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="users_col_0" value="🔑 id : UUID [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="70" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="users_col_1" value="  email : varchar(255) [UQ]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="94" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="users_col_2" value="  name : varchar(255)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="118" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="users_col_3" value="  role : ENUM" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="142" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="users_col_4" value="  specializations : JSONB" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="166" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="users_col_5" value="  seniority_level : ENUM" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="190" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="users_col_6" value="  is_available : boolean" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="214" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="users_col_7" value="  password_hash : varchar(255)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="238" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="users_col_8" value="  google_id : varchar(255)? [UQ]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="262" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="users_col_9" value="  is_verified : boolean" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="286" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="users_col_10" value="  created_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="310" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- refresh_tokens table -->
+        <mxCell id="refresh_tokens_header" value="refresh_tokens" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="40" y="380" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="refresh_tokens_col_0" value="🔑 jti : varchar(36) [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="410" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="refresh_tokens_col_1" value="🔗 user_id : UUID [FK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="434" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="refresh_tokens_col_2" value="  created_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="458" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="refresh_tokens_col_3" value="  expires_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="482" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="refresh_tokens_col_4" value="  revoked_at : timestamp tz?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="506" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="refresh_tokens_col_5" value="  replaced_by_jti : varchar(36)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="530" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- verification_tokens table -->
+        <mxCell id="verification_tokens_header" value="verification_tokens" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="40" y="600" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="verification_tokens_col_0" value="🔑 token : varchar(64) [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="630" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="verification_tokens_col_1" value="  code : varchar(6)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="654" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="verification_tokens_col_2" value="🔗 user_id : UUID [FK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="678" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="verification_tokens_col_3" value="  created_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="702" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="verification_tokens_col_4" value="  expires_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="726" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="verification_tokens_col_5" value="  used_at : timestamp tz?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="750" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- password_reset_tokens table -->
+        <mxCell id="password_reset_tokens_header" value="password_reset_tokens" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="40" y="820" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="password_reset_tokens_col_0" value="🔑 token : varchar(64) [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="850" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="password_reset_tokens_col_1" value="🔗 user_id : UUID [FK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="874" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="password_reset_tokens_col_2" value="  created_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="898" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="password_reset_tokens_col_3" value="  expires_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="922" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="password_reset_tokens_col_4" value="  used_at : timestamp tz?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="946" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- email_logs table -->
+        <mxCell id="email_logs_header" value="email_logs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1020" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="email_logs_col_0" value="🔑 id : UUID [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1050" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="email_logs_col_1" value="  to : varchar(255)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1074" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="email_logs_col_2" value="  subject : varchar(255)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1098" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="email_logs_col_3" value="  body : text" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1122" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="email_logs_col_4" value="  kind : ENUM" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1146" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="email_logs_col_5" value="  sent_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1170" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- Group 2: Tickets & Comments (top-right) -->
+
+        <!-- tickets table (large) -->
+        <mxCell id="tickets_header" value="tickets" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="560" y="40" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_0" value="🔑 id : varchar(20) [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="70" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_1" value="  title : varchar(255)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="94" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_2" value="  description : text" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="118" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_3" value="  status : ENUM" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="142" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_4" value="  priority : ENUM" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="166" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_5" value="  ticket_type : ENUM" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="190" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_6" value="  category : ENUM" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="214" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_7" value="  assignee : varchar(255)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="238" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_8" value="  reporter : varchar(255)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="262" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_9" value="  reporter_id : varchar(64)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="286" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_10" value="🔗 problem_id : varchar(20)? [FK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="310" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_11" value="  auto_assignment_applied : bool" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="334" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_12" value="  auto_priority_applied : bool" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="358" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_13" value="  assignment_model_version : varchar" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="382" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_14" value="  predicted_priority : ENUM?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="406" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_15" value="  predicted_ticket_type : ENUM?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="430" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_16" value="  predicted_category : ENUM?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="454" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_17" value="  assignment_change_count : int" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="478" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_18" value="  first_action_at : timestamp tz?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="502" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_19" value="  resolved_at : timestamp tz?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="526" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_20" value="  created_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="550" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_21" value="  updated_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="574" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_22" value="  source : varchar(32)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="598" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_23" value="  jira_key : varchar(64)? [UQ]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="622" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_24" value="  jira_issue_id : varchar(64)? [UQ]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="646" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_25" value="  external_id : varchar(128)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="670" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_26" value="  external_source : varchar(32)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="694" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_27" value="  sla_status : varchar(32)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="718" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_28" value="  sla_remaining_minutes : int?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="742" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_29" value="  sla_elapsed_minutes : int?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="766" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_30" value="  priority_auto_escalated : bool" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="790" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_31" value="  resolution : text?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="814" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_32" value="  tags : JSONB" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="838" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_33" value="  ai_summary : text?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="862" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="tickets_col_34" value="  summary_generated_at : timestamp tz?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="886" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- ticket_comments table -->
+        <mxCell id="ticket_comments_header" value="ticket_comments" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="560" y="960" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="ticket_comments_col_0" value="🔑 id : varchar(20) [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="990" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ticket_comments_col_1" value="🔗 ticket_id : varchar(20) [FK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1014" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ticket_comments_col_2" value="  author : varchar(255)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1038" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ticket_comments_col_3" value="  content : text" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1062" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ticket_comments_col_4" value="  created_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1086" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ticket_comments_col_5" value="  updated_at : timestamp tz?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1110" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ticket_comments_col_6" value="  jira_comment_id : varchar(64)? [UQ]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1134" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ticket_comments_col_7" value="  external_comment_id : varchar(128)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1158" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ticket_comments_col_8" value="  raw_payload : JSONB?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1182" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- jira_sync_state table -->
+        <mxCell id="jira_sync_state_header" value="jira_sync_state" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1270" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="jira_sync_state_col_0" value="🔑 id : integer [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1300" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="jira_sync_state_col_1" value="  project_key : varchar(32) [UQ]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1324" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="jira_sync_state_col_2" value="  last_synced_at : timestamp tz?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1348" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="jira_sync_state_col_3" value="  last_error : text?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1372" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="jira_sync_state_col_4" value="  updated_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="560" y="1396" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- Group 3: Problems & Recommendations (middle) -->
+
+        <!-- problems table -->
+        <mxCell id="problems_header" value="problems" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="40" y="500" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="problems_col_0" value="🔑 id : varchar(20) [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="530" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="problems_col_1" value="  title : varchar(255)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="554" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="problems_col_2" value="  category : ENUM" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="578" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="problems_col_3" value="  status : ENUM" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="602" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="problems_col_4" value="  created_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="626" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="problems_col_5" value="  updated_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="650" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="problems_col_6" value="  last_seen_at : timestamp tz?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="674" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="problems_col_7" value="  resolved_at : timestamp tz?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="698" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="problems_col_8" value="  occurrences_count : int" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="722" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="problems_col_9" value="  active_count : int" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="746" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="problems_col_10" value="  root_cause : text?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="770" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="problems_col_11" value="  workaround : text?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="794" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="problems_col_12" value="  similarity_key : varchar(255) [UQ]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="818" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- recommendations table -->
+        <mxCell id="recommendations_header" value="recommendations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="280" y="500" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="recommendations_col_0" value="🔑 id : varchar(20) [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="530" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="recommendations_col_1" value="  type : ENUM" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="554" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="recommendations_col_2" value="  title : varchar(255)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="578" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="recommendations_col_3" value="  description : text" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="602" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="recommendations_col_4" value="  related_tickets : JSONB" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="626" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="recommendations_col_5" value="  confidence : int" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="650" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="recommendations_col_6" value="  impact : ENUM" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="674" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="recommendations_col_7" value="  created_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="698" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- Group 4: AI Feedback & KB (bottom-left) -->
+
+        <!-- ai_solution_feedback table -->
+        <mxCell id="ai_solution_feedback_header" value="ai_solution_feedback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1300" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_solution_feedback_col_0" value="🔑 id : UUID [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1330" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_solution_feedback_col_1" value="🔗 user_id : UUID? [FK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1354" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_solution_feedback_col_2" value="🔗 ticket_id : varchar(20)? [FK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1378" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_solution_feedback_col_3" value="  recommendation_id : varchar(64)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1402" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_solution_feedback_col_4" value="  query : text?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1426" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_solution_feedback_col_5" value="  feedback_type : varchar(24)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1450" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_solution_feedback_col_6" value="  source : varchar(32)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1474" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_solution_feedback_col_7" value="  confidence_snapshot : float?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1498" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_solution_feedback_col_8" value="  context_json : JSONB?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1522" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_solution_feedback_col_9" value="  created_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1546" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- kb_chunks table -->
+        <mxCell id="kb_chunks_header" value="kb_chunks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="280" y="900" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="kb_chunks_col_0" value="🔑 id : integer [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="930" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="kb_chunks_col_1" value="  source_type : varchar(64)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="954" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="kb_chunks_col_2" value="  jira_issue_id : varchar(64)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="978" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="kb_chunks_col_3" value="  jira_key : varchar(64)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="1002" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="kb_chunks_col_4" value="  comment_id : varchar(64)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="1026" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="kb_chunks_col_5" value="  content : text" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="1050" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="kb_chunks_col_6" value="  content_hash : varchar(64)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="1074" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="kb_chunks_col_7" value="  metadata : JSONB?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="1098" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="kb_chunks_col_8" value="  embedding : Vector(768)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="1122" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="kb_chunks_col_9" value="  created_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="280" y="1146" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- Group 5: Notifications & Events (bottom-right) -->
+
+        <!-- notification_preferences table -->
+        <mxCell id="notification_preferences_header" value="notification_preferences" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="40" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="notification_preferences_col_0" value="🔑 user_id : UUID [PK,FK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="70" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notification_preferences_col_1" value="  email_enabled : boolean" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="94" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notification_preferences_col_2" value="  email_min_severity : varchar(16)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="118" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notification_preferences_col_3" value="  digest_enabled : boolean" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="142" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notification_preferences_col_4" value="  digest_frequency : varchar(24)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="166" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notification_preferences_col_5" value="  quiet_hours_enabled : boolean" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="190" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notification_preferences_col_6" value="  quiet_hours_start : time?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="214" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notification_preferences_col_7" value="  created_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="238" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- notifications table -->
+        <mxCell id="notifications_header" value="notifications" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="330" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="notifications_col_0" value="🔑 id : UUID [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="360" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notifications_col_1" value="🔗 user_id : UUID [FK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="384" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notifications_col_2" value="  title : varchar(255)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="408" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notifications_col_3" value="  body : text?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="432" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notifications_col_4" value="  severity : varchar(16)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="456" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notifications_col_5" value="  event_type : varchar(48)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="480" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notifications_col_6" value="  link : varchar(512)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="504" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notifications_col_7" value="  source : varchar(32)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="528" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notifications_col_8" value="  metadata_json : JSONB?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="552" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notifications_col_9" value="  action_payload : JSONB?" style="rounded=0;whiteSpace:wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="576" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notifications_col_10" value="  created_at : timestamp tz" style="rounded=0;whiteSpace:wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="600" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notifications_col_11" value="  read_at : timestamp tz?" style="rounded=0;whiteSpace:wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="624" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- notification_delivery_events table -->
+        <mxCell id="notification_delivery_events_header" value="notification_delivery_events" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="720" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="notification_delivery_events_col_0" value="🔑 id : UUID [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="750" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notification_delivery_events_col_1" value="🔗 notification_id : UUID [FK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="774" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notification_delivery_events_col_2" value="🔗 user_id : UUID? [FK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="798" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notification_delivery_events_col_3" value="  workflow_name : varchar(120)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="822" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notification_delivery_events_col_4" value="  delivery_status : varchar(32)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="846" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notification_delivery_events_col_5" value="  error : text?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="870" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="notification_delivery_events_col_6" value="  created_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="894" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- automation_events table -->
+        <mxCell id="automation_events_header" value="automation_events" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fce5cd;strokeColor=#d79b00;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1000" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="automation_events_col_0" value="🔑 id : UUID [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1030" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="automation_events_col_1" value="🔗 ticket_id : varchar(20) [FK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1054" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="automation_events_col_2" value="  event_type : varchar(64)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1078" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="automation_events_col_3" value="  actor : varchar(64)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1102" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="automation_events_col_4" value="  before_snapshot : JSONB?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1126" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="automation_events_col_5" value="  after_snapshot : JSONB?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1150" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="automation_events_col_6" value="  meta : JSONB?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1174" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="automation_events_col_7" value="  created_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1198" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- ai_sla_risk_evaluations table -->
+        <mxCell id="ai_sla_risk_evaluations_header" value="ai_sla_risk_evaluations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fce5cd;strokeColor=#d79b00;fontStyle=1;fontSize=11;align=center;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1280" width="220" height="30" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_sla_risk_evaluations_col_0" value="🔑 id : UUID [PK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1310" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_sla_risk_evaluations_col_1" value="🔗 ticket_id : varchar(20) [FK]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1334" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_sla_risk_evaluations_col_2" value="  risk_score : int?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1358" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_sla_risk_evaluations_col_3" value="  confidence : float?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1382" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_sla_risk_evaluations_col_4" value="  suggested_priority : varchar(16)?" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1406" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_sla_risk_evaluations_col_5" value="  decision_source : varchar(16)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1430" width="220" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="ai_sla_risk_evaluations_col_6" value="  created_at : timestamp tz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="1454" width="220" height="24" as="geometry"/>
+        </mxCell>
+
+        <!-- RELATIONSHIPS/ARROWS -->
+
+        <!-- users → refresh_tokens -->
+        <mxCell id="refresh_tokens_user_id_to_users" value="user_id" style="endArrow=ERmany;startArrow=ERone;rounded=0;html=1;entryX=0.5;entryY=0;exitX=0.5;exitY=1;fontSize=9;dashed=0;" edge="1" parent="1" source="users_col_10" target="refresh_tokens_header">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- users → verification_tokens -->
+        <mxCell id="verification_tokens_user_id_to_users" value="user_id" style="endArrow=ERmany;startArrow=ERone;rounded=0;html=1;entryX=0.5;entryY=0;exitX=0.5;exitY=1;fontSize=9;dashed=0;" edge="1" parent="1" source="users_col_10" target="verification_tokens_header">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- users → password_reset_tokens -->
+        <mxCell id="password_reset_tokens_user_id_to_users" value="user_id" style="endArrow=ERmany;startArrow=ERone;rounded=0;html=1;entryX=0.5;entryY=0;exitX=0.5;exitY=1;fontSize=9;dashed=0;" edge="1" parent="1" source="users_col_10" target="password_reset_tokens_header">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- users → notification_preferences (one-to-one) -->
+        <mxCell id="notification_preferences_user_id_to_users" value="user_id" style="endArrow=ERone;startArrow=ERone;rounded=0;html=1;exitX=1;exitY=0.2;entryX=0;entryY=0.2;fontSize=9;dashed=0;" edge="1" parent="1" source="users_col_0" target="notification_preferences_col_0">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- users → notifications -->
+        <mxCell id="notifications_user_id_to_users" value="user_id" style="endArrow=ERmany;startArrow=ERone;rounded=0;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.3;fontSize=9;dashed=0;" edge="1" parent="1" source="users_col_0" target="notifications_col_1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- users → ai_solution_feedback -->
+        <mxCell id="ai_solution_feedback_user_id_to_users" value="user_id" style="endArrow=ERmanyToOne;startArrow=ERzeroToOne;rounded=0;html=1;exitX=0;exitY=0.5;entryX=0;entryY=0.2;fontSize=9;dashed=0;" edge="1" parent="1" source="ai_solution_feedback_col_1" target="users_col_0">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- users → notification_delivery_events -->
+        <mxCell id="notification_delivery_events_user_id_to_users" value="user_id" style="endArrow=ERmanyToOne;startArrow=ERzeroToOne;rounded=0;html=1;exitX=1;exitY=0.4;entryX=1;entryY=0.5;fontSize=9;dashed=0;" edge="1" parent="1" source="notification_delivery_events_col_2" target="users_col_0">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- tickets → ticket_comments -->
+        <mxCell id="ticket_comments_ticket_id_to_tickets" value="ticket_id" style="endArrow=ERmany;startArrow=ERone;rounded=0;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontSize=9;dashed=0;" edge="1" parent="1" source="tickets_col_34" target="ticket_comments_header">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- problems → tickets -->
+        <mxCell id="tickets_problem_id_to_problems" value="problem_id" style="endArrow=ERmany;startArrow=ERone;rounded=0;html=1;exitX=0;exitY=0.4;entryX=1;entryY=0.4;fontSize=9;dashed=0;" edge="1" parent="1" source="tickets_col_10" target="problems_col_12">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- tickets → ai_solution_feedback -->
+        <mxCell id="ai_solution_feedback_ticket_id_to_tickets" value="ticket_id" style="endArrow=ERmanyToOne;startArrow=ERzeroToOne;rounded=0;html=1;exitX=0.5;exitY=0;entryX=0.5;entryY=1;fontSize=9;dashed=0;" edge="1" parent="1" source="ai_solution_feedback_col_2" target="tickets_col_34">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- tickets → automation_events -->
+        <mxCell id="automation_events_ticket_id_to_tickets" value="ticket_id" style="endArrow=ERmany;startArrow=ERone;rounded=0;html=1;exitX=1;exitY=0.8;entryX=0;entryY=0.3;fontSize=9;dashed=0;" edge="1" parent="1" source="tickets_col_34" target="automation_events_col_1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- tickets → ai_sla_risk_evaluations -->
+        <mxCell id="ai_sla_risk_evaluations_ticket_id_to_tickets" value="ticket_id" style="endArrow=ERmany;startArrow=ERone;rounded=0;html=1;exitX=1;exitY=1;entryX=0;entryY=0.4;fontSize=9;dashed=0;" edge="1" parent="1" source="tickets_col_34" target="ai_sla_risk_evaluations_col_1">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- notifications → notification_delivery_events -->
+        <mxCell id="notification_delivery_events_notification_id_to_notifications" value="notification_id" style="endArrow=ERmany;startArrow=ERone;rounded=0;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontSize=9;dashed=0;" edge="1" parent="1" source="notifications_col_11" target="notification_delivery_events_header">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

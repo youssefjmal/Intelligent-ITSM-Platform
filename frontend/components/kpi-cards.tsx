@@ -63,6 +63,7 @@ type KPIItem = {
   iconColor: string
   href: string
   accent: string
+  statusTone: "green" | "amber" | "red"
   details: KPIDetail[]
 }
 
@@ -81,6 +82,8 @@ export function KPICards({ stats, criticalTop = [], problemSummary }: KPICardsPr
   const resolvedClosed = stats.resolved + stats.closed
   const activeBacklog = stats.open + stats.inProgress + stats.pending
   const criticalShare = stats.total > 0 ? Math.round((stats.critical / stats.total) * 100) : 0
+  const resolutionTone: "green" | "amber" | "red" =
+    stats.resolutionRate >= 80 ? "green" : stats.resolutionRate >= 60 ? "amber" : "red"
   const problems = problemSummary ?? {
     totalProblems: 0,
     linkedTickets: 0,
@@ -100,6 +103,7 @@ export function KPICards({ stats, criticalTop = [], problemSummary }: KPICardsPr
       iconColor: "text-primary",
       href: "/tickets?view=total",
       accent: "from-primary/20 via-primary/10 to-transparent",
+      statusTone: "green",
       details: [
         { label: t("status.open"), value: stats.open },
         { label: t("status.inProgress"), value: stats.inProgress },
@@ -116,6 +120,7 @@ export function KPICards({ stats, criticalTop = [], problemSummary }: KPICardsPr
       iconColor: "text-amber-600 dark:text-amber-300",
       href: "/tickets?view=in-progress",
       accent: "from-amber-300/30 via-amber-200/20 to-transparent",
+      statusTone: "amber",
       details: [
         { label: t("status.pending"), value: stats.pending },
         { label: t("status.open"), value: stats.open },
@@ -132,6 +137,7 @@ export function KPICards({ stats, criticalTop = [], problemSummary }: KPICardsPr
       iconColor: "text-emerald-600 dark:text-emerald-300",
       href: "/tickets?view=resolved",
       accent: "from-emerald-300/30 via-emerald-200/20 to-transparent",
+      statusTone: "green",
       details: [
         { label: t("status.resolved"), value: stats.resolved },
         { label: t("status.closed"), value: stats.closed },
@@ -148,6 +154,7 @@ export function KPICards({ stats, criticalTop = [], problemSummary }: KPICardsPr
       iconColor: "text-red-600 dark:text-red-300",
       href: "/tickets?view=critical",
       accent: "from-red-300/30 via-red-200/20 to-transparent",
+      statusTone: "red",
       details: [
         { label: t("kpi.totalTickets"), value: stats.total },
         { label: locale === "fr" ? "Part critique" : "Critical share", value: `${criticalShare}%` },
@@ -164,6 +171,7 @@ export function KPICards({ stats, criticalTop = [], problemSummary }: KPICardsPr
       iconColor: "text-blue-600 dark:text-blue-300",
       href: "/tickets?view=avg-time",
       accent: "from-blue-300/30 via-blue-200/20 to-transparent",
+      statusTone: "amber",
       details: [
         { label: t("status.resolved"), value: stats.resolved },
         { label: t("status.closed"), value: stats.closed },
@@ -180,6 +188,7 @@ export function KPICards({ stats, criticalTop = [], problemSummary }: KPICardsPr
       iconColor: "text-primary",
       href: "/tickets?view=resolution-rate",
       accent: "from-primary/20 via-primary/10 to-transparent",
+      statusTone: resolutionTone,
       details: [
         { label: locale === "fr" ? "Resolus/Fermes" : "Resolved/Closed", value: resolvedClosed },
         { label: t("kpi.totalTickets"), value: stats.total },
@@ -199,6 +208,7 @@ export function KPICards({ stats, criticalTop = [], problemSummary }: KPICardsPr
       iconColor: "text-red-600 dark:text-red-300",
       href: "/problems",
       accent: "from-red-300/30 via-red-200/20 to-transparent",
+      statusTone: problems.activeProblemTickets > 0 ? "red" : "green",
       details: [
         { label: locale === "fr" ? "Tickets lies" : "Linked tickets", value: problems.linkedTickets },
         { label: locale === "fr" ? "Actifs lies" : "Active linked", value: problems.activeProblemTickets },
@@ -213,7 +223,16 @@ export function KPICards({ stats, criticalTop = [], problemSummary }: KPICardsPr
         <HoverCard key={kpi.title} openDelay={120} closeDelay={100}>
           <HoverCardTrigger asChild>
             <Link href={kpi.href} className="group block">
-              <Card className="surface-card overflow-hidden rounded-2xl transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md">
+              <Card
+                className={cn(
+                  "surface-card overflow-hidden rounded-2xl border-t transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:ring-1 hover:ring-primary/20",
+                  kpi.statusTone === "green"
+                    ? "border-t-emerald-400"
+                    : kpi.statusTone === "amber"
+                      ? "border-t-amber-400"
+                      : "border-t-red-400"
+                )}
+              >
                 <CardContent className="relative overflow-hidden p-4">
                   <div className={cn("pointer-events-none absolute inset-x-0 top-0 h-12 bg-gradient-to-b", kpi.accent)} />
                   <div className="relative flex items-start justify-between gap-2">

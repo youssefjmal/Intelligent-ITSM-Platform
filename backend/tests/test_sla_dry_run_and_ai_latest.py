@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from app.models.enums import TicketStatus, UserRole
 from app.routers.sla import SLABatchRunRequest, get_ticket_ai_risk_latest, run_sla_batch
+from app.services.ai.ai_sla_risk import build_sla_advisory
 
 
 class _ScalarResult:
@@ -118,9 +119,97 @@ def test_get_latest_ai_risk_endpoint_payload(monkeypatch) -> None:
     current_user = SimpleNamespace(id="u-2", role=UserRole.agent)
     ticket = SimpleNamespace(id="TW-9100")
     monkeypatch.setattr("app.routers.sla.get_ticket_for_user", lambda *_args, **_kwargs: ticket)
+    monkeypatch.setattr("app.routers.sla._count_similar_incidents", lambda *_args, **_kwargs: 5)
+    monkeypatch.setattr("app.routers.sla._count_assignee_active_tickets", lambda *_args, **_kwargs: 4)
+    monkeypatch.setattr(
+        "app.routers.sla.build_sla_advisory",
+        lambda *_args, **_kwargs: {
+            "risk_score": 0.74,
+            "band": "high",
+            "confidence": 0.81,
+            "reasoning": ["Ticket has consumed 78% of the SLA window.", "No activity recorded in the last 2 hours."],
+            "recommended_actions": ["Follow up with the assignee now.", "Reassign if the ticket remains inactive after the follow-up."],
+            "advisory_mode": "hybrid",
+            "evaluated_at": now.isoformat(),
+            "suggested_priority": "High",
+            "sla_elapsed_ratio": 0.78,
+            "time_consumed_percent": 78,
+        },
+    )
 
     payload = get_ticket_ai_risk_latest("TW-9100", db=db, current_user=current_user)
     assert payload["ticket_id"] == "TW-9100"
-    assert payload["risk_score"] == 84
+    assert payload["risk_score"] == 0.74
+    assert payload["band"] == "high"
+    assert payload["advisory_mode"] == "hybrid"
+    assert payload["reasoning"]
+    assert payload["recommended_actions"]
     assert payload["model_version"] == "gemma:3b"
     assert "created_at" in payload
+
+
+def test_build_sla_advisory_returns_deterministic_payload_without_ai() -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    ticket = _ticket()
+
+    advisory = build_sla_advisory(ticket, similar_incidents=3, assignee_load=2, now=now, lang="en")
+
+    assert advisory["advisory_mode"] == "deterministic"
+    assert 0.0 <= advisory["risk_score"] <= 1.0
+    assert advisory["band"] in {"low", "medium", "high", "critical"}
+    assert any("SLA window" in reason or "activity" in reason.lower() for reason in advisory["reasoning"])
+    assert advisory["recommended_actions"]
+
+
+def test_build_sla_advisory_computes_critical_band_for_breached_ticket() -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    ticket = _ticket()
+    ticket.sla_first_response_breached = True
+    ticket.sla_remaining_minutes = 0
+    ticket.updated_at = now - dt.timedelta(hours=5)
+    ticket.priority = "critical"
+
+    advisory = build_sla_advisory(ticket, similar_incidents=8, assignee_load=6, now=now, lang="en")
+
+    assert advisory["band"] == "critical"
+    assert advisory["risk_score"] >= 0.8
+    assert any("breached" in reason.lower() for reason in advisory["reasoning"])
+    assert advisory["recommended_actions"][0].lower().startswith("escalate")
+
+
+def test_build_sla_advisory_recommended_actions_vary_by_risk_band() -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    low_ticket = _ticket()
+    low_ticket.priority = "low"
+    low_ticket.sla_elapsed_minutes = 15
+    low_ticket.sla_remaining_minutes = 240
+    low_ticket.updated_at = now - dt.timedelta(minutes=10)
+
+    low_advisory = build_sla_advisory(low_ticket, similar_incidents=0, assignee_load=1, now=now, lang="en")
+    high_ticket = _ticket()
+    high_ticket.priority = "critical"
+    high_ticket.sla_elapsed_minutes = 200
+    high_ticket.sla_remaining_minutes = 20
+    high_ticket.updated_at = now - dt.timedelta(hours=3)
+
+    high_advisory = build_sla_advisory(high_ticket, similar_incidents=7, assignee_load=5, now=now, lang="en")
+
+    assert low_advisory["recommended_actions"][0].lower().startswith("no immediate action")
+    assert any(action.lower().startswith(("follow up", "escalate")) for action in high_advisory["recommended_actions"])
+
+
+def test_get_latest_ai_risk_endpoint_returns_deterministic_advisory_without_persisted_eval(monkeypatch) -> None:
+    db = _FakeDBLatest(None)
+    current_user = SimpleNamespace(id="u-3", role=UserRole.agent)
+    ticket = _ticket()
+    monkeypatch.setattr("app.routers.sla.get_ticket_for_user", lambda *_args, **_kwargs: ticket)
+    monkeypatch.setattr("app.routers.sla._count_similar_incidents", lambda *_args, **_kwargs: 4)
+    monkeypatch.setattr("app.routers.sla._count_assignee_active_tickets", lambda *_args, **_kwargs: 3)
+
+    payload = get_ticket_ai_risk_latest("TW-9100", db=db, current_user=current_user)
+
+    assert payload["ticket_id"] == "TW-9100"
+    assert payload["advisory_mode"] == "deterministic"
+    assert payload["reasoning"]
+    assert payload["recommended_actions"]
+    assert payload["confidence"] > 0

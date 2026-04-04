@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Header, Path, Query
@@ -108,6 +109,7 @@ def post_notification(
             metadata_json=payload.metadata_json,
             action_type=payload.action_type,
             action_payload=payload.action_payload,
+            event_type=payload.event_type or payload.type,
         )
         db.commit()
         if not records:
@@ -119,6 +121,7 @@ def post_notification(
                 severity=payload.severity,
                 link=payload.link or f"/tickets/{ticket.id}",
                 source=payload.source or "n8n",
+                event_type=payload.event_type or payload.type,
                 metadata_json=payload.metadata_json,
                 action_type=payload.action_type,
                 action_payload=payload.action_payload,
@@ -144,6 +147,7 @@ def post_notification(
             metadata_json=payload.metadata_json,
             action_type=payload.action_type,
             action_payload=payload.action_payload,
+            event_type=payload.event_type or payload.type,
         )
         db.commit()
         if not records:
@@ -155,6 +159,7 @@ def post_notification(
                 severity=payload.severity,
                 link=payload.link or f"/problems/{problem.id}",
                 source=payload.source or "n8n",
+                event_type=payload.event_type or payload.type,
                 metadata_json=payload.metadata_json,
                 action_type=payload.action_type,
                 action_payload=payload.action_payload,
@@ -176,6 +181,7 @@ def post_notification(
         severity=payload.severity,
         link=payload.link,
         source=payload.source or "system",
+        event_type=payload.event_type or payload.type,
         metadata_json=payload.metadata_json,
         action_type=payload.action_type,
         action_payload=payload.action_payload,
@@ -241,23 +247,47 @@ def remove_notification(
     return {"deleted": True}
 
 
-@router.post("/system", response_model=NotificationOut, dependencies=[])
+def _dedupe_user_ids(
+    db: Session, dedupe_key: str | None, window_minutes: int = 60
+) -> set:
+    """Return the set of user_ids that already received a notification with this
+    dedupe_key within the given rolling window.  Empty set when dedupe_key is None."""
+    if not dedupe_key:
+        return set()
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=window_minutes)
+    rows = (
+        db.query(Notification.user_id)
+        .filter(
+            Notification.dedupe_key == dedupe_key,
+            Notification.created_at >= cutoff,
+        )
+        .all()
+    )
+    return {row.user_id for row in rows}
+
+
+@router.post("/system", dependencies=[])
 def post_system_notification(
     payload: SystemNotificationCreate = Body(...),
     x_automation_secret: str | None = Header(default=None, alias="X-Automation-Secret"),
     db: Session = Depends(get_db),
-) -> NotificationOut:
+) -> dict:
     configured = settings.AUTOMATION_SECRET.strip()
     if not configured:
         raise BadRequestError("automation_secret_not_configured")
     if (x_automation_secret or "").strip() != configured:
         raise AuthenticationException("invalid_automation_secret", error_code="INVALID_AUTOMATION_SECRET", status_code=401)
 
+    # ── ticket_id fan-out ──────────────────────────────────────────────────────
     if payload.ticket_id:
         ticket = db.get(Ticket, payload.ticket_id)
         if not ticket:
             raise NotFoundError("ticket_not_found", details={"ticket_id": payload.ticket_id})
         recipients = resolve_ticket_recipients(db, ticket=ticket, include_admins=True)
+        already_notified = _dedupe_user_ids(db, payload.dedupe_key)
+        recipients = [u for u in recipients if u.id not in already_notified]
+        if not recipients:
+            return {"status": "deduplicated", "count": 0}
         created = create_notifications_for_users(
             db,
             users=recipients,
@@ -270,18 +300,21 @@ def post_system_notification(
             metadata_json=payload.metadata_json,
             action_type=payload.action_type,
             action_payload=payload.action_payload,
+            event_type=payload.event_type or payload.type,
         )
-        if not created:
-            raise BadRequestError("no_notification_recipients")
         db.commit()
-        db.refresh(created[0])
-        return NotificationOut.model_validate(created[0])
+        return {"status": "created", "count": len(created)}
 
+    # ── problem_id fan-out ────────────────────────────────────────────────────
     if payload.problem_id:
         problem = db.get(Problem, payload.problem_id)
         if not problem:
             raise NotFoundError("problem_not_found", details={"problem_id": payload.problem_id})
         recipients = resolve_problem_recipients(db, problem=problem, include_admins=True)
+        already_notified = _dedupe_user_ids(db, payload.dedupe_key)
+        recipients = [u for u in recipients if u.id not in already_notified]
+        if not recipients:
+            return {"status": "deduplicated", "count": 0}
         created = create_notifications_for_users(
             db,
             users=recipients,
@@ -294,13 +327,12 @@ def post_system_notification(
             metadata_json=payload.metadata_json,
             action_type=payload.action_type,
             action_payload=payload.action_payload,
+            event_type=payload.event_type or payload.type,
         )
-        if not created:
-            raise BadRequestError("no_notification_recipients")
         db.commit()
-        db.refresh(created[0])
-        return NotificationOut.model_validate(created[0])
+        return {"status": "created", "count": len(created)}
 
+    # ── resolve single target user ────────────────────────────────────────────
     target_user_id = payload.user_id
     if not target_user_id and payload.user_email:
         user = db.query(User).filter(User.email == payload.user_email).first()
@@ -313,12 +345,41 @@ def post_system_notification(
             raise NotFoundError("user_not_found", details={"user_name": payload.user_name})
         target_user_id = user.id
 
+    # ── broadcast: user_id=null, no email/name, no ticket/problem ─────────────
     if not target_user_id:
-        raise BadRequestError("user_id_or_user_email_or_user_name_required")
+        targets = (
+            db.query(User)
+            .filter(User.role.in_([UserRole.admin, UserRole.agent]))
+            .all()
+        )
+        already_notified = _dedupe_user_ids(db, payload.dedupe_key)
+        targets = [u for u in targets if u.id not in already_notified]
+        if not targets:
+            return {"status": "deduplicated", "count": 0}
+        created = create_notifications_for_users(
+            db,
+            users=targets,
+            title=payload.title,
+            body=payload.body,
+            severity=payload.severity,
+            link=payload.link,
+            source=payload.source or "n8n_workflow",
+            cooldown_minutes=0,
+            metadata_json=payload.metadata_json,
+            action_type=payload.action_type,
+            action_payload=payload.action_payload,
+            event_type=payload.event_type or payload.type,
+        )
+        db.commit()
+        return {"status": "created", "count": len(created)}
+
+    # ── single user ────────────────────────────────────────────────────────────
     if payload.user_id and not db.get(User, payload.user_id):
         raise NotFoundError("user_not_found", details={"user_id": str(payload.user_id)})
-
-    record = create_notification(
+    already_notified = _dedupe_user_ids(db, payload.dedupe_key)
+    if target_user_id in already_notified:
+        return {"status": "deduplicated", "count": 0}
+    create_notification(
         db,
         user_id=target_user_id,
         title=payload.title,
@@ -326,11 +387,13 @@ def post_system_notification(
         severity=payload.severity,
         link=payload.link,
         source=payload.source or "n8n",
+        event_type=payload.event_type or payload.type,
         metadata_json=payload.metadata_json,
         action_type=payload.action_type,
         action_payload=payload.action_payload,
     )
-    return NotificationOut.model_validate(record)
+    db.commit()
+    return {"status": "created", "count": 1}
 
 
 @router.get("/preferences", response_model=NotificationPreferencesOut)
@@ -354,9 +417,18 @@ def patch_preferences(
         user_id=current_user.id,
         email_enabled=payload.email_enabled,
         email_min_severity=payload.email_min_severity,
+        immediate_email_min_severity=payload.immediate_email_min_severity,
+        digest_enabled=payload.digest_enabled,
         digest_frequency=payload.digest_frequency,
+        quiet_hours_enabled=payload.quiet_hours_enabled,
         quiet_hours_start=payload.quiet_hours_start,
         quiet_hours_end=payload.quiet_hours_end,
+        critical_bypass_quiet_hours=payload.critical_bypass_quiet_hours,
+        ticket_assignment_enabled=payload.ticket_assignment_enabled,
+        ticket_comment_enabled=payload.ticket_comment_enabled,
+        sla_notifications_enabled=payload.sla_notifications_enabled,
+        problem_notifications_enabled=payload.problem_notifications_enabled,
+        ai_notifications_enabled=payload.ai_notifications_enabled,
     )
     return NotificationPreferencesOut(**serialize_notification_preference(pref))
 

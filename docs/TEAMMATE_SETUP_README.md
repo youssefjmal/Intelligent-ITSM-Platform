@@ -11,7 +11,7 @@ Use this guide to start a complete local stack for demo, QA, and internship hand
 ## 2. Prerequisites
 - Docker Desktop (with Compose support)
 - Git
-- Open ports: `3000`, `8000`, `55432`
+- Open ports: `3000`, `8000`, `55632`
 
 ## 3. Clone Repository
 ```powershell
@@ -42,7 +42,7 @@ Service endpoints:
 - Frontend: `http://localhost:3000`
 - Backend API: `http://localhost:8000`
 - Swagger: `http://localhost:8000/docs`
-- PostgreSQL host port: `localhost:55432`
+- PostgreSQL host port: `localhost:55632`
 
 ## 6. Seed Demo Data (Optional)
 ```powershell

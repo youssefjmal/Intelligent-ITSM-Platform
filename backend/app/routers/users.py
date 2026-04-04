@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import require_admin
 from app.core.rate_limit import rate_limit
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import BadRequestError, NotFoundError
 from app.db.session import get_db
 from app.schemas.user import UserOut, UserRoleUpdate, UserSeniorityUpdate, UserSpecializationsUpdate
 from app.services.users import delete_user, list_users, update_role, update_seniority, update_specializations
@@ -22,7 +22,10 @@ def get_users(db: Session = Depends(get_db)) -> list[UserOut]:
 
 @router.patch("/{user_id}/role", response_model=UserOut)
 def set_role(user_id: str, payload: UserRoleUpdate, db: Session = Depends(get_db)) -> UserOut:
-    user = update_role(db, user_id, payload.role)
+    try:
+        user = update_role(db, user_id, payload.role)
+    except Exception as exc:  # noqa: BLE001
+        raise BadRequestError("jira_role_sync_failed", details={"reason": str(exc)}) from exc
     if not user:
         raise NotFoundError("user_not_found", details={"user_id": user_id})
     return UserOut.model_validate(user)

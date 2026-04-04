@@ -18,6 +18,10 @@ Current workspace note:
 - This file originally tracked the pushed milestones through the February delivery.
 - The live workspace now contains additional local work through `2026-03-16`, especially around evidence-first AI recommendations, deterministic SLA advisory, and backend-driven notifications.
 - For the fastest current-state ramp-up, read sections `25` through `28` first, then come back to the earlier architecture/history sections if needed.
+- Additional AI grounding work landed locally on `2026-03-29`:
+  - classification strong matches now pass through grounded retrieval-family filtering instead of trusting raw semantic Jira hits
+  - retrieval confidence now blends raw hit strength with evidence-cluster consensus
+  - mixed-family evidence is expected to degrade into manual-triage / no-strong-match behavior instead of producing confident wrong-domain recommendations
 
 ## 1. Scope of this resume
 
@@ -349,6 +353,12 @@ Migration history (`backend/alembic/versions`):
 19. `0019_kb_chunk_identity_uniques.py` - KB chunk uniqueness guarantees.
 20. `0020_add_jira_native_waiting_statuses.py` - Jira-native waiting status support.
 
+### pgvector requirement
+
+Migration 0016 requires the pgvector PostgreSQL extension.
+Run before first migration: `CREATE EXTENSION IF NOT EXISTS vector;`
+Or let migration 0016 handle it automatically (op.execute included as of quality-assessment fix pass).
+
 ### 7.1 Current core tables
 
 1. `users`
@@ -671,7 +681,7 @@ python -m venv .venv
 pip install -r requirements.txt
 python -m alembic -c alembic.ini upgrade head
 python scripts\seed.py
-python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8052
+
 ```
 
 Frontend:
@@ -1305,17 +1315,20 @@ Useful tickets for validating current behavior:
 3. `TW-DEMO-NOTIFY-01`
    - notification bell/page/delivery demo ticket created by `seed_notification_demo.py`.
 
-Known remaining precision gap:
+Residual recommendation-quality risk:
 
-1. `TW-MOCK-019` (`CRM sync job stalls after token rotation`) is a known example where recommendation quality can still be poor.
-2. Observed bad output:
-   - a mail/relay certificate/queue action was selected for a CRM/token/stalled-worker ticket.
-3. Strong implication:
-   - KB/local evidence filtering is improved but not perfect.
-   - Some low-quality KB matches can still survive on generic overlap instead of domain/entity overlap.
-4. If this case is being worked next, start in:
+1. `TW-MOCK-019` (`CRM sync job stalls after token rotation`) is still the best replay case for cross-domain contamination checks.
+2. The expected current behavior is now:
+   - same-family application/retrieval guidance, or
+   - degraded `no_strong_match` / manual-triage behavior,
+   - but not a confident mail/relay certificate answer.
+3. Remaining risk:
+   - confidence and conflict thresholds are still calibration-driven
+   - meta-tickets that describe false-positive retrieval families are safer now, but still the first place to regression-test
+4. If this case regresses, start in:
    - `backend/app/services/ai/retrieval.py`
-   - `backend/app/services/ai/resolution_advisor.py`
+   - `backend/app/services/ai/orchestrator.py`
+   - `backend/app/services/ai/service_requests.py`
 
 ---
 
@@ -1355,3 +1368,639 @@ If the next task is about Jira/local dataset alignment:
 3. `backend/app/integrations/jira/client.py`
 4. `backend/app/integrations/jira/outbound.py`
 5. `backend/app/integrations/jira/service.py`
+
+---
+
+## 29. Engineering audit hardening — 8-change batch (2026-03-25)
+
+This batch addresses findings from a comprehensive engineering audit of the AI copilot pipeline.
+All changes are surgical: no endpoints added, no wholesale rewrites, no behaviour changes outside the stated scope.
+
+### Change 1 — Remove `ast.literal_eval()` security risk (`llm.py`)
+
+**Why:** `ast.literal_eval()` was used as a fallback JSON parser on raw LLM output. It evaluates arbitrary Python expressions, meaning a crafted LLM response could execute code on the server. This is a critical code-execution risk.
+
+**What changed:**
+- Removed `import ast` entirely from `llm.py`.
+- `_parse_candidate()` now uses only `json.loads()` with `(ValueError, TypeError)` exception handling.
+- Added `import logging` and module-level `logger`; all parse-failure paths now emit `logger.warning()`.
+- Added full module docstring explaining the role, LLM target, output contract, and the security removal.
+
+**Files touched:**
+- `backend/app/services/ai/llm.py`
+- `backend/tests/test_llm_json_extraction.py` (new — guards against regression)
+
+---
+
+### Change 2 — Fix intent detection false positives via word-boundary matching (`intents.py`)
+
+**Why:** Keyword matching used `k in text` (substring), so `"open"` matched `"open_source_vulnerability"` and `"open"` matched `"reopen"`, causing incorrect `create_ticket` intent classifications. The LLM fallback also inherited rule-based confidence levels instead of signalling its own uncertainty.
+
+**What changed:**
+- Added `_matches_keyword(text, keyword) -> bool`: uses `\b`-anchored regex for single-word keywords; substring match for multi-word phrases (which have implicit boundaries).
+- Refactored `_contains_any()` to delegate to `_matches_keyword()`.
+- Added module-level constant `LLM_FALLBACK_DEFAULT_CONFIDENCE = "low"` with explanatory comment.
+- Updated `detect_intent_hybrid_details()` to return `IntentConfidence(LLM_FALLBACK_DEFAULT_CONFIDENCE)` when LLM fallback fires.
+
+**Files touched:**
+- `backend/app/services/ai/intents.py`
+- `backend/app/services/ai/conversation_policy.py` (constant import)
+- `backend/tests/test_intent_word_boundary.py` (new — guards against regression)
+
+---
+
+### Change 3 — Fix negation bug in `_extract_attempted_steps()` (`resolver.py`)
+
+**Why:** `_extract_attempted_steps()` was adding actions to the "already tried" list even when the user said "I haven't restarted the service" — causing the resolver to skip recommending steps the user never actually attempted.
+
+**What changed:**
+- Added module-level constants (both documented with comments):
+  - `NEGATION_MARKERS: frozenset[str]` — set of negation tokens including contractions (`"haven't"`, `"didn't"`, `"n't"`, etc.)
+  - `NEGATION_WINDOW_SIZE: int = 4` — how many tokens before the keyword to scan for negation
+- Added `_has_negation_near_match(tokens, match_index, window) -> bool` with full docstring; conservative by default (returns `False` on edge cases).
+- Rewrote `_extract_attempted_steps()` to tokenize each sentence and call `_has_negation_near_match()` before adding any keyword match to the attempted list. Negated matches are logged at `DEBUG` and skipped.
+
+**Files touched:**
+- `backend/app/services/ai/resolver.py`
+- `backend/tests/test_resolver_negation.py` (new — guards against regression)
+
+---
+
+### Change 4 — Visually distinguish fallback impact summaries (`ticket-detail.tsx`)
+
+**Why:** Keyword-matched fallback summaries (computed from ticket metadata when no AI recommendation is available) were rendered with identical visual weight to AI-grounded outputs, eroding user trust and misrepresenting confidence.
+
+**What changed:**
+- Changed `fallbackImpactSummary()` return type from `string | null` to `{ text: string; isFallback: true } | null`.
+- Updated `impactInsight` useMemo to return `{ text, isFallback: boolean }`.
+- Render site: when `isFallback: true`, renders a muted `text-[11px] text-muted-foreground` label below the impact block reading "Estimated from ticket content" (bilingual EN/FR).
+
+**Files touched:**
+- `frontend/components/ticket-detail.tsx`
+
+---
+
+### Change 5 — Add confirmation gate before applying chat suggestions (`ticket-chatbot.tsx`)
+
+**Why:** `handleApplySuggestion()` applied copilot suggestions to the ticket draft immediately on click with no confirmation, making it trivially easy to apply unreviewed AI output.
+
+**What changed:**
+- Added `pendingSuggestion` state: `{ messageId, solution, sourceId } | null`.
+- `handleApplySuggestion()` now only sets `pendingSuggestion` (gate); added `_doApplySuggestion()` with the actual apply logic (executor).
+- Added inline amber confirmation row (`bg-amber-50/80 border-amber-200`) between the ScrollArea and the input bar with Confirm and Cancel buttons.
+- Sending a new message auto-dismisses any stale pending confirmation (`setPendingSuggestion(null)` at start of `sendMessage()`).
+
+**Files touched:**
+- `frontend/components/ticket-chatbot.tsx`
+
+---
+
+### Change 6 — Add display mode tooltips and `no_strong_match` guidance (`recommendation-sections.tsx`)
+
+**Why:** Users had no explanation of what `evidence_action` vs `tentative_diagnostic` meant. The `no_strong_match` panel showed nothing actionable, leaving users stuck.
+
+**What changed:**
+- Added `TooltipProvider/Tooltip/TooltipTrigger/TooltipContent` wrapping around the mode badge title for `evidence_action` and `tentative_diagnostic`.
+- Mode badge title uses `cursor-help underline decoration-dotted` as a visual discoverability hint.
+- Replaced empty `no_strong_match` body with actionable guidance string (`NO_STRONG_MATCH_GUIDANCE`) — bilingual EN/FR.
+- All copy strings defined as module-level typed constants (`DISPLAY_MODE_TOOLTIPS`, `NO_STRONG_MATCH_GUIDANCE`) with comments; none inlined in JSX.
+
+**Files touched:**
+- `frontend/components/recommendation-sections.tsx`
+
+---
+
+### Change 7 — Resolve `mode` vs `display_mode` schema debt (`schemas/ai.py`, frontend clients)
+
+**Why:** Both `mode` and `display_mode` were live on `AIResolutionAdvice`. The backend used `display_mode` as canonical; some frontend mapping paths still fell back to `mode` silently without warning. The divergence caused inconsistent display across render paths.
+
+**What changed (backend):**
+- `AIResolutionAdvice.mode` changed from `str = "evidence_action"` to `str | None = None` with deprecation comment.
+- Added `@model_validator(mode="after")` `_backfill_deprecated_mode()`: if `mode is None`, copies `display_mode` into it. This ensures any existing consumers of `mode` continue to receive a valid value while the field is deprecated.
+- Added schema debt note block to module docstring.
+
+**What changed (frontend):**
+- `frontend/lib/recommendations-api.ts` — `mapRecommendation()` `displayMode` now uses IIFE: returns `display_mode` if present, falls back to `mode` with `console.warn`, then falls back to inferred value.
+- `frontend/lib/tickets-api.ts` — same IIFE + `console.warn` pattern applied in both the top-level payload and the nested `resolutionAdvice` object.
+
+**Files touched:**
+- `backend/app/schemas/ai.py`
+- `frontend/lib/recommendations-api.ts`
+- `frontend/lib/tickets-api.ts`
+- `backend/tests/test_schema_display_mode.py` (new — guards against regression)
+
+---
+
+### Change 8 — Add `vote` column index and migration for feedback model debt
+
+**Why:** The `vote` column on `ai_solution_feedback` is deprecated (superseded by `feedback_type`) but is still targeted by legacy analytics queries. Without an index, every such query performs a full sequential scan that degrades linearly as the table grows.
+
+**What changed:**
+- `backend/app/models/ai_solution_feedback.py` — added `Index("ix_ai_solution_feedback_vote", "vote")` to `__table_args__`; updated column comment to document the deprecation and query-compatibility rationale; added reference to migration 0032.
+- `backend/alembic/versions/0032_add_feedback_vote_index.py` (new migration) — `down_revision = "0031_expand_ai_feedback_loop"`; `upgrade()` creates the index; `downgrade()` drops it; full docstring explains the deprecation timeline and when to remove the index.
+
+**Files touched:**
+- `backend/app/models/ai_solution_feedback.py`
+- `backend/alembic/versions/0032_add_feedback_vote_index.py`
+
+---
+
+### Test coverage added (batch summary)
+
+| Test file | Guards |
+|---|---|
+| `backend/tests/test_llm_json_extraction.py` | Change 1 — `_parse_candidate` never calls `ast.literal_eval`; `extract_json` logs warning on parse failure |
+| `backend/tests/test_intent_word_boundary.py` | Change 2 — word-boundary matching; LLM fallback confidence is `"low"` |
+| `backend/tests/test_resolver_negation.py` | Change 3 — negation detection window; `_extract_attempted_steps` skips negated sentences |
+| `backend/tests/test_schema_display_mode.py` | Change 7 — `mode` backfilled from `display_mode`; default and edge cases |
+
+---
+
+## 30. LLM general-knowledge advisory fallback (2026-03-25)
+
+New fourth display mode (`llm_general_knowledge`) added to the trust hierarchy below `tentative_diagnostic`.  Fires when `build_resolution_advice()` would return `no_strong_match` and the LLM advisory call succeeds.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `backend/app/services/ai/calibration.py` | 4 new constants: `DISPLAY_MODE_LLM_GENERAL`, `DISPLAY_MODE_NO_STRONG_MATCH`, `LLM_GENERAL_ADVISORY_TIMEOUT_SECONDS`, `LLM_GENERAL_ADVISORY_CONFIDENCE` |
+| `backend/app/services/ai/prompts.py` | New `build_general_advisory_prompt()` — returns `(system, user)` tuple; enforces cautious language, no fabricated IDs |
+| `backend/app/services/ai/resolution_advisor.py` | New `LLMGeneralAdvisory` dataclass; `_extract_concurrent_families()` helper; `build_llm_general_advisory()` function; fallback wiring at `no_strong_match` return site |
+| `backend/app/schemas/ai.py` | New `AILLMGeneralAdvisory` Pydantic model; added `llm_general_advisory` and `knowledge_source` optional fields to `AIResolutionAdvice` |
+| `frontend/lib/tickets-api.ts` | `display_mode` union extended with `"llm_general_knowledge"` |
+| `frontend/lib/recommendations-api.ts` | `displayMode` / `mode` unions extended with `"llm_general_knowledge"` |
+| `frontend/components/recommendation-sections.tsx` | New exported `LLMAdvisoryBlock` component; new `LLMGeneralAdvisoryData` type; `LLM_ADVISORY_STRINGS` copy constant; updated `NO_STRONG_MATCH_STEPS` to numbered list |
+| `frontend/components/ticket-chatbot.tsx` | New `LLMGeneralAdvisoryInline` type; updated `ResolutionAdvice.display_mode` union; `llm_general_advisory` field; `resolutionModeLabel` handles new mode; blue advisory bubble in chat |
+| `backend/tests/test_llm_general_advisory.py` | 12 test cases (happy path, LLM unavailable, invalid JSON, dedup attempted steps, confidence fixed, list caps, empty lists, display_mode promotion/unchanged) |
+
+### Key invariants
+
+- Confidence is **always** `LLM_GENERAL_ADVISORY_CONFIDENCE = 0.25` — never inferred from LLM output.
+- `probable_causes` capped at 3; `suggested_checks` capped at 4.
+- Steps already in `attempted_steps` are removed from `suggested_checks`.
+- `build_llm_general_advisory` is synchronous (`def`, not `async`) — the entire stack uses `httpx.Client`.
+- Inline imports inside `build_llm_general_advisory` avoid circular imports with `llm.py` and `prompts.py`.
+- No Apply button on `llm_general_knowledge` cards in either the recommendations panel or the chatbot.
+- `display_mode` and `mode` on the payload are both set to `"llm_general_knowledge"` when the advisory succeeds.
+
+## 30. Problem awareness, summarization, UI redesign (2026-03-26)
+
+### Backend — problem awareness in chat
+
+Four new Tier 1 shortcuts added to `orchestrator.py`:
+- `shortcut_problems` — lists problems from DB filtered by status; populates `session.last_problem_list`
+- `shortcut_problem_detail` — fetches a single problem by explicit PB-* ID or session context
+- `shortcut_problem_linked_tickets` — fetches tickets linked to last/explicit problem
+- `shortcut_recommendations` — fetches current recommendations, max `MAX_CHAT_RECOMMENDATIONS=5`
+
+New intents in `intents.py`:
+- `ChatIntent.problem_listing`, `problem_detail`, `problem_drill_down`, `recommendation_listing`
+- `detect_intent_with_confidence` checks these before existing ticket-focused checks
+
+New keyword lists in `conversation_policy.py`:
+- `PROBLEM_LISTING_KEYWORDS`, `PROBLEM_DETAIL_KEYWORDS`, `PROBLEM_DRILL_DOWN_KEYWORDS`
+- `RECOMMENDATION_LISTING_KEYWORDS`, `STATUS_KEYWORD_MAP`
+
+Session state extended in `chat_session.py`:
+- `last_problem_id: str | None` — last discussed problem
+- `last_problem_list: list[str]` — last returned problem list (for ordinal follow-ups)
+- `resolve_problem_contextual_reference()` — resolves implicit problem references
+
+Chat payload builders added to `chat_payloads.py`:
+- `build_problem_detail_payload()` — structured problem detail card
+- `build_problem_list_payload()` — structured problem table
+
+### Backend — AI ticket summarization
+
+New file: `backend/app/services/ai/summarization.py`
+- `generate_ticket_summary(ticket, db, force_regenerate, language) → SummaryResult` — async, cache-aware
+- `invalidate_ticket_summary(ticket_id, db)` — synchronous, clears `summary_generated_at` only
+- TTL-based caching: `SUMMARY_CACHE_TTL_MINUTES = 60`
+- RAG enrichment: up to `SUMMARY_MAX_SIMILAR_TICKETS = 3` resolved similar tickets via `unified_retrieve()`
+- Summary truncated to `SUMMARY_MAX_LENGTH_CHARS = 500`
+
+New migration: `0033_add_ticket_summary.py` — adds `ai_summary` (Text) and `summary_generated_at` (DateTime tz) to tickets table. Down-revision: `0032_add_feedback_vote_index`.
+
+New endpoint: `GET /api/tickets/{ticket_id}/summary?force_regenerate=false&language=fr`
+
+Invalidation triggers:
+- After ticket status change → `invalidate_ticket_summary(ticket_id, db)`
+- After ticket triage/description update → `invalidate_ticket_summary(ticket_id, db)`
+
+### Frontend — chat bubble redesign (`ticket-chatbot.tsx`)
+
+New response type rendering:
+- `problem_detail` — bordered card with root_cause/workaround/permanent_fix sections
+- `problem_list` — clickable problem table with status badges
+- `recommendation_list` — cards with `ConfidenceBar` and 2-line clamp
+
+Typing indicator with `animate-dot-bounce` animations.
+Empty state with suggestion pills (Tickets critiques, Problèmes, Recommandations, Résumé).
+
+### Frontend — recommendation card redesign
+
+`recommendations.tsx`: skeleton loading (3 cards with staggered `animate-skeleton`), empty state with icon.
+`ConfidenceBar` component replacing raw percentage badges.
+
+### Frontend — InsightPopup system
+
+New files:
+- `frontend/components/ui/insight-popup.tsx` — Desktop modal + mobile bottom-sheet (< 640px) wrapping Radix Dialog
+- `frontend/components/ui/confidence-bar.tsx` — 4-band colored progress bar
+- `frontend/lib/badge-utils.ts` — centralized `getBadgeStyle()` for all status/priority badges
+
+`ticket-detail.tsx`: AI summary panel above description (skeleton loading, line-clamp-4, regenerate button, full-detail InsightPopup).
+
+### Frontend — global polish
+
+`tailwind.config.ts`: added `bubble-user`/`bubble-assistant` border-radii, dot-bounce, skeleton-pulse, popup-in, sheet-in, fade-in keyframes and animations.
+`app/globals.css`: `.popup-scroll` webkit thin scrollbar styles.
+
+### New test files
+
+- `backend/tests/test_problem_chat.py` — 8 tests for problem intent detection and routing
+- `backend/tests/test_ticket_summarization.py` — 8 async tests for summarization service
+
+### Files changed
+
+Backend:
+- `backend/app/services/ai/conversation_policy.py`
+- `backend/app/services/ai/intents.py`
+- `backend/app/services/ai/chat_session.py`
+- `backend/app/services/ai/calibration.py`
+- `backend/app/services/ai/orchestrator.py`
+- `backend/app/services/ai/chat_payloads.py`
+- `backend/app/services/ai/summarization.py` (new)
+- `backend/app/models/ticket.py`
+- `backend/app/routers/tickets.py`
+- `backend/app/schemas/ai.py`
+- `backend/alembic/versions/0033_add_ticket_summary.py` (new)
+- `backend/tests/test_problem_chat.py` (new)
+- `backend/tests/test_ticket_summarization.py` (new)
+
+Frontend:
+- `frontend/tailwind.config.ts`
+- `frontend/app/globals.css`
+- `frontend/lib/badge-utils.ts` (new)
+- `frontend/lib/tickets-api.ts`
+- `frontend/components/ui/confidence-bar.tsx` (new)
+- `frontend/components/ui/insight-popup.tsx` (new)
+- `frontend/components/ticket-chatbot.tsx`
+- `frontend/components/ticket-detail.tsx`
+- `frontend/components/recommendations.tsx`
+
+---
+
+## Section 31 — Final enhancement pass (2026-03-26)
+
+### Features added
+
+| # | Feature | Backend | Frontend |
+|---|---------|---------|---------|
+| 1 | **Auto-classification on ticket creation** | `POST /api/tickets/classify-draft` — calls `classify_draft()` wrapper | `ticket-form.tsx` — 600ms debounce, suggestion panel with Appliquer buttons |
+| 2 | **Duplicate ticket detection** | `POST /api/tickets/check-duplicates` — uses `unified_retrieve()` to find open similar tickets | `ticket-form.tsx` — onBlur duplicate warning panel with similarity bar |
+| 3 | **Agent performance dashboard** | `GET /api/tickets/agent-performance` — MTTR, P90, SLA breach rate, resolution rate per agent | `app/admin/performance/page.tsx` — sortable table with color coding |
+| 4 | **Proactive SLA monitoring** | `backend/app/services/sla/sla_monitor.py` — background task every 300s, dedup window 60min | main.py lifespan wired |
+| 5 | **Resolution assistant** | `POST /api/tickets/{id}/resolution-suggestion` — LLM suggestion from last 5 comments | `ticket-detail.tsx` — teal suggestion panel with Accept/Dismiss |
+| 6 | **Global search** | `GET /api/search?q=&types=&limit=` — ILIKE across tickets+problems | `app-shell.tsx` — Cmd+K shortcut, 300ms debounce, grouped dropdown |
+| 7 | **Recommendation feedback analytics** | `GET /api/recommendations/analytics` — by_type, by_mode, by_category, trend | `app/admin/analytics/page.tsx` — stat cards, bar charts, trend table |
+| 8 | **Dark mode toggle** | — | `app-shell.tsx` — sun/moon button, `[data-theme="dark"]` CSS, localStorage persist |
+| 9 | **Chat export** | Uses existing `/api/tickets/{id}/comments` endpoint | `ticket-chatbot.tsx` — Exporter dropdown → copy to comments or .txt download |
+
+### New calibration constants
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `DUPLICATE_SIMILARITY_THRESHOLD` | 0.72 | Min score to flag a ticket as potential duplicate |
+| `MAX_DUPLICATE_CANDIDATES` | 3 | Max results from check-duplicates |
+| `PROACTIVE_SLA_CHECK_INTERVAL_SECONDS` | 300 | Background SLA monitor interval |
+| `PROACTIVE_SLA_AT_RISK_RATIO_THRESHOLD` | 0.75 | Elapsed ratio to trigger at_risk notification |
+| `PROACTIVE_SLA_DEDUP_WINDOW_MINUTES` | 60 | Dedup window for proactive SLA notifications |
+
+### New files created
+
+Backend:
+- `backend/app/services/ai/duplicate_detection.py` — `DuplicateCandidate` + `detect_duplicate_tickets()`
+- `backend/app/services/sla/sla_monitor.py` — `run_proactive_sla_monitor()`, `start_sla_monitor()`, `stop_sla_monitor()`
+- `backend/app/routers/search.py` — `GET /api/search` global search endpoint
+- `backend/tests/test_auto_classification.py` (4 tests)
+- `backend/tests/test_duplicate_detection.py` (7 tests)
+- `backend/tests/test_resolution_suggestion.py` (6 tests)
+- `backend/tests/test_global_search.py` (6 tests)
+- `backend/tests/test_proactive_sla.py` (8 tests)
+- `backend/tests/test_feedback_analytics.py` (6 tests)
+
+Frontend:
+- `frontend/lib/search-api.ts` — `globalSearch()` + `SearchResponse` interface
+- `frontend/app/admin/performance/page.tsx` — agent performance sortable table
+- `frontend/app/admin/analytics/page.tsx` — feedback analytics dashboard
+
+### Files modified
+
+Backend:
+- `backend/app/services/ai/calibration.py` — 5 new constants
+- `backend/app/services/ai/classifier.py` — `classify_draft()` wrapper
+- `backend/app/services/ai/summarization.py` — `ResolutionSuggestion` + `generate_resolution_suggestion()`
+- `backend/app/routers/tickets.py` — 4 new endpoints: classify-draft, check-duplicates, agent-performance, resolution-suggestion
+- `backend/app/routers/recommendations.py` — `GET /analytics` endpoint
+- `backend/app/main.py` — SLA monitor lifespan wiring + search router
+
+Frontend:
+- `frontend/lib/tickets-api.ts` — `classifyDraft()`, `checkDuplicates()`, `fetchResolutionSuggestion()`
+- `frontend/components/ticket-form.tsx` — AI suggestion panel + duplicate warning panel
+- `frontend/components/ticket-detail.tsx` — resolution suggestion dialog
+- `frontend/components/app-shell.tsx` — Cmd+K global search + dark mode toggle
+- `frontend/components/ticket-chatbot.tsx` — chat export dropdown
+- `frontend/app/globals.css` — `[data-theme="dark"]` selector
+
+### Autonomous review
+- Full codebase review completed — see `docs/AUTONOMOUS_REVIEW_REPORT.md`
+- All HIGH IMPACT / LOW EFFORT items from the report are candidates for the next sprint
+- Security findings and constraints added to `docs/AI_HANDOFF_CONTEXT.md`
+
+### Alembic chain
+Alembic chain still ends at `0033_add_ticket_summary`. No new migrations were needed for this batch (all new features use existing tables or in-memory computation).
+
+## Section 32 — Ticket creation removed (2026-03-26)
+
+Ticket creation removed — tickets sourced exclusively from Jira via webhook + reconcile sync. Platform supports read and modify operations only (assignee, status, priority, sla_status).
+
+**Removed:**
+- `POST /api/tickets` — ticket creation endpoint
+- `POST /api/tickets/classify-draft` — creation-time AI classification
+- `POST /api/tickets/check-duplicates` — pre-creation duplicate detection
+- `frontend/app/tickets/new/page.tsx` — new ticket page
+- `frontend/components/ticket-form.tsx` — ticket creation form component
+- Sidebar nav link to `/tickets/new`
+- "Créer un ticket" button from tickets list page
+- `classifyDraft()` and `checkDuplicates()` from `tickets-api.ts`
+- `create_ticket()` from `backend/app/services/tickets.py`
+- `EXPLICIT_CREATE_TICKET_KEYWORDS` cleared — chatbot no longer routes creation requests to a draft flow
+- Chatbot create-ticket draft card and `handleCreateTicket()` handler removed from `ticket-chatbot.tsx`
+
+**Retained (modify operations):**
+- `PATCH /api/tickets/{id}` — field updates
+- `PATCH /api/tickets/{id}/triage` — assignee, priority, category
+- Status, SLA status, assignee, priority changes from ticket detail page
+- `GET` endpoints all intact
+
+**Chatbot behaviour on creation intent:**
+FR: "La création de tickets se fait via Jira. Je peux vous aider à modifier, analyser ou prioriser un ticket existant."
+
+---
+
+## Section 33 — Bug fixes — quality assessment pass (2026-03-27)
+
+### Critical fixes
+- `asyncio.run()` removed from sync route in `backend/app/routers/tickets.py`:
+  `GET /api/tickets/{id}/summary` is now `async def` and uses `await` — no more RuntimeError under uvicorn/anyio.
+- `POST /api/tickets/classify-draft` endpoint added and wired to `classify_draft()` in `classifier.py`.
+- `POST /api/tickets/check-duplicates` endpoint added and wired to `detect_duplicate_tickets()` in `duplicate_detection.py`.
+
+### Correctness fixes
+- Negation check added to `_is_problem_listing_request()` in `intents.py`:
+  "there are no problems" no longer triggers `problem_listing` intent.
+  Uses the existing `_has_negation_near_match()` from `resolver.py` (imported — not duplicated).
+- New tests in `backend/tests/test_intent_word_boundary.py`:
+  `test_no_problems_does_not_trigger_listing`, `test_problems_alone_triggers_listing`.
+
+### Configuration
+- `AI_SLA_RISK_MODE` default changed from `shadow` to `active` in `backend/.env.example`.
+  Added inline comments explaining shadow vs active modes.
+  Note: update your local `.env` manually if it still has `shadow`.
+- `CREATE EXTENSION IF NOT EXISTS vector` added to migration `0016_add_kb_chunks_pgvector.py`.
+  The migration now auto-installs the extension rather than silently skipping.
+- `@tailwindcss/postcss` v4.x removed from `frontend/package.json` (conflicts with Tailwind v3 setup).
+  `autoprefixer: {}` added to `frontend/postcss.config.mjs`.
+
+### Build fix
+- `frontend/app/tickets/new/page.tsx` — removed import of deleted `ticket-form.tsx`;
+  page now shows Jira-creation notice (consistent with section 32 removal intent).
+  Build was failing with `Module not found: Can't resolve '@/components/ticket-form'`.
+
+### Files changed
+- `backend/app/routers/tickets.py` — async summary route, classify-draft endpoint, check-duplicates endpoint
+- `backend/app/services/ai/intents.py` — negation guard in `_is_problem_listing_request`
+- `backend/tests/test_intent_word_boundary.py` — two new negation tests
+- `backend/tests/test_auto_classification.py` — updated `test_classify_draft_endpoint_removed` → `test_classify_draft_endpoint_is_active`
+- `backend/.env.example` — `AI_SLA_RISK_MODE` comment + default changed to `active`
+- `backend/alembic/versions/0016_add_kb_chunks_pgvector.py` — `CREATE EXTENSION IF NOT EXISTS vector`
+- `frontend/app/tickets/new/page.tsx` — fixed broken import of deleted ticket-form component
+- `frontend/package.json` — removed `@tailwindcss/postcss` v4
+- `frontend/postcss.config.mjs` — added `autoprefixer`
+- `docs/WORK_RESUME_README.md` — pgvector requirement note + this section
+EN: "Ticket creation is handled via Jira. I can help you modify, analyse, or prioritise an existing ticket."
+
+## 31. UI polish, AI quality fixes, and test hardening (2026-03-27)
+
+### Overview
+Final UI polish pass + AI quality audit. All changes are production-ready and verified with `npm run build` (0 TS errors) and 227 non-LLM tests passing.
+
+### AI Quality Fixes
+
+**Fix 1 — Service request bypass in orchestrator**
+- `backend/app/services/ai/orchestrator.py`: Added `_SERVICE_REQUEST_TYPES` check before `resolve_ticket_advice()`. Service request tickets now get `build_service_request_response()` (no cause analysis, no root cause section).
+- `backend/app/services/ai/chat_payloads.py`: Added `build_service_request_response()` function.
+
+**Fix 2 — Taxonomy: webhook_rotation + scheduled_maintenance topic families**
+- `backend/app/services/ai/taxonomy.py`: Added two new topic families (`webhook_rotation`, `scheduled_maintenance`) and expanded `service_request` CATEGORY_HINTS.
+- `backend/app/services/ai/resolution_advisor.py`: Added domain expectations for both families.
+- Single-word generic terms ("rotation", "scheduled", "cadence") intentionally excluded — compound phrases only to avoid cross-domain contamination.
+
+**Fix 3 — Language-aware SLA advisory strings**
+- `backend/app/services/ai/ai_sla_risk.py`: All hardcoded English strings replaced with `{"fr": ..., "en": ...}` dicts. `build_sla_advisory()`, `_build_reasoning()`, `_build_actions()` all accept `lang: str = "fr"`.
+
+**Fix 4 — i18n keys**
+- `frontend/lib/i18n.tsx`: 13 new translation keys (`sla.advisorTitle`, `sla.modeDeterministic`, `sla.modeHybrid`, `sla.considerEscalating`, `sla.readOnly`, `sla.riskScore`, `sla.timeConsumed`, `classification.manualTriageRequired`, `classification.verifyBeforeApplying`, `recs.search`, `recs.filterImpact`, `recs.filterConfidence`, `recs.noResults`).
+
+**Fix 5 — Confidence gate in ticket-detail**
+- `frontend/components/ticket-detail.tsx`: Three-tier confidence display: `< 35%` → manual triage notice only; `35-49%` → amber warning banner + suggestions; `≥ 50%` → full panel.
+
+**Fix 6 — Classifier fallback returns None**
+- `backend/app/services/ai/classifier.py`: `infer_ticket_type()` return type changed to `TicketType | None`; final fallback changed from `TicketType.incident` to `None`. `classify_ticket()` return type updated.
+- `backend/app/schemas/ai.py`: `TicketDraft.ticket_type` changed from `TicketType = TicketType.service_request` to `TicketType | None = None`.
+
+**Fix 7 — Retrieval precision: cross-cutting topic prioritization**
+- `backend/app/services/ai/retrieval.py`: `auth_path` is now treated as a cross-cutting topic. When computing `dominant_topic`, domain-specific topics (e.g. `crm_integration`) are preferred over `auth_path`. When computing `topic_mismatch`, domain-specific topics that are disjoint trigger a mismatch even if `auth_path` is shared.
+
+### UI Polish Changes
+
+**B3 — App shell**: Bell badge capped at `9+` (was `99+`).
+
+**B5 — Ticket table**: SLA-based left border per row (`breached`=red `#E24B4A`, `at_risk`=orange `#EF9F27`); ID cells rendered as pill (`font-mono`, `bg-[var(--color-background-secondary)]`).
+
+**B6 — Recommendations**: Type accent left borders on cards (pattern=purple `#534AB7`, solution=teal `#1D9E75`, priority=red `#E24B4A`, workflow=blue `#378ADD`). Justification (`RecommendationReasoningBlock`) now line-clamps at 3 lines with "Lire plus" / "Read more" toggle (in `recommendation-sections.tsx`).
+
+**B7 — Problems**: Positive empty state (checkmark SVG) when `problems.length === 0`. Urgency dot (red/orange/grey) next to problem title based on `activeCount × occurrencesCount`. Active metric badge conditionally colored amber/green.
+
+**B8 — Notifications**: Severity-based left borders (`critical`=red 4px, `warning`=orange 4px, `info`=blue 4px); unread rows get `bg-[var(--color-background-secondary)]`; pagination centered.
+
+**B9 — Admin**: Section divider between users and history. Availability dot next to user name (`is_available`=green `#1D9E75`, else grey). History rows get left border by action type (`resolved/closed`=green `#1D9E75`, `status_changed`=blue `#378ADD`, `problem_*`=purple `#534AB7`). Timestamp font bumped to `text-[12px]`.
+
+**B4 — Dashboard**: SLA breach items sorted by urgency (sla_breach first, then sla_risk, then problem, then critical_ticket; within kind, oldest first = most urgent). AI metrics empty state: when `total_tickets === 0`, show a centered icon + message instead of 6 N/A cards. Recommendations list sort by urgency (already sorted at-risk by remaining minutes).
+
+### New Tests
+- `backend/tests/test_service_request_routing.py`: 11 tests covering `infer_ticket_type` fallback, taxonomy topic families, domain contamination guards.
+- `backend/tests/test_sla_dry_run_and_ai_latest.py`: Updated 3 tests to pass `lang="en"` to `build_sla_advisory()`.
+
+### Build status
+- `npm run build`: ✓ 0 TS errors, 21 routes
+- `pytest` (non-LLM tests): 227 passed, 8 warnings
+
+## 32. Core AI grounding + service-request parity fixes (2026-03-29)
+
+### What changed
+
+**Fix 1 — Contrast-aware retrieval**
+- `backend/app/services/ai/retrieval.py`: query parsing now keeps `negative_domains`, `negative_topics`, and `negative_terms` when the ticket text explicitly describes a false-positive family.
+- These negative signals now feed context penalties and context-gate rejection, so evidence that only matches the contrasted family is less likely to survive.
+- Grounded Jira issue matching now treats strong contrasted issue families as retrieval conflict, which suppresses strong-match promotion instead of letting one survivor look authoritative.
+
+**Fix 2 — Strong-match classifier no longer over-trusts Jira issue metadata**
+- `backend/app/services/ai/classifier.py`: strong-match category inference now separates category context from issue-type metadata.
+- `issuetype` still helps infer `ticket_type`, but it no longer pollutes category scoring.
+- Result: semantic Jira matches are less likely to drift `category` because of generic metadata text like `Report an Incident` or `Service Request`.
+
+**Fix 3 — Service requests are first-class across recommendation surfaces**
+- `backend/app/services/ai/service_requests.py`: added shared runbook guidance builder plus eligibility gating.
+- Service-request mode is now only used when the ticket is structurally a service request and it matches a supported fulfillment family, instead of trusting any `service_request` type blindly.
+- `backend/app/services/ai/orchestrator.py`: ticket classification now uses the same shared service-request eligibility logic before bypassing incident resolver flow.
+- `backend/app/services/recommendations.py`: ticket-detail and `/recommendations` now share the same service-request bypass instead of staying incident-centric.
+
+**Fix 4 — Service-request retrieval candidate selection**
+- `backend/app/services/ai/resolver.py`: candidate tickets now prefer same-type service-request rows when the active ticket is a service request.
+- `backend/app/routers/tickets.py`: similar-ticket route now filters non-service-request rows out of service-request pages.
+
+**Fix 5 — Frontend contract parity**
+- `frontend/lib/tickets-api.ts`, `frontend/lib/recommendations-api.ts`: `service_request` is now part of the typed display-mode contract.
+- `frontend/components/recommendation-sections.tsx`, `frontend/components/recommendations.tsx`, `frontend/components/ticket-detail.tsx`, `frontend/components/ai-feedback-analytics.tsx`: the UI now renders `service_request` as a planned workflow/runbook mode instead of falling back to generic incident status labels.
+
+**Fix 6 — Dedicated service-request family model**
+- `backend/app/services/ai/service_requests.py`: added a structured service-request profile (`family`, `operation`, `resource`, `governance`, `target_terms`) instead of relying only on broad topic matching.
+- `backend/app/services/ai/taxonomy.py`: added a dedicated service-request family registry separate from the incident-family topic map:
+  - `account_provisioning`
+  - `access_provisioning`
+  - `credential_rotation`
+  - `scheduled_maintenance`
+  - `notification_distribution_change`
+  - `integration_configuration`
+- `backend/app/services/ai/topic_templates.py`: added family-specific runbook and validation templates for these fulfillment families.
+- `backend/app/services/ai/resolver.py`: service-request candidate ranking now prefers same-family workflow matches, not just same type/category.
+- `backend/app/routers/tickets.py`: similar-ticket filtering now drops weak cross-workflow service-request matches using the same profile similarity model.
+
+### New behavior
+
+- Meta-tickets that describe retrieval bleed should now either:
+  - stay in the correct family, or
+  - downgrade safely when evidence is conflicted.
+- Planned service-request workflows should now:
+  - render in `service_request` mode,
+  - avoid root-cause / incident-cluster framing,
+  - show runbook-style next steps instead of incident diagnosis,
+  - use provisioning/access/rotation/distribution workflow families that are separate from incident failure families.
+- Tickets that are merely classified as `service_request` but do not look like a planned fulfillment workflow now fall back to normal confidence gating instead of forcing runbook output.
+- Similar-ticket panels for service requests should now prefer the same workflow family (for example, account provisioning near account provisioning) instead of showing loosely related planned tasks.
+
+### Verification
+- `pytest tests/test_service_request_routing.py tests/test_retrieval_precision.py tests/test_ai_classifier_consensus.py tests/test_ai_contracts.py tests/test_schema_display_mode.py tests/test_evidence_backed_recommendations.py -q`
+  - `56 passed`
+- `npm run build`
+  - `next build` succeeded
+
+## 33. Planned-workflow routing + category inference cleanup (2026-03-29)
+
+### What changed
+
+- `backend/app/services/ai/service_requests.py`: service-request eligibility is now **profile-first** for planned workflows. Strong fulfillment profiles can activate `service_request` mode even when the coarse classifier returns `ticket_type = None` or a domain category like `application` / `hardware`.
+- Explicit `incident` classification still wins, so genuine failures do not get re-routed into runbook mode.
+- `backend/app/services/ai/taxonomy.py`: added generic fulfillment families and resources for:
+  - `device_provisioning`
+  - `reporting_workspace_setup`
+  - `device`
+  - `workspace`
+- `backend/app/services/ai/topic_templates.py`: added runbook + validation templates for the new device/reporting workflow families.
+- `backend/app/integrations/jira/mapper.py`: category mapping now performs text-grounded domain inference before falling back to generic Jira issue types. This reduces cases where `ticket_type = service_request` and `category = service_request` were duplicating the same concept when the ticket text already pointed to `hardware` or `application`.
+
+### New behavior
+
+- Planned workflow tickets like dashboard builds and device/mobile-hotspot provisioning can now reach the service-request guidance path without adding ticket-specific branches.
+- True application incidents such as dashboard/export failures remain on the incident/RAG path.
+- Generic Jira issue types like `Service Request` no longer dominate category mapping when the title/description clearly indicate a stronger domain category.
+- Service-request tickets no longer need a named family or a strict `operation + resource` pair to receive guidance. The gate now accepts broader fulfillment shapes like `operation + governance` or `resource + governance`, which prevents low-similarity planned tasks from dropping into `no_strong_match`.
+- The ticket-detail `/api/ai/classify` path now falls back to the stored ticket metadata when the classifier returns `ticket_type = None`, so existing service-request tickets do not lose runbook guidance just because the on-the-fly classifier was too weak.
+
+### Verification
+- `pytest backend/tests/test_service_request_routing.py backend/tests/test_evidence_backed_recommendations.py backend/tests/test_jira_mapper.py -q`
+  - `56 passed`
+- `pytest backend/tests/test_ai_contracts.py backend/tests/test_retrieval_precision.py backend/tests/test_ai_classifier_consensus.py backend/tests/test_schema_display_mode.py -q`
+  - `21 passed`
+
+## 34. Redis caching layer + chatbot crash protection (2026-04-02)
+
+### What changed
+
+#### Bug fix — "PREUVES INSUFFISANTES" on every ticket
+- `backend/app/services/ai/resolution_advisor.py`: three code paths in `build_resolution_advice()` were returning `_insufficient_evidence_payload()` (a dead-end) instead of calling `_low_trust_incident_fallback_payload()` which invokes the LLM via `generate_low_trust_incident_actions()`. All three paths now correctly route through the LLM fallback:
+  - cluster conflict case
+  - multiple clusters with no dominant cluster
+  - primary cluster is None with no specific guidance
+- Tickets with weak evidence now return `llm_general_knowledge` or `tentative_diagnostic` cards instead of the "insufficient evidence" dead-end.
+
+#### Chatbot crash protection
+- `backend/app/services/ai/orchestrator.py`: wrapped `resolve_chat_guidance()` in try/except. If guidance resolution raises, the chat continues with an LLM-only path instead of crashing.
+- `backend/app/routers/ai.py`: router-level try/except on the `/chat` endpoint. Unhandled exceptions now return a graceful French/English error message instead of a 500.
+
+#### Redis caching (full layer)
+
+New dependency: `redis[hiredis]>=5.0` (redis-7.4.0, hiredis-3.3.1).
+
+**`backend/app/core/cache.py`** (new file):
+- Lazy Redis client (`_get_client`) with `socket_timeout=1` so a dead Redis returns in ≤1 s.
+- `make_key(resource, user_id, params)` → `itsm:{resource}:{user_id}[:{sha256_hash12}]`
+- `get / set / delete / delete_pattern / close` — all catch exceptions and return safe defaults.
+- Graceful degradation: when `CACHE_ENABLED=false` or Redis is down, all cache calls are no-ops.
+
+**`backend/app/core/config.py`**:
+- `REDIS_URL`, `CACHE_ENABLED`, and 8 TTL constants added:
+  - `CACHE_TTL_STATS=300`, `CACHE_TTL_INSIGHTS=300`, `CACHE_TTL_PERFORMANCE=900`
+  - `CACHE_TTL_AGENT_PERF=1200`, `CACHE_TTL_SIMILAR=600`
+  - `CACHE_TTL_RECOMMENDATIONS=900`, `CACHE_TTL_SLA_STRATEGIES=1200`
+  - `CACHE_TTL_EMBEDDING=86400`
+
+**`backend/app/main.py`**:
+- Redis client warmed up in lifespan startup; closed in lifespan shutdown.
+
+**`backend/app/services/embeddings.py`** — two-level embedding cache:
+- Existing function body moved into `_do_compute_embedding(normalized)` (Ollama HTTP + GPU retry, unchanged).
+- `compute_embedding(text)` is now a thin wrapper: checks Redis L2 (SHA256 key, 24 h TTL) before calling Ollama, writes result back to Redis after a successful call.
+- L1 (process-local `@lru_cache` on callers in retrieval.py) still applies on top.
+
+**`backend/app/routers/tickets.py`** — 5 cached GET endpoints:
+- `GET /stats` → `itsm:stats:{user_id}`, TTL 5 min
+- `GET /insights` → `itsm:insights:{user_id}`, TTL 5 min
+- `GET /performance` → `itsm:performance:{user_id}:{params_hash}`, TTL 15 min
+- `GET /agent-performance` → `itsm:agent_perf:{user_id}:{params_hash}`, TTL 20 min
+- `GET /{id}/similar` → `itsm:similar:{user_id}:{params_hash}`, TTL 10 min
+- `_bust_ticket_analytics(user_id)` helper: deletes stats/insights/performance/agent_perf keys.
+- Called in `PATCH /{ticket_id}` and `PATCH /{ticket_id}/triage` after the existing `invalidate_ticket_summary`.
+
+**`backend/app/routers/recommendations.py`** — 2 cached GET endpoints:
+- `GET /recommendations/` → `itsm:recommendations:{user_id}:{locale_hash}`, TTL 15 min
+- `GET /recommendations/sla-strategies` → `itsm:sla_strategies:{user_id}:{locale_hash}`, TTL 20 min
+- `POST /{recommendation_id}/feedback`: invalidates `itsm:recommendations:{user_id}:*` after recording feedback.
+
+### Cache key design
+```
+itsm:{resource}:{user_id}                 # param-less endpoints
+itsm:{resource}:{user_id}:{hash12}        # endpoints with filter params
+itsm:embedding:{sha256_of_text}           # embedding vectors (global, no user scope)
+```
+
+### Verification
+1. Start uvicorn — log shows either `Redis cache connected` or `Redis unavailable — caching disabled`.
+2. Call `GET /api/tickets/insights` twice — second call returns instantly from cache.
+3. `redis-cli KEYS "itsm:*"` — shows stats, insights, embedding keys with correct TTLs.
+4. `PATCH` a ticket — `redis-cli KEYS "itsm:stats:*"` returns empty (busted by `_bust_ticket_analytics`).
+5. Set `CACHE_ENABLED=false`, restart — no keys appear in Redis under any traffic.
+6. Stop Redis, make requests — all endpoints continue returning correct data (no 500s).

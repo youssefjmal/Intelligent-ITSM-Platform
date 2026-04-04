@@ -74,9 +74,22 @@ def _embedding_time_budget_exceeded(*, started_at: float) -> bool:
     return (time.monotonic() - started_at) >= EMBEDDING_REFRESH_TIME_BUDGET_SECONDS
 
 
-def _sync_kb_chunks(*, issue_rows: list[dict[str, str]], comment_rows: list[dict[str, str]]) -> None:
+def _sync_kb_chunks(*, issue_rows: list[dict[str, str]], comment_rows: list[dict[str, str]]) -> dict[str, Any]:
+    sync_started_at = time.monotonic()
+    metrics: dict[str, Any] = {
+        "issue_candidates": 0,
+        "comment_candidates": 0,
+        "issue_chunks_written": 0,
+        "comment_chunks_written": 0,
+        "chunks_written": 0,
+        "embeddings_created": 0,
+        "embedding_failures": 0,
+        "budget_exhausted": False,
+        "elapsed_ms": 0,
+    }
     if not _kb_chunks_table_ready():
-        return
+        metrics["elapsed_ms"] = int((time.monotonic() - sync_started_at) * 1000)
+        return metrics
 
     issue_candidates: list[tuple[dict[str, str], str, str]] = []
     for row in issue_rows:
@@ -92,13 +105,16 @@ def _sync_kb_chunks(*, issue_rows: list[dict[str, str]], comment_rows: list[dict
             continue
         comment_candidates.append((row, content, _content_hash(content)))
 
+    metrics["issue_candidates"] = len(issue_candidates)
+    metrics["comment_candidates"] = len(comment_candidates)
+
     if not issue_candidates and not comment_candidates:
-        return
+        metrics["elapsed_ms"] = int((time.monotonic() - sync_started_at) * 1000)
+        return metrics
 
     db = SessionLocal()
     try:
         wrote = False
-        sync_started_at = time.monotonic()
         issue_embeddings = 0
         comment_embeddings = 0
         issue_ids = [str(row.get("issue_id") or "").strip() for row, _, _ in issue_candidates if str(row.get("issue_id") or "").strip()]
@@ -122,14 +138,14 @@ def _sync_kb_chunks(*, issue_rows: list[dict[str, str]], comment_rows: list[dict
             if existing_issue is not None and str(existing_issue.content_hash or "") == content_hash:
                 continue
 
-            if issue_embeddings >= MAX_ISSUE_EMBEDDINGS_PER_REFRESH or _embedding_time_budget_exceeded(
-                started_at=sync_started_at
-            ):
+            if issue_embeddings >= MAX_ISSUE_EMBEDDINGS_PER_REFRESH or _embedding_time_budget_exceeded(started_at=sync_started_at):
+                metrics["budget_exhausted"] = True
                 break
             try:
                 embedding = compute_embedding(content)
                 issue_embeddings += 1
             except Exception as exc:
+                metrics["embedding_failures"] += 1
                 logger.warning(
                     "Jira KB issue embedding failed for %s: %s",
                     issue_key or "-",
@@ -157,6 +173,7 @@ def _sync_kb_chunks(*, issue_rows: list[dict[str, str]], comment_rows: list[dict
                 existing_issue.updated_at = _utcnow()
                 db.add(existing_issue)
                 db.flush()
+                metrics["issue_chunks_written"] += 1
             else:
                 existing_issue = KBChunk(
                     source_type="jira_issue",
@@ -171,6 +188,7 @@ def _sync_kb_chunks(*, issue_rows: list[dict[str, str]], comment_rows: list[dict
                 db.add(existing_issue)
                 db.flush()
                 existing_issue_chunks[issue_id] = existing_issue
+                metrics["issue_chunks_written"] += 1
             wrote = True
 
         existing_comment_chunks: dict[tuple[str, str], KBChunk] = {}
@@ -221,14 +239,14 @@ def _sync_kb_chunks(*, issue_rows: list[dict[str, str]], comment_rows: list[dict
             if existing_comment is not None and str(existing_comment.content_hash or "") == content_hash:
                 continue
 
-            if comment_embeddings >= MAX_COMMENT_EMBEDDINGS_PER_REFRESH or _embedding_time_budget_exceeded(
-                started_at=sync_started_at
-            ):
+            if comment_embeddings >= MAX_COMMENT_EMBEDDINGS_PER_REFRESH or _embedding_time_budget_exceeded(started_at=sync_started_at):
+                metrics["budget_exhausted"] = True
                 break
             try:
                 embedding = compute_embedding(content)
                 comment_embeddings += 1
             except Exception as exc:
+                metrics["embedding_failures"] += 1
                 logger.warning(
                     "Jira KB embedding failed for %s/%s: %s",
                     row.get("issue_key") or "-",
@@ -274,10 +292,25 @@ def _sync_kb_chunks(*, issue_rows: list[dict[str, str]], comment_rows: list[dict
             db.flush()
             if jira_key and comment_id:
                 existing_comment_chunks[(jira_key, comment_id)] = chunk
+            metrics["comment_chunks_written"] += 1
             wrote = True
 
         if wrote:
             db.commit()
+        metrics["embeddings_created"] = issue_embeddings + comment_embeddings
+        metrics["chunks_written"] = metrics["issue_chunks_written"] + metrics["comment_chunks_written"]
+        metrics["elapsed_ms"] = int((time.monotonic() - sync_started_at) * 1000)
+        logger.info(
+            "Jira KB sync: issue_candidates=%s comment_candidates=%s chunks_written=%s embeddings_created=%s failures=%s budget_exhausted=%s elapsed_ms=%s",
+            metrics["issue_candidates"],
+            metrics["comment_candidates"],
+            metrics["chunks_written"],
+            metrics["embeddings_created"],
+            metrics["embedding_failures"],
+            metrics["budget_exhausted"],
+            metrics["elapsed_ms"],
+        )
+        return metrics
     except Exception:
         db.rollback()
         raise

@@ -21,7 +21,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Card } from "@/components/ui/card"
-import { Search, ArrowUpDown, ExternalLink, Link2, X } from "lucide-react"
+import { Search, ArrowUpDown, ExternalLink, Link2, X, Clock, User, AlertTriangle } from "lucide-react"
 import {
   type Ticket,
   type TicketStatus,
@@ -29,18 +29,23 @@ import {
   type SlaStatus,
   STATUS_CONFIG,
   PRIORITY_CONFIG,
+  TICKET_TYPE_CONFIG,
   CATEGORY_CONFIG,
 } from "@/lib/ticket-data"
 import { useI18n } from "@/lib/i18n"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { fetchProblems, type ProblemListItem, type ProblemStatus } from "@/lib/problems-api"
+import { fetchTicketSlaAdvisory, type TicketSlaAdvisory } from "@/lib/tickets-api"
 
 interface TicketTableProps {
   tickets: Ticket[]
   initialStatusFilter?: string
   initialPriorityFilter?: string
+  initialTicketTypeFilter?: string
   initialCategoryFilter?: string
+  initialSearch?: string
   minInactiveDays?: number
 }
 
@@ -132,23 +137,52 @@ function formatRemainingSla(minutes: number | null | undefined, options: { isFr:
   return isFr ? `${days} j ${remHours} h` : `${days}d ${remHours}h`
 }
 
+function formatRemainingSlaSeconds(seconds: number | null | undefined, options: { isFr: boolean }): string {
+  const { isFr } = options
+  if (!Number.isFinite(seconds)) return isFr ? "Non disponible" : "Not available"
+  const value = Math.max(0, Math.floor(Number(seconds)))
+  if (value < 60) return isFr ? `${value} sec` : `${value}s`
+  if (value < 3600) {
+    const mins = Math.floor(value / 60)
+    const secs = value % 60
+    if (secs === 0) return isFr ? `${mins} min` : `${mins}m`
+    return isFr ? `${mins} min ${secs} sec` : `${mins}m ${secs}s`
+  }
+  const hours = Math.floor(value / 3600)
+  const mins = Math.floor((value % 3600) / 60)
+  if (mins === 0) return isFr ? `${hours} h` : `${hours}h`
+  return isFr ? `${hours} h ${mins} min` : `${hours}h ${mins}m`
+}
+
+function advisorySnippet(text: string | null | undefined, maxLength = 220): string {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim()
+  if (!normalized) return ""
+  if (normalized.length <= maxLength) return normalized
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}...`
+}
+
 export function TicketTable({
   tickets,
   initialStatusFilter = "all",
   initialPriorityFilter = "all",
+  initialTicketTypeFilter = "all",
   initialCategoryFilter = "all",
+  initialSearch = "",
   minInactiveDays = 0,
 }: TicketTableProps) {
   const { t, locale } = useI18n()
-  const [search, setSearch] = useState("")
+  const [search, setSearch] = useState(initialSearch)
   const [statusFilter, setStatusFilter] = useState<string>(initialStatusFilter)
   const [priorityFilter, setPriorityFilter] = useState<string>(initialPriorityFilter)
+  const [ticketTypeFilter, setTicketTypeFilter] = useState<string>(initialTicketTypeFilter)
   const [categoryFilter, setCategoryFilter] = useState<string>(initialCategoryFilter)
   const [sortField, setSortField] = useState<"createdAt" | "priority">("createdAt")
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc")
   const [pageSize, setPageSize] = useState(10)
   const [currentPage, setCurrentPage] = useState(1)
   const [problemsById, setProblemsById] = useState<Record<string, ProblemListItem>>({})
+  const [slaAdviceByTicket, setSlaAdviceByTicket] = useState<Record<string, TicketSlaAdvisory | null>>({})
+  const [slaAdviceLoading, setSlaAdviceLoading] = useState<Record<string, boolean>>({})
   const isFr = locale === "fr"
   const linkedProblemIds = useMemo(
     () => Array.from(new Set(tickets.map((ticket) => ticket.problemId).filter(Boolean))) as string[],
@@ -164,12 +198,20 @@ export function TicketTable({
   }, [initialPriorityFilter])
 
   useEffect(() => {
+    setTicketTypeFilter(initialTicketTypeFilter)
+  }, [initialTicketTypeFilter])
+
+  useEffect(() => {
     setCategoryFilter(initialCategoryFilter)
   }, [initialCategoryFilter])
 
   useEffect(() => {
+    setSearch(initialSearch)
+  }, [initialSearch])
+
+  useEffect(() => {
     setCurrentPage(1)
-  }, [search, statusFilter, priorityFilter, categoryFilter, sortField, sortOrder, minInactiveDays, pageSize])
+  }, [search, statusFilter, priorityFilter, ticketTypeFilter, categoryFilter, sortField, sortOrder, minInactiveDays, pageSize])
 
   useEffect(() => {
     if (linkedProblemIds.length === 0) {
@@ -198,18 +240,73 @@ export function TicketTable({
     }
   }, [linkedProblemIds])
 
+  async function onSlaPopoverOpenChange(ticketId: string, open: boolean) {
+    if (!open) return
+    if (ticketId in slaAdviceByTicket) return
+    if (slaAdviceLoading[ticketId]) return
+
+    setSlaAdviceLoading((prev) => ({ ...prev, [ticketId]: true }))
+    try {
+      const advisory = await fetchTicketSlaAdvisory(ticketId)
+      setSlaAdviceByTicket((prev) => ({ ...prev, [ticketId]: advisory }))
+    } catch {
+      setSlaAdviceByTicket((prev) => ({ ...prev, [ticketId]: null }))
+    } finally {
+      setSlaAdviceLoading((prev) => ({ ...prev, [ticketId]: false }))
+    }
+  }
+
   const filteredTickets = useMemo(() => {
     let result = [...tickets]
+    const normalizeSearchValue = (value: string) =>
+      value
+        .toLowerCase()
+        .replace(/[_-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+
+    const ticketTypeAliases: Record<Ticket["ticketType"], string[]> = {
+      incident: ["incident", "incidents"],
+      service_request: ["service request", "service requests", "request", "requests", "demande de service", "demandes de service"],
+    }
+
+    const statusAliases: Record<Ticket["status"], string[]> = {
+      open: [t("status.open"), "open", "opened"],
+      "in-progress": [t("status.inProgress"), "in progress", "progress"],
+      "waiting-for-customer": [t("status.waitingForCustomer"), "waiting customer", "customer waiting"],
+      "waiting-for-support-vendor": [t("status.waitingForSupportVendor"), "waiting support vendor", "vendor waiting"],
+      pending: [t("status.pending"), "pending"],
+      resolved: [t("status.resolved"), "resolved"],
+      closed: [t("status.closed"), "closed"],
+    }
+
+    const searchableTextForTicket = (ticket: Ticket) => {
+      const parts = [
+        ticket.title,
+        ticket.description,
+        ticket.id,
+        ticket.reporter,
+        ticket.assignee,
+        ticket.dueAt || "",
+        ticket.ticketType,
+        ticket.ticketType.replace(/_/g, " "),
+        ...ticketTypeAliases[ticket.ticketType],
+        t(`type.${ticket.ticketType}` as "type.incident"),
+        ticket.category,
+        ticket.category.replace(/_/g, " "),
+        t(`category.${ticket.category}` as "category.application"),
+        ticket.priority,
+        t(`priority.${ticket.priority}` as "priority.medium"),
+        ticket.status,
+        ...statusAliases[ticket.status],
+        ...(ticket.tags || []),
+      ]
+      return normalizeSearchValue(parts.filter(Boolean).join(" "))
+    }
 
     if (search) {
-      const q = search.toLowerCase()
-      result = result.filter(
-        (t) =>
-          t.title.toLowerCase().includes(q) ||
-          t.id.toLowerCase().includes(q) ||
-          t.reporter.toLowerCase().includes(q) ||
-          t.assignee.toLowerCase().includes(q)
-      )
+      const q = normalizeSearchValue(search)
+      result = result.filter((ticket) => searchableTextForTicket(ticket).includes(q))
     }
 
     if (statusFilter === "resolved_or_closed") {
@@ -220,6 +317,10 @@ export function TicketTable({
 
     if (priorityFilter !== "all") {
       result = result.filter((t) => t.priority === priorityFilter)
+    }
+
+    if (ticketTypeFilter !== "all") {
+      result = result.filter((t) => t.ticketType === ticketTypeFilter)
     }
 
     if (categoryFilter !== "all") {
@@ -245,7 +346,7 @@ export function TicketTable({
     })
 
     return result
-  }, [tickets, search, statusFilter, priorityFilter, categoryFilter, minInactiveDays, sortField, sortOrder])
+  }, [tickets, search, statusFilter, priorityFilter, ticketTypeFilter, categoryFilter, minInactiveDays, sortField, sortOrder])
 
   function toggleSort(field: "createdAt" | "priority") {
     if (sortField === field) {
@@ -302,6 +403,14 @@ export function TicketTable({
       dismissible: true,
     })
   }
+  if (ticketTypeFilter !== "all") {
+    activeFilters.push({
+      key: `ticket-type-${ticketTypeFilter}`,
+      label: `${t("tickets.type")}: ${t(`type.${ticketTypeFilter}` as "type.incident")}`,
+      clear: () => setTicketTypeFilter("all"),
+      dismissible: true,
+    })
+  }
   if (categoryFilter !== "all") {
     const categoryLabel = CATEGORY_CONFIG[categoryFilter as keyof typeof CATEGORY_CONFIG]?.label || categoryFilter
     activeFilters.push({
@@ -338,6 +447,7 @@ export function TicketTable({
                 setSearch("")
                 setStatusFilter("all")
                 setPriorityFilter("all")
+                setTicketTypeFilter("all")
                 setCategoryFilter("all")
               }}
               disabled={!activeFilters.some((item) => item.dismissible)}
@@ -380,6 +490,16 @@ export function TicketTable({
                     {val.label}
                   </SelectItem>
                 ))}
+              </SelectContent>
+            </Select>
+            <Select value={ticketTypeFilter} onValueChange={setTicketTypeFilter}>
+              <SelectTrigger className="h-10 w-full rounded-xl bg-background/70 sm:w-44">
+                <SelectValue placeholder={t("tickets.type")} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t("tickets.allTypes")}</SelectItem>
+                <SelectItem value="incident">{t("type.incident")}</SelectItem>
+                <SelectItem value="service_request">{t("type.service_request")}</SelectItem>
               </SelectContent>
             </Select>
             <Select value={categoryFilter} onValueChange={setCategoryFilter}>
@@ -425,7 +545,7 @@ export function TicketTable({
         {/* Table */}
         <Card className="surface-card overflow-hidden rounded-2xl">
           <div className="max-h-[66vh] overflow-auto">
-            <Table className="table-fixed min-w-[1260px]">
+            <Table className="table-fixed min-w-[1450px]">
               <TableHeader className="sticky top-0 z-20 bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/85">
                 <TableRow className="border-b border-border/80 bg-muted/55 hover:bg-muted/55">
                   <TableHead className="w-24 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.id")}</TableHead>
@@ -433,9 +553,9 @@ export function TicketTable({
                     {isFr ? "Lien probleme" : "Problem link"}
                   </TableHead>
                   <TableHead className="w-[24rem] px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.titleCol")}</TableHead>
-                  <TableHead className="w-28 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.status")}</TableHead>
-                  <TableHead className="w-28 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">SLA</TableHead>
-                  <TableHead className="w-24 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">
+                  <TableHead className="w-44 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.status")}</TableHead>
+                  <TableHead className="w-32 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">SLA</TableHead>
+                  <TableHead className="w-28 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">
                     <button
                       type="button"
                       className="flex items-center gap-1.5 transition-colors hover:text-primary"
@@ -445,7 +565,8 @@ export function TicketTable({
                       <ArrowUpDown className="h-3.5 w-3.5" />
                     </button>
                   </TableHead>
-                  <TableHead className="w-28 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.category")}</TableHead>
+                  <TableHead className="w-32 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.type")}</TableHead>
+                  <TableHead className="w-32 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.category")}</TableHead>
                   <TableHead className="w-36 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.assignee")}</TableHead>
                   <TableHead className="w-36 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.reporter")}</TableHead>
                   <TableHead className="w-28 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">
@@ -464,7 +585,7 @@ export function TicketTable({
               <TableBody>
                 {paginatedTickets.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={11} className="py-14 text-center">
+                    <TableCell colSpan={12} className="py-14 text-center">
                       <div className="mx-auto max-w-md rounded-xl border border-dashed border-border/70 bg-muted/20 p-6">
                         <p className="text-sm font-medium text-foreground">{t("tickets.noResults")}</p>
                         <p className="mt-1 text-xs text-muted-foreground">
@@ -479,13 +600,36 @@ export function TicketTable({
                     const slaStatus = (ticket.slaStatus || null) as SlaStatus | null
                     const slaConfig = slaStatus ? SLA_STATUS_CONFIG[slaStatus] : null
                     const hasSlaPopup = slaStatus !== null && slaStatus !== "unknown"
+                    const advisory = slaAdviceByTicket[ticket.id]
+                    const advisoryLoading = Boolean(slaAdviceLoading[ticket.id])
+                    const clockClass =
+                      slaStatus === "breached"
+                        ? "text-red-600"
+                        : slaStatus === "at_risk"
+                          ? "text-amber-500"
+                          : "text-slate-500"
+                    const remainingLabel = advisory
+                      ? formatRemainingSlaSeconds(advisory.remainingSeconds, { isFr })
+                      : formatRemainingSla(ticket.slaRemainingMinutes, { isFr })
+                    const remainingSeconds = advisory
+                      ? Number(advisory.remainingSeconds)
+                      : Number.isFinite(ticket.slaRemainingMinutes)
+                        ? Math.max(0, Math.floor(Number(ticket.slaRemainingMinutes) * 60))
+                        : null
+                    const isUrgentCountdown =
+                      (slaStatus === "at_risk" || slaStatus === "breached") &&
+                      Number.isFinite(remainingSeconds) &&
+                      Number(remainingSeconds) > 0 &&
+                      Number(remainingSeconds) <= 900
                     return (
                       <TableRow
                         key={ticket.id}
-                        className={`${index % 2 === 0 ? "bg-background/65" : "bg-muted/20"} transition-colors hover:bg-primary/5`}
+                        className={`group ${index % 2 === 0 ? "bg-background/65" : "bg-muted/20"} transition-colors duration-150 hover:bg-primary/10 ${slaStatus === "breached" ? "border-l-[3px] border-l-[#E24B4A]" : slaStatus === "at_risk" ? "border-l-[3px] border-l-[#EF9F27]" : ""}`}
                       >
-                        <TableCell className="px-3 py-3 font-mono text-xs font-semibold text-primary">
-                          {ticket.id}
+                        <TableCell className="px-3 py-3">
+                          <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-[var(--color-background-secondary)] border border-[var(--color-border-tertiary)] hover:border-[var(--color-border-primary)] cursor-pointer transition-all duration-150 font-semibold text-primary">
+                            {ticket.id}
+                          </span>
                         </TableCell>
                         <TableCell className="px-3 py-3">
                           {ticket.problemId ? (
@@ -549,36 +693,91 @@ export function TicketTable({
                               </HoverCardContent>
                             </HoverCard>
                           ) : (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
+                            <HoverCard openDelay={120} closeDelay={80}>
+                              <HoverCardTrigger asChild>
                                 <Link
                                   href={`/tickets/${ticket.id}`}
                                   className="block truncate text-sm font-medium text-foreground transition-colors hover:text-primary"
                                 >
                                   {ticket.title}
                                 </Link>
-                              </TooltipTrigger>
-                              <TooltipContent className="max-w-sm text-xs">{ticket.title}</TooltipContent>
-                            </Tooltip>
+                              </HoverCardTrigger>
+                              <HoverCardContent align="start" className="w-80 p-3">
+                                <p className="line-clamp-2 text-sm font-semibold text-foreground">{ticket.title}</p>
+                                <div className="mt-2 grid grid-cols-2 gap-2">
+                                  <div className="rounded-md border border-border/70 bg-muted/30 p-2">
+                                    <p className="text-[10px] text-muted-foreground">{isFr ? "Statut" : "Status"}</p>
+                                    <p className="text-xs font-semibold text-foreground">{STATUS_CONFIG[ticket.status].label}</p>
+                                  </div>
+                                  <div className="rounded-md border border-border/70 bg-muted/30 p-2">
+                                    <p className="text-[10px] text-muted-foreground">{isFr ? "Priorite" : "Priority"}</p>
+                                    <p className="text-xs font-semibold text-foreground">{PRIORITY_CONFIG[ticket.priority].label}</p>
+                                  </div>
+                                  <div className="rounded-md border border-border/70 bg-muted/30 p-2">
+                                    <p className="text-[10px] text-muted-foreground">{t("tickets.type")}</p>
+                                    <p className="text-xs font-semibold text-foreground">
+                                      {t(`type.${ticket.ticketType}` as "type.incident")}
+                                    </p>
+                                  </div>
+                                  <div className="rounded-md border border-border/70 bg-muted/30 p-2">
+                                    <p className="text-[10px] text-muted-foreground">{isFr ? "Categorie" : "Category"}</p>
+                                    <p className="text-xs font-semibold text-foreground">{CATEGORY_CONFIG[ticket.category].label}</p>
+                                  </div>
+                                  <div className="rounded-md border border-border/70 bg-muted/30 p-2">
+                                    <p className="text-[10px] text-muted-foreground">{isFr ? "Assigne" : "Assignee"}</p>
+                                    <p className="truncate text-xs font-semibold text-foreground">{ticket.assignee}</p>
+                                  </div>
+                                  {ticket.dueAt ? (
+                                    <div className="rounded-md border border-border/70 bg-muted/30 p-2">
+                                      <p className="text-[10px] text-muted-foreground">{isFr ? "Echeance" : "Deadline"}</p>
+                                      <p className="text-xs font-semibold text-foreground">
+                                        {new Date(ticket.dueAt).toLocaleDateString(isFr ? "fr-FR" : "en-US")}
+                                      </p>
+                                    </div>
+                                  ) : null}
+                                </div>
+                                {slaStatus && slaConfig ? (
+                                  <div className="mt-2 rounded-md border border-border/70 bg-muted/20 p-2">
+                                    <p className="text-[10px] text-muted-foreground">SLA</p>
+                                    <div className="mt-1 flex items-center gap-2">
+                                      <Badge className={`${slaConfig.color} border-0 text-[10px] font-semibold`}>
+                                        {isFr ? slaConfig.labelFr : slaConfig.labelEn}
+                                      </Badge>
+                                      <span className="text-[11px] text-muted-foreground">{remainingLabel}</span>
+                                    </div>
+                                  </div>
+                                ) : null}
+                              </HoverCardContent>
+                            </HoverCard>
                           )}
                         </TableCell>
-                        <TableCell className="px-3 py-3">
-                          <Badge className={`${STATUS_CONFIG[ticket.status].color} border-0 text-xs font-semibold`}>
+                        <TableCell className="overflow-hidden px-3 py-3">
+                          <Badge
+                            className={`${STATUS_CONFIG[ticket.status].color} max-w-full overflow-hidden text-ellipsis whitespace-nowrap border-0 text-xs font-semibold`}
+                            title={STATUS_CONFIG[ticket.status].label}
+                          >
                             {STATUS_CONFIG[ticket.status].label}
                           </Badge>
                         </TableCell>
-                        <TableCell className="px-3 py-3">
+                        <TableCell className="overflow-hidden px-3 py-3">
                           {slaStatus && slaConfig ? (
                             hasSlaPopup ? (
-                              <HoverCard openDelay={120} closeDelay={80}>
-                                <HoverCardTrigger asChild>
-                                  <span className="inline-flex cursor-help">
-                                    <Badge className={`${slaConfig.color} border-0 text-xs font-semibold`}>
+                              <Popover onOpenChange={(open) => onSlaPopoverOpenChange(ticket.id, open)}>
+                                <PopoverTrigger asChild>
+                                  <button
+                                    type="button"
+                                    className="inline-flex max-w-full items-center gap-1 rounded-md px-1 py-0.5 transition-colors hover:bg-muted/50"
+                                  >
+                                    <Clock className={`h-3.5 w-3.5 ${isUrgentCountdown ? "animate-pulse" : ""} ${clockClass}`} />
+                                    <Badge
+                                      className={`${slaConfig.color} max-w-full overflow-hidden text-ellipsis whitespace-nowrap border-0 text-xs font-semibold`}
+                                      title={isFr ? slaConfig.labelFr : slaConfig.labelEn}
+                                    >
                                       {isFr ? slaConfig.labelFr : slaConfig.labelEn}
                                     </Badge>
-                                  </span>
-                                </HoverCardTrigger>
-                                <HoverCardContent align="start" className="w-72 p-3">
+                                  </button>
+                                </PopoverTrigger>
+                                <PopoverContent align="start" className="w-80 p-3">
                                   <p className="text-xs font-semibold text-foreground">SLA</p>
                                   <p className="mt-1 text-xs text-muted-foreground">
                                     {isFr ? slaConfig.hintFr : slaConfig.hintEn}
@@ -591,18 +790,35 @@ export function TicketTable({
                                     <div className="rounded-md border border-border/70 bg-muted/30 p-2">
                                       <p className="text-[10px] text-muted-foreground">{isFr ? "Temps restant" : "Remaining"}</p>
                                       <p className="text-xs font-semibold text-foreground">
-                                        {formatRemainingSla(ticket.slaRemainingMinutes, { isFr })}
+                                        {remainingLabel}
                                       </p>
                                     </div>
+                                  </div>
+                                  <div className="mt-2 rounded-md border border-border/70 bg-muted/20 p-2">
+                                    <p className="text-[10px] text-muted-foreground">{isFr ? "Quick Advice (RAG)" : "Quick Advice (RAG)"}</p>
+                                    <p className="mt-1 text-xs text-foreground">
+                                      {advisoryLoading
+                                        ? isFr
+                                          ? "Chargement du conseil SLA..."
+                                          : "Loading SLA advice..."
+                                        : advisory?.ragAdviceText
+                                          ? advisorySnippet(advisory.ragAdviceText)
+                                          : isFr
+                                            ? "Aucun conseil SLA disponible."
+                                            : "No SLA advisory available."}
+                                    </p>
                                   </div>
                                   <p className="mt-2 text-[11px] text-muted-foreground">
                                     {isFr ? "Derniere mise a jour:" : "Last update:"}{" "}
                                     {new Date(ticket.updatedAt).toLocaleString(locale === "fr" ? "fr-FR" : "en-US")}
                                   </p>
-                                </HoverCardContent>
-                              </HoverCard>
+                                </PopoverContent>
+                              </Popover>
                             ) : (
-                              <Badge className={`${slaConfig.color} border-0 text-xs font-semibold`}>
+                              <Badge
+                                className={`${slaConfig.color} max-w-full overflow-hidden text-ellipsis whitespace-nowrap border-0 text-xs font-semibold`}
+                                title={isFr ? slaConfig.labelFr : slaConfig.labelEn}
+                              >
                                 {isFr ? slaConfig.labelFr : slaConfig.labelEn}
                               </Badge>
                             )
@@ -610,19 +826,32 @@ export function TicketTable({
                             <span className="text-xs text-muted-foreground">-</span>
                           )}
                         </TableCell>
-                        <TableCell className="px-3 py-3">
-                          <Badge className={`${PRIORITY_CONFIG[ticket.priority].color} border-0 text-xs font-semibold`}>
+                        <TableCell className="overflow-hidden px-3 py-3">
+                          <Badge
+                            className={`${PRIORITY_CONFIG[ticket.priority].color} max-w-full overflow-hidden text-ellipsis whitespace-nowrap border-0 text-xs font-semibold`}
+                            title={PRIORITY_CONFIG[ticket.priority].label}
+                          >
                             {PRIORITY_CONFIG[ticket.priority].label}
                           </Badge>
                         </TableCell>
-                        <TableCell className="px-3 py-3">
+                        <TableCell className="overflow-hidden px-3 py-3">
+                          <Badge
+                            variant="outline"
+                            className="max-w-full overflow-hidden text-ellipsis whitespace-nowrap border-border bg-background/70 text-muted-foreground"
+                            title={TICKET_TYPE_CONFIG[ticket.ticketType].label}
+                          >
+                            {t(`type.${ticket.ticketType}` as "type.incident")}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="overflow-hidden px-3 py-3">
                           <Badge
                             variant="outline"
                             className={
                               ticket.category === "problem"
-                                ? "border-red-300 bg-red-50 text-red-700 dark:border-red-500/40 dark:bg-red-950/40 dark:text-red-100"
-                                : "border-border bg-background/70 text-muted-foreground"
+                                ? "max-w-full overflow-hidden text-ellipsis whitespace-nowrap border-red-300 bg-red-50 text-red-700 dark:border-red-500/40 dark:bg-red-950/40 dark:text-red-100"
+                                : "max-w-full overflow-hidden text-ellipsis whitespace-nowrap border-border bg-background/70 text-muted-foreground"
                             }
+                            title={CATEGORY_CONFIG[ticket.category].label}
                           >
                             {CATEGORY_CONFIG[ticket.category].label}
                           </Badge>
@@ -641,12 +870,32 @@ export function TicketTable({
                           })}
                         </TableCell>
                         <TableCell className="px-3 py-3">
-                          <Link href={`/tickets/${ticket.id}`}>
-                            <Button variant="ghost" size="sm" className="h-8 w-8 rounded-full p-0 hover:bg-primary/10">
-                              <ExternalLink className="h-3.5 w-3.5" />
-                              <span className="sr-only">Voir le ticket {ticket.id}</span>
-                            </Button>
-                          </Link>
+                          <div className="flex items-center justify-end gap-1">
+                            <div className="pointer-events-none flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100">
+                              <Link href={`/tickets/${ticket.id}?focus=assignee`}>
+                                <Button variant="ghost" size="sm" className="h-8 w-8 rounded-full p-0 hover:bg-primary/10">
+                                  <User className="h-3.5 w-3.5" />
+                                  <span className="sr-only">
+                                    {isFr ? `Action rapide: assigner ${ticket.id}` : `Quick action: assign ${ticket.id}`}
+                                  </span>
+                                </Button>
+                              </Link>
+                              <Link href={`/tickets/${ticket.id}?focus=priority`}>
+                                <Button variant="ghost" size="sm" className="h-8 w-8 rounded-full p-0 hover:bg-primary/10">
+                                  <AlertTriangle className="h-3.5 w-3.5" />
+                                  <span className="sr-only">
+                                    {isFr ? `Action rapide: prioriser ${ticket.id}` : `Quick action: prioritize ${ticket.id}`}
+                                  </span>
+                                </Button>
+                              </Link>
+                            </div>
+                            <Link href={`/tickets/${ticket.id}`}>
+                              <Button variant="ghost" size="sm" className="h-8 w-8 rounded-full p-0 hover:bg-primary/10">
+                                <ExternalLink className="h-3.5 w-3.5" />
+                                <span className="sr-only">Voir le ticket {ticket.id}</span>
+                              </Button>
+                            </Link>
+                          </div>
                         </TableCell>
                       </TableRow>
                     )

@@ -6,8 +6,15 @@ import { LanguageSwitcher } from "@/components/language-switcher"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { useAuth } from "@/lib/auth"
 import { useI18n } from "@/lib/i18n"
-import { getNotifications, getUnreadNotificationCount, markNotificationRead, type NotificationItem } from "@/lib/notifications-api"
+import {
+  getNotifications,
+  getUnreadNotificationCount,
+  markAllNotificationsRead,
+  markNotificationRead,
+  type NotificationItem,
+} from "@/lib/notifications-api"
 import { apiFetch } from "@/lib/api"
+import { globalSearch, type SearchResponse } from "@/lib/search-api"
 import { Bell, LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -38,6 +45,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [markingId, setMarkingId] = React.useState<string | null>(null)
   const [mediumLowExpanded, setMediumLowExpanded] = React.useState(false)
   const seenCriticalRef = React.useRef<Set<string>>(new Set())
+
+  // Feature 6: Global search state
+  const [searchQuery, setSearchQuery] = React.useState("")
+  const [searchResults, setSearchResults] = React.useState<SearchResponse | null>(null)
+  const [searchOpen, setSearchOpen] = React.useState(false)
+  const [searchLoading, setSearchLoading] = React.useState(false)
+  const searchRef = React.useRef<HTMLInputElement>(null)
+  const searchContainerRef = React.useRef<HTMLDivElement>(null)
 
   React.useEffect(() => {
     if (typeof window === "undefined") return
@@ -112,6 +127,53 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("notifications:changed", onNotificationsChanged as EventListener)
   }, [user, notifOpen, loadUnreadCount, loadNotifications])
 
+  // Feature 6: Cmd+K / Ctrl+K keyboard shortcut to open search
+  React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault()
+        setSearchOpen(true)
+        setTimeout(() => searchRef.current?.focus(), 50)
+      }
+      if (e.key === "Escape") {
+        setSearchOpen(false)
+        setSearchQuery("")
+        setSearchResults(null)
+      }
+    }
+    window.addEventListener("keydown", handler)
+    return () => window.removeEventListener("keydown", handler)
+  }, [])
+
+  // Feature 6: Debounced search effect (300ms)
+  React.useEffect(() => {
+    if (!searchQuery || searchQuery.length < 2) {
+      setSearchResults(null)
+      return
+    }
+    const timeout = setTimeout(async () => {
+      setSearchLoading(true)
+      try {
+        const r = await globalSearch(searchQuery, ["tickets", "problems"], 5)
+        setSearchResults(r)
+      } finally {
+        setSearchLoading(false)
+      }
+    }, 300)
+    return () => clearTimeout(timeout)
+  }, [searchQuery])
+
+  // Feature 6: Click outside to close search dropdown
+  React.useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target as Node)) {
+        setSearchOpen(false)
+      }
+    }
+    document.addEventListener("mousedown", handler)
+    return () => document.removeEventListener("mousedown", handler)
+  }, [])
+
   const severityClasses: Record<string, string> = {
     info: "bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-900/80 dark:text-slate-100 dark:border-slate-600",
     high: "bg-orange-100 text-orange-800 border-orange-200 dark:bg-orange-950/80 dark:text-orange-100 dark:border-orange-500/50",
@@ -175,23 +237,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
 
     setNotifications((prev) => prev.map((n) => (n.id === item.id ? { ...n, read_at: new Date().toISOString() } : n)))
-    setUnreadCount((prev) => Math.max(0, prev - (item.read_at ? 0 : 1)))
+    loadUnreadCount().catch(() => {})
+    loadNotifications().catch(() => {})
     if (item.link) {
       router.push(item.link)
       setNotifOpen(false)
     }
   }
 
+  const markNotificationReadSilently = async (item: NotificationItem) => {
+    if (item.read_at) return
+    try {
+      setMarkingId(item.id)
+      await markNotificationRead(item.id)
+    } catch {
+      // keep UX moving even if mark-read fails
+    } finally {
+      setMarkingId(null)
+    }
+    setNotifications((prev) => prev.map((n) => (n.id === item.id ? { ...n, read_at: new Date().toISOString() } : n)))
+    loadUnreadCount().catch(() => {})
+  }
+
   const onMarkAllAsRead = async () => {
     try {
       setMarkingAll(true)
-      const candidates = notifications.filter((n) => !n.read_at && n.severity !== "critical")
-      if (candidates.length === 0) return
-      await Promise.all(candidates.map((n) => markNotificationRead(n.id)))
-      setNotifications((prev) =>
-        prev.map((n) => (n.read_at || n.severity === "critical" ? n : { ...n, read_at: new Date().toISOString() }))
-      )
-      setUnreadCount((prev) => Math.max(0, prev - candidates.length))
+      await markAllNotificationsRead()
+      await Promise.all([loadNotifications(), loadUnreadCount()])
     } finally {
       setMarkingAll(false)
     }
@@ -205,17 +277,50 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return match?.[1] || null
   }
 
+  const assigneeFromNotification = (item: NotificationItem): string | null => {
+    const value = String(item.action_payload?.assignee || item.metadata_json?.assignee || "").trim()
+    return value || null
+  }
+
+  const actionLabel = (actionType: string | null | undefined): string => {
+    const normalized = String(actionType || "").toLowerCase()
+    if (normalized === "reassign") return "Reassign"
+    if (normalized === "approve") return "Approve"
+    if (normalized === "escalate") return "Escalate"
+    if (normalized === "dismiss") return "Dismiss"
+    return normalized || "Action"
+  }
+
+  const eventLabel = (eventType: string | null | undefined): string => {
+    const normalized = String(eventType || "").replace(/_/g, " ").trim()
+    if (!normalized) return "update"
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1)
+  }
+
   const onInlineAction = async (item: NotificationItem, actionType: string) => {
-    if (actionType === "dismiss") {
-      await onNotificationClick({ ...item, link: null })
+    const normalized = String(actionType || "").toLowerCase()
+    if (normalized === "dismiss") {
+      await markNotificationReadSilently(item)
       return
     }
     const ticketId = ticketIdFromNotification(item)
     if (!ticketId) return
-    const endpoint = actionType === "approve" ? `/tickets/${ticketId}/approve` : `/tickets/${ticketId}/escalate`
     try {
-      await apiFetch(endpoint, { method: "PATCH" })
-      await onNotificationClick(item)
+      if (normalized === "reassign") {
+        const assignee = assigneeFromNotification(item)
+        if (!assignee) return
+        await apiFetch(`/tickets/${ticketId}/triage`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            assignee,
+            comment: "Applied from SLA high-risk notification action.",
+          }),
+        })
+      } else {
+        const endpoint = normalized === "approve" ? `/tickets/${ticketId}/approve` : `/tickets/${ticketId}/escalate`
+        await apiFetch(endpoint, { method: "PATCH" })
+      }
+      await markNotificationReadSilently(item)
     } catch {
       // no-op; keep item visible if action endpoint is unavailable
     }
@@ -232,7 +337,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   )
 
   return (
-    <div className="relative flex min-h-screen overflow-hidden bg-transparent">
+    <div className="relative flex h-screen overflow-hidden bg-transparent">
       <AppSidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((prev) => !prev)} />
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top Bar */}
@@ -251,6 +356,78 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <h1 className="hidden text-sm font-semibold tracking-wide text-foreground/90 sm:block">
               {t("app.title")}
             </h1>
+            {/* Feature 6: Global search input */}
+            <div className="relative hidden md:block" ref={searchContainerRef}>
+              <input
+                ref={searchRef}
+                type="search"
+                value={searchQuery}
+                onChange={(e) => { setSearchQuery(e.target.value); setSearchOpen(true); }}
+                onFocus={() => setSearchOpen(true)}
+                placeholder={`Rechercher tickets, problèmes...`}
+                className="w-64 text-sm px-3 py-1.5 pr-16 rounded-lg border border-border bg-background/80 focus:outline-none focus:ring-2 focus:ring-ring"
+                aria-label="Recherche globale"
+              />
+              <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] px-1.5 py-0.5 rounded border border-[var(--color-border-secondary)] bg-[var(--color-background-secondary)] font-mono">⌘K</kbd>
+              {searchOpen && (searchResults || searchLoading) && (
+                <div
+                  className="absolute top-full left-0 mt-1 w-96 rounded-xl border border-border bg-background shadow-xl z-50 overflow-hidden"
+                  onMouseDown={(e) => e.preventDefault()}
+                >
+                  {searchLoading && (
+                    <div className="px-4 py-3 text-sm text-muted-foreground">Recherche en cours...</div>
+                  )}
+                  {searchResults && !searchLoading && searchResults.total_count === 0 && (
+                    <div className="px-4 py-3 text-sm text-muted-foreground">
+                      Aucun résultat pour « {searchQuery} »
+                    </div>
+                  )}
+                  {searchResults && !searchLoading && searchResults.total_count > 0 && (
+                    <>
+                      {searchResults.results.tickets.length > 0 && (
+                        <div>
+                          <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Tickets</div>
+                          {searchResults.results.tickets.map((r) => (
+                            <a
+                              key={r.id}
+                              href={r.url}
+                              onClick={() => { setSearchOpen(false); setSearchQuery(""); }}
+                              className="flex items-start gap-2 px-3 py-2 hover:bg-accent transition-colors"
+                            >
+                              <span className="mt-0.5 text-muted-foreground">🎫</span>
+                              <div className="min-w-0">
+                                <div className="text-sm font-medium truncate">{r.title}</div>
+                                <div className="text-xs text-muted-foreground truncate">{r.excerpt}</div>
+                                {r.status && <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground mt-0.5 inline-block">{r.status}</span>}
+                              </div>
+                            </a>
+                          ))}
+                        </div>
+                      )}
+                      {searchResults.results.problems.length > 0 && (
+                        <div className="border-t border-border">
+                          <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Problèmes</div>
+                          {searchResults.results.problems.map((r) => (
+                            <a
+                              key={r.id}
+                              href={r.url}
+                              onClick={() => { setSearchOpen(false); setSearchQuery(""); }}
+                              className="flex items-start gap-2 px-3 py-2 hover:bg-accent transition-colors"
+                            >
+                              <span className="mt-0.5 text-muted-foreground">⚠️</span>
+                              <div className="min-w-0">
+                                <div className="text-sm font-medium truncate">{r.title}</div>
+                                <div className="text-xs text-muted-foreground truncate">{r.excerpt}</div>
+                              </div>
+                            </a>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-3">
             <LanguageSwitcher />
@@ -262,7 +439,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <Bell className="h-4 w-4 text-muted-foreground" />
                   {unreadCount > 0 && (
                     <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-bold text-primary-foreground ring-2 ring-card/80">
-                      {unreadCount > 99 ? "99+" : unreadCount}
+                      {unreadCount > 9 ? "9+" : unreadCount}
                     </span>
                   )}
                   <span className="sr-only">{t("app.notifications")}</span>
@@ -332,7 +509,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                             <p className="font-semibold">{item.title}</p>
                             {item.body && <p className="mt-1 text-muted-foreground">{item.body}</p>}
                             <p className="mt-1 text-[11px] text-muted-foreground">
-                              Severity: {item.severity} {item.source ? ` - Source: ${item.source}` : ""}
+                              Event: {eventLabel(item.event_type)} - Severity: {item.severity}
+                              {item.source ? ` - Source: ${item.source}` : ""}
                             </p>
                           </TooltipContent>
                           </Tooltip>
@@ -390,7 +568,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                                     onInlineAction(item, item.action_type || "view").catch(() => {})
                                   }}
                                 >
-                                  {item.action_type}
+                                  {actionLabel(item.action_type)}
                                 </Button>
                               </div>
                             ) : null}
@@ -400,7 +578,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                             <p className="font-semibold">{item.title}</p>
                             {item.body && <p className="mt-1 text-muted-foreground">{item.body}</p>}
                             <p className="mt-1 text-[11px] text-muted-foreground">
-                              Severity: {item.severity} {item.source ? ` - Source: ${item.source}` : ""}
+                              Event: {eventLabel(item.event_type)} - Severity: {item.severity}
+                              {item.source ? ` - Source: ${item.source}` : ""}
                             </p>
                           </TooltipContent>
                           </Tooltip>

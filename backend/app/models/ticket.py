@@ -9,7 +9,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
-from app.models.enums import TicketCategory, TicketPriority, TicketStatus
+from app.models.enums import TicketCategory, TicketPriority, TicketStatus, TicketType
 
 
 def utcnow() -> dt.datetime:
@@ -35,6 +35,10 @@ class Ticket(Base):
         Enum(TicketPriority, name="ticket_priority", values_callable=lambda x: [e.value for e in x]),
         default=TicketPriority.medium,
     )
+    ticket_type: Mapped[TicketType] = mapped_column(
+        Enum(TicketType, name="ticket_type", values_callable=lambda x: [e.value for e in x]),
+        default=TicketType.service_request,
+    )
     category: Mapped[TicketCategory] = mapped_column(
         Enum(TicketCategory, name="ticket_category", values_callable=lambda x: [e.value for e in x]),
         default=TicketCategory.service_request,
@@ -49,6 +53,10 @@ class Ticket(Base):
     priority_model_version: Mapped[str] = mapped_column(String(40), default="legacy", nullable=False)
     predicted_priority: Mapped[TicketPriority | None] = mapped_column(
         Enum(TicketPriority, name="ticket_priority", values_callable=lambda x: [e.value for e in x]),
+        nullable=True,
+    )
+    predicted_ticket_type: Mapped[TicketType | None] = mapped_column(
+        Enum(TicketType, name="ticket_type", values_callable=lambda x: [e.value for e in x]),
         nullable=True,
     )
     predicted_category: Mapped[TicketCategory | None] = mapped_column(
@@ -69,6 +77,7 @@ class Ticket(Base):
     external_source: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     external_updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_synced_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    due_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     raw_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     jira_sla_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # Local SLA status values: ok, at_risk, breached, paused, completed, unknown.
@@ -87,6 +96,10 @@ class Ticket(Base):
     priority_escalated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
     tags: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_generated_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     comments: Mapped[list[TicketComment]] = relationship(
         "TicketComment",

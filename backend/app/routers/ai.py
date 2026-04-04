@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.deps import get_current_user
+logger = logging.getLogger(__name__)
+
+from app.core.deps import get_current_user, require_roles
 from app.core.rate_limit import rate_limit
 from app.db.session import get_db
+from app.models.enums import UserRole
 from app.schemas.ai import (
     AIFeedbackRequest,
     AIFeedbackResponse,
+    AIRecommendationFeedbackSummaryWithBreakdown,
     ChatRequest,
     ChatResponse,
     ClassificationRequest,
@@ -20,16 +25,32 @@ from app.schemas.ai import (
     SuggestRequest,
     SuggestResponse,
 )
-from app.services.ai.feedback import aggregate_feedback_counts, record_feedback
+from app.services.ai.feedback import (
+    aggregate_agent_feedback_analytics,
+    aggregate_feedback_counts,
+    get_feedback_bundle_for_target,
+    record_feedback,
+    upsert_agent_feedback,
+)
 from app.services.embeddings import search_kb
 from app.services.ai.orchestrator import handle_chat, handle_classify, handle_suggest
 
-router = APIRouter(dependencies=[Depends(rate_limit("ai")), Depends(get_current_user)])
+router = APIRouter(
+    dependencies=[
+        Depends(rate_limit("ai")),
+        Depends(get_current_user),
+        Depends(require_roles(UserRole.admin, UserRole.agent)),
+    ]
+)
 
 
 @router.post("/classify", response_model=ClassificationResponse)
-def classify(payload: ClassificationRequest, db: Session = Depends(get_db)) -> ClassificationResponse:
-    return handle_classify(payload, db)
+def classify(
+    payload: ClassificationRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> ClassificationResponse:
+    return handle_classify(payload, db, current_user=current_user)
 
  
 @router.post("/chat", response_model=ChatResponse)
@@ -38,7 +59,17 @@ def chat(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> ChatResponse:
-    return handle_chat(payload, db, current_user)
+    try:
+        return handle_chat(payload, db, current_user)
+    except Exception as exc:
+        logger.warning("handle_chat unhandled exception: %s", exc, exc_info=True)
+        lang = "fr" if str(payload.locale or "").lower().startswith("fr") else "en"
+        fallback_reply = (
+            "Une erreur s'est produite. Veuillez reformuler votre question."
+            if lang == "fr"
+            else "An error occurred. Please rephrase your question."
+        )
+        return ChatResponse(reply=fallback_reply)
 
 
 @router.post("/suggest", response_model=SuggestResponse)
@@ -56,6 +87,40 @@ def submit_feedback(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ) -> AIFeedbackResponse:
+    if payload.feedback_type:
+        row = upsert_agent_feedback(
+            db,
+            user_id=getattr(current_user, "id", None),
+            feedback_type=payload.feedback_type,
+            source_surface=str(payload.source_surface or ""),
+            ticket_id=payload.ticket_id,
+            recommendation_id=payload.recommendation_id,
+            recommended_action=payload.recommended_action,
+            display_mode=payload.display_mode,
+            confidence=payload.confidence,
+            reasoning=payload.reasoning,
+            match_summary=payload.match_summary,
+            evidence_count=payload.evidence_count,
+            metadata=payload.metadata,
+        )
+        bundle = get_feedback_bundle_for_target(
+            db,
+            current_user_id=getattr(current_user, "id", None),
+            source_surface=str(payload.source_surface or ""),
+            ticket_id=payload.ticket_id,
+            recommendation_id=payload.recommendation_id,
+        )
+        return AIFeedbackResponse(
+            status="recorded",
+            source=row.source,
+            source_id=row.source_id,
+            ticket_id=row.ticket_id,
+            recommendation_id=row.recommendation_id,
+            source_surface=row.source_surface,
+            current_feedback=bundle.get("current_feedback"),
+            feedback_summary=bundle.get("feedback_summary"),
+        )
+
     source = str(payload.source or "").strip().lower()
     source_id = str(payload.source_id or "").strip() or None
     row = record_feedback(
@@ -78,6 +143,31 @@ def submit_feedback(
     )
 
 
+@router.get("/feedback/summary", response_model=AIFeedbackResponse)
+def feedback_summary(
+    ticket_id: str | None = Query(default=None, max_length=20),
+    recommendation_id: str | None = Query(default=None, max_length=64),
+    source_surface: str = Query(..., min_length=1, max_length=32),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> AIFeedbackResponse:
+    bundle = get_feedback_bundle_for_target(
+        db,
+        current_user_id=getattr(current_user, "id", None),
+        source_surface=source_surface,
+        ticket_id=ticket_id,
+        recommendation_id=recommendation_id,
+    )
+    return AIFeedbackResponse(
+        status="ok",
+        ticket_id=ticket_id,
+        recommendation_id=recommendation_id,
+        source_surface=source_surface,
+        current_feedback=bundle.get("current_feedback"),
+        feedback_summary=bundle.get("feedback_summary"),
+    )
+
+
 @router.get("/feedback/stats", response_model=AIFeedbackResponse)
 def feedback_stats(
     source: str = Query(..., min_length=1, max_length=32),
@@ -94,6 +184,15 @@ def feedback_stats(
         helpful_votes=int(counts["helpful"]),
         not_helpful_votes=int(counts["not_helpful"]),
     )
+
+
+@router.get("/feedback/analytics", response_model=AIRecommendationFeedbackSummaryWithBreakdown)
+def feedback_analytics(
+    source_surface: str | None = Query(default=None, max_length=32),
+    db: Session = Depends(get_db),
+) -> AIRecommendationFeedbackSummaryWithBreakdown:
+    payload = aggregate_agent_feedback_analytics(db, source_surface=source_surface)
+    return AIRecommendationFeedbackSummaryWithBreakdown(**payload)
 
 
 @router.get("/kb/search")
@@ -129,3 +228,66 @@ def _truncate_snippet(text: str, *, limit: int = 240) -> str:
     if len(clean) <= limit:
         return clean
     return clean[: limit - 3].rstrip() + "..."
+
+
+@router.get("/classification-logs")
+def get_classification_logs(
+    ticket_id: str | None = Query(default=None, description="Filter by ticket ID"),
+    decision_source: str | None = Query(default=None, description="llm | semantic | fallback"),
+    confidence_band: str | None = Query(default=None, description="high | medium | low"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> dict[str, Any]:
+    """Return paginated AI classification audit logs. Admin and agent only."""
+    from app.models.ai_classification_log import AiClassificationLog
+    from app.core.exceptions import InsufficientPermissionsError
+    from sqlalchemy import select, func
+
+    if current_user.role.value not in ("admin", "agent"):
+        raise InsufficientPermissionsError("forbidden")
+
+    stmt = select(AiClassificationLog)
+    count_stmt = select(func.count()).select_from(AiClassificationLog)
+
+    if ticket_id:
+        stmt = stmt.where(AiClassificationLog.ticket_id == ticket_id.strip())
+        count_stmt = count_stmt.where(AiClassificationLog.ticket_id == ticket_id.strip())
+    if decision_source:
+        stmt = stmt.where(AiClassificationLog.decision_source == decision_source.strip())
+        count_stmt = count_stmt.where(AiClassificationLog.decision_source == decision_source.strip())
+    if confidence_band:
+        stmt = stmt.where(AiClassificationLog.confidence_band == confidence_band.strip())
+        count_stmt = count_stmt.where(AiClassificationLog.confidence_band == confidence_band.strip())
+
+    total = db.execute(count_stmt).scalar_one()
+    rows = db.execute(
+        stmt.order_by(AiClassificationLog.created_at.desc()).offset(offset).limit(limit)
+    ).scalars().all()
+
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "items": [
+            {
+                "id": str(r.id),
+                "ticket_id": r.ticket_id,
+                "trigger": r.trigger,
+                "title": r.title,
+                "suggested_priority": r.suggested_priority,
+                "suggested_category": r.suggested_category,
+                "suggested_ticket_type": r.suggested_ticket_type,
+                "confidence": r.confidence,
+                "confidence_band": r.confidence_band,
+                "decision_source": r.decision_source,
+                "strong_match_count": r.strong_match_count,
+                "recommendation_mode": r.recommendation_mode,
+                "reasoning": r.reasoning,
+                "model_version": r.model_version,
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in rows
+        ],
+    }

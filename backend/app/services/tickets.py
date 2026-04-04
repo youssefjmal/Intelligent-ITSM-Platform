@@ -22,10 +22,18 @@ from app.integrations.jira.sla_sync import sync_ticket_sla
 from app.models.automation_event import AutomationEvent
 from app.models.ticket import Ticket, TicketComment
 from app.models.user import User
-from app.models.enums import SeniorityLevel, TicketCategory, TicketPriority, TicketStatus, UserRole
-from app.schemas.ticket import TicketCreate, TicketTriageUpdate
+from app.models.enums import SeniorityLevel, TicketCategory, TicketPriority, TicketStatus, TicketType, UserRole
+from app.schemas.ticket import TicketTriageUpdate
 from app.services.sla.auto_escalation import apply_escalation
-from app.services.notifications_service import create_notifications_for_users, resolve_ticket_recipients
+from app.services.notifications_service import (
+    EVENT_SYSTEM_ALERT,
+    create_notifications_for_users,
+    notify_ticket_assignment_change,
+    notify_ticket_comment,
+    notify_ticket_problem_link,
+    notify_ticket_status_change,
+    resolve_ticket_recipients,
+)
 from app.services.automation_webhooks import trigger_critical_ticket_detected
 
 logger = logging.getLogger(__name__)
@@ -250,18 +258,6 @@ def get_ticket_for_user(db: Session, ticket_id: str, user: User) -> Ticket | Non
     return ticket
 
 
-def _next_ticket_id(db: Session) -> str:
-    ids = [t[0] for t in db.query(Ticket.id).all()]
-    max_num = 1000
-    for tid in ids:
-        try:
-            num = int(tid.split("-")[-1])
-            max_num = max(max_num, num)
-        except ValueError:
-            continue
-    return f"TW-{max_num + 1}"
-
-
 def _next_comment_id(db: Session) -> str:
     ids = [row[0] for row in db.query(TicketComment.id).all()]
     max_num = 0
@@ -286,16 +282,29 @@ def _enum_value(value: Any) -> Any:
     return value
 
 
+def _history_value(value: Any) -> Any:
+    normalized = _enum_value(value)
+    if isinstance(normalized, dt.datetime):
+        if normalized.tzinfo is None:
+            normalized = normalized.replace(tzinfo=dt.timezone.utc)
+        return normalized.astimezone(dt.timezone.utc).isoformat()
+    return normalized
+
+
 def _history_snapshot(ticket: Ticket) -> dict[str, Any]:
     return {
-        "status": _enum_value(ticket.status),
-        "priority": _enum_value(ticket.priority),
-        "category": _enum_value(ticket.category),
+        "title": ticket.title,
+        "description": ticket.description,
+        "status": _history_value(ticket.status),
+        "priority": _history_value(ticket.priority),
+        "ticket_type": _history_value(ticket.ticket_type),
+        "category": _history_value(ticket.category),
         "assignee": ticket.assignee,
         "problem_id": ticket.problem_id,
         "resolution": ticket.resolution,
         "tags": list(ticket.tags or []),
         "assignment_change_count": int(ticket.assignment_change_count or 0),
+        "due_at": _history_value(ticket.due_at),
     }
 
 
@@ -589,132 +598,6 @@ def _should_promote_to_problem(db: Session, ticket: Ticket, resolution_comment: 
     )
 
 
-def create_ticket(
-    db: Session,
-    data: TicketCreate,
-    *,
-    reporter_id: str | None = None,
-    actor: str | None = None,
-    actor_id: str | None = None,
-    actor_role: str | None = None,
-) -> Ticket:
-    from app.services.problems import link_ticket_to_problem
-    from app.services.ai import classify_ticket
-
-    now = dt.datetime.now(dt.timezone.utc)
-    auto_assignment_applied = False
-    assignee = (data.assignee or "").strip()
-    if not assignee or assignee.lower() in {"auto", "auto-assign", "auto_assign"}:
-        assignee = select_best_assignee(db, category=data.category, priority=data.priority) or ""
-        auto_assignment_applied = bool(assignee)
-    if not assignee:
-        assignee = data.reporter or "Unassigned"
-
-    predicted_priority = data.predicted_priority
-    predicted_category = data.predicted_category
-    if predicted_priority is None or predicted_category is None:
-        try:
-            ai_priority, ai_category, _recommendations = classify_ticket(data.title, data.description)
-            if predicted_priority is None:
-                predicted_priority = ai_priority
-            if predicted_category is None:
-                predicted_category = ai_category
-        except Exception:  # noqa: BLE001
-            pass
-
-    auto_priority_applied = bool(
-        data.auto_priority_applied
-        or (
-            predicted_priority is not None
-            and predicted_category is not None
-            and predicted_priority == data.priority
-            and predicted_category == data.category
-        )
-    )
-    assignment_model_version = _normalize_model_version(
-        data.assignment_model_version,
-        default="smart-v1" if auto_assignment_applied else "manual",
-    )
-    priority_model_version = _normalize_model_version(
-        data.priority_model_version,
-        default="smart-v1" if auto_priority_applied else "manual",
-    )
-
-    ticket = Ticket(
-        id=_next_ticket_id(db),
-        title=data.title,
-        description=data.description,
-        priority=data.priority,
-        category=data.category,
-        assignee=assignee,
-        reporter=data.reporter,
-        reporter_id=reporter_id,
-        auto_assignment_applied=auto_assignment_applied,
-        auto_priority_applied=auto_priority_applied,
-        assignment_model_version=assignment_model_version,
-        priority_model_version=priority_model_version,
-        predicted_priority=predicted_priority,
-        predicted_category=predicted_category,
-        assignment_change_count=0,
-        first_action_at=None,
-        resolved_at=None,
-        status=TicketStatus.open,
-        created_at=now,
-        updated_at=now,
-        tags=data.tags,
-        comments=[],
-    )
-    db.add(ticket)
-    db.flush()
-    link_ticket_to_problem(db, ticket)
-    after_snapshot = _history_snapshot(ticket)
-    _record_ticket_history(
-        db,
-        ticket_id=ticket.id,
-        event_type=HISTORY_EVENT_CREATE,
-        actor=actor or data.reporter,
-        after_snapshot=after_snapshot,
-        meta={
-            "action": "created",
-            "actor_id": actor_id or reporter_id,
-            "actor_role": actor_role,
-            "changes": [
-                {
-                    "field": field,
-                    "before": None,
-                    "after": value,
-                }
-                for field, value in after_snapshot.items()
-            ],
-        },
-    )
-    db.commit()
-    db.refresh(ticket)
-
-    if ticket.priority == TicketPriority.critical:
-        recipients = resolve_ticket_recipients(db, ticket=ticket, include_admins=True)
-        create_notifications_for_users(
-            db,
-            users=recipients,
-            title=f"Critical ticket detected: {ticket.id}",
-            body=ticket.title,
-            severity="critical",
-            link=f"/tickets/{ticket.id}",
-            source="n8n",
-            cooldown_minutes=20,
-        )
-        db.commit()
-
-    # Best-effort outbound sync: local creation succeeds even if Jira push fails.
-    if not ticket.external_id:
-        ensure_jira_link_for_ticket(db, ticket)
-
-    trigger_critical_ticket_detected(db, ticket)
-
-    logger.info("Ticket created: %s", ticket.id)
-    return ticket
-
-
 def update_status(
     db: Session,
     ticket_id: str,
@@ -736,6 +619,7 @@ def update_status(
     normalized_comment = (resolution_comment or "").strip()
     has_resolution = bool((ticket.resolution or "").strip())
     previous_status = ticket.status
+    previous_problem_id = ticket.problem_id
 
     if status == TicketStatus.resolved and not normalized_comment:
         raise ValueError("resolution_comment_required")
@@ -808,6 +692,25 @@ def update_status(
         )
     db.commit()
     db.refresh(ticket)
+    if status_changed:
+        notify_ticket_status_change(
+            db,
+            ticket=ticket,
+            previous_status=getattr(previous_status, "value", previous_status),
+            actor=actor,
+            comment_id=comment_id,
+        )
+    if normalized_comment and (not status_changed or "@" in normalized_comment):
+        notify_ticket_comment(
+            db,
+            ticket=ticket,
+            comment_text=normalized_comment,
+            comment_id=comment_id,
+            actor=actor,
+        )
+    if ticket.problem_id and ticket.problem_id != previous_problem_id:
+        notify_ticket_problem_link(db, ticket=ticket, problem_id=ticket.problem_id)
+    db.commit()
     jira_ready = bool(str(ticket.jira_key or "").strip()) or ensure_jira_link_for_ticket(db, ticket)
     if jira_ready:
         try:
@@ -823,7 +726,7 @@ def update_status(
             logger.warning("Jira outbound update failed after status change for %s: %s", ticket.id, exc)
         if comment_to_sync:
             try:
-                add_jira_comment_for_ticket(ticket, comment_to_sync)
+                add_jira_comment_for_ticket(ticket, comment_to_sync, author_name=actor)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Jira comment sync failed after status change for %s: %s", ticket.id, exc)
         try:
@@ -853,6 +756,17 @@ def update_ticket_triage(
     before_snapshot = _history_snapshot(ticket)
     now = dt.datetime.now(dt.timezone.utc)
     has_changes = False
+    provided_fields = set(getattr(payload, "model_fields_set", set()))
+    previous_assignee = ticket.assignee
+    previous_problem_id = ticket.problem_id
+
+    if payload.title is not None and payload.title != ticket.title:
+        ticket.title = payload.title
+        has_changes = True
+
+    if payload.description is not None and payload.description != ticket.description:
+        ticket.description = payload.description
+        has_changes = True
 
     if payload.assignee and payload.assignee != ticket.assignee:
         ticket.assignee = payload.assignee
@@ -863,8 +777,16 @@ def update_ticket_triage(
         ticket.priority = payload.priority
         has_changes = True
 
+    if payload.ticket_type and payload.ticket_type != ticket.ticket_type:
+        ticket.ticket_type = payload.ticket_type
+        has_changes = True
+
     if payload.category and payload.category != ticket.category:
         ticket.category = payload.category
+        has_changes = True
+
+    if "due_at" in provided_fields and payload.due_at != ticket.due_at:
+        ticket.due_at = payload.due_at
         has_changes = True
 
     note = (payload.comment or "").strip()
@@ -914,6 +836,24 @@ def update_ticket_triage(
     )
     db.commit()
     db.refresh(ticket)
+    if payload.assignee and payload.assignee != previous_assignee:
+        notify_ticket_assignment_change(
+            db,
+            ticket=ticket,
+            previous_assignee=previous_assignee,
+            actor=actor,
+        )
+    if note:
+        notify_ticket_comment(
+            db,
+            ticket=ticket,
+            comment_text=note,
+            comment_id=comment_id,
+            actor=actor,
+        )
+    if ticket.problem_id and ticket.problem_id != previous_problem_id:
+        notify_ticket_problem_link(db, ticket=ticket, problem_id=ticket.problem_id)
+    db.commit()
     jira_ready = bool(str(ticket.jira_key or "").strip()) or ensure_jira_link_for_ticket(db, ticket)
     if jira_ready:
         try:
@@ -929,7 +869,7 @@ def update_ticket_triage(
             logger.warning("Jira outbound update failed after triage change for %s: %s", ticket.id, exc)
         if comment_to_sync:
             try:
-                add_jira_comment_for_ticket(ticket, comment_to_sync)
+                add_jira_comment_for_ticket(ticket, comment_to_sync, author_name=actor)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Jira comment sync failed after triage change for %s: %s", ticket.id, exc)
         try:
@@ -1113,18 +1053,26 @@ def compute_assignment_performance(
     classified = [
         t
         for t in tickets
-        if t.predicted_priority is not None or t.predicted_category is not None
+        if (
+            getattr(t, "predicted_priority", None) is not None
+            or getattr(t, "predicted_ticket_type", None) is not None
+            or getattr(t, "predicted_category", None) is not None
+        )
     ]
     classification_samples = len(classified)
     classification_correct = 0
     for ticket in classified:
         checks = 0
         matches = 0
-        if ticket.predicted_priority is not None:
+        if getattr(ticket, "predicted_priority", None) is not None:
             checks += 1
             if ticket.predicted_priority == ticket.priority:
                 matches += 1
-        if ticket.predicted_category is not None:
+        if getattr(ticket, "predicted_ticket_type", None) is not None:
+            checks += 1
+            if ticket.predicted_ticket_type == ticket.ticket_type:
+                matches += 1
+        if getattr(ticket, "predicted_category", None) is not None:
             checks += 1
             if ticket.predicted_category == ticket.category:
                 matches += 1
@@ -1189,6 +1137,10 @@ def compute_assignment_performance(
         if ticket.predicted_priority is not None:
             predicted_checks += 1
             if ticket.predicted_priority == ticket.priority:
+                predicted_matches += 1
+        if ticket.predicted_ticket_type is not None:
+            predicted_checks += 1
+            if ticket.predicted_ticket_type == ticket.ticket_type:
                 predicted_matches += 1
         if ticket.predicted_category is not None:
             predicted_checks += 1
@@ -1336,6 +1288,21 @@ def compute_category_breakdown(tickets: list[Ticket]) -> list[dict]:
     ]
 
 
+def compute_type_breakdown(tickets: list[Ticket]) -> list[dict]:
+    ticket_types = [
+        TicketType.incident,
+        TicketType.service_request,
+    ]
+    labels = {
+        TicketType.incident: "Incident",
+        TicketType.service_request: "Service request",
+    }
+    return [
+        {"ticket_type": labels[ticket_type], "count": sum(1 for ticket in tickets if ticket.ticket_type == ticket_type)}
+        for ticket_type in ticket_types
+    ]
+
+
 def compute_priority_breakdown(tickets: list[Ticket]) -> list[dict]:
     priorities = [
         TicketPriority.critical,
@@ -1432,11 +1399,13 @@ def _priority_rank(priority: TicketPriority) -> int:
 def _ticket_insight_payload(ticket: Ticket, *, now: dt.datetime) -> dict:
     created = analytics_created_at(ticket)
     updated = analytics_updated_at(ticket)
+    ticket_type = ticket.ticket_type or TicketType.service_request
     return {
         "id": ticket.id,
         "title": ticket.title,
         "priority": ticket.priority.value,
         "status": ticket.status.value,
+        "ticket_type": ticket_type.value,
         "category": ticket.category.value,
         "assignee": ticket.assignee,
         "created_at": created.isoformat(),

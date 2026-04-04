@@ -168,7 +168,7 @@
       "parameters": {
         "width": 600,
         "height": 260,
-        "content": "## Alert Fan-out\nFor each SLA-risk ticket, send Email notifications."
+        "content": "## Alert Fan-out\nFor each SLA-risk ticket, send Email notifications and a best-effort Microsoft Teams alert."
       },
       "id": "sla-note-alert",
       "name": "Sticky Alerts",
@@ -219,6 +219,53 @@
     },
     {
       "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TEAMS_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => { const ticketId = $json.id || $json.ticket_id || 'N/A'; const priority = String($json.priority || 'Normal').trim(); const slaState = String($json.sla_status || 'unknown').trim(); const title = $json.title || 'Untitled ticket'; const status = $json.status || 'N/A'; const assignee = $json.assignee || 'Unassigned'; const ticketUrl = $json.ticket_url || (($env.FRONTEND_BASE_URL || 'http://localhost:3000') + '/tickets/' + ticketId); const severity = slaState === 'breached' || priority.toLowerCase() === 'critical' ? 'Critical' : 'High'; const themeColor = severity === 'Critical' ? 'C62828' : 'EF6C00'; const slaInfo = $json.sla_remaining_human || ($json.sla_remaining_minutes !== undefined ? ($json.sla_remaining_minutes + ' minute(s)') : ($json.sla_due_at ? ('until ' + $json.sla_due_at) : 'Not available')); return { '@type': 'MessageCard', '@context': 'https://schema.org/extensions', summary: `ITSM SLA alert - ${ticketId}`, themeColor, title: `${severity} SLA ${slaState === 'breached' ? 'Breach' : 'Risk'} Ticket`, sections: [{ activityTitle: `${ticketId} - ${title}`, text: `[Open ticket](${ticketUrl})`, facts: [{ name: 'Ticket', value: ticketId }, { name: 'Status', value: status }, { name: 'Priority', value: priority || 'N/A' }, { name: 'Assignee', value: assignee }, { name: 'SLA State', value: slaState || 'unknown' }, { name: 'SLA Info', value: slaInfo }], markdown: true }], potentialAction: [{ '@type': 'OpenUri', 'name': 'Open Ticket', targets: [{ os: 'default', uri: ticketUrl }] }] }; })() }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "sla-teams",
+      "name": "Send SLA Teams Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2120,
+        440
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = {\n  workflow: 'SLA Breach Alerting',\n  channel: 'teams',\n  timestamp: new Date().toISOString(),\n  route: $json.error ? 'error' : 'ok',\n  status: $json.statusCode || null,\n  error: $json.error || null,\n  response: $json.body || $json.data || null,\n};\nif (payload.route === 'error') {\n  console.error('[n8n][sla-breach-alerting][teams]', JSON.stringify(payload));\n} else {\n  console.log('[n8n][sla-breach-alerting][teams]', JSON.stringify(payload));\n}\nreturn [{ json: payload }];"
+      },
+      "id": "sla-teams-log",
+      "name": "Log Teams Delivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2360,
+        440
+      ]
+    },
+    {
+      "parameters": {
         "width": 540,
         "height": 250,
         "content": "## Error Handling\nAny failed backend/notification node is routed to this logger branch."
@@ -244,6 +291,44 @@
         920,
         640
       ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.ITSM_BASE_URL || 'http://host.docker.internal:8000') + '/api/notifications/system' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Automation-Secret",
+              "value": "={{ $env.AUTOMATION_SECRET }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => { const ticketId = $json.id || $json.ticket_id || 'N/A'; const slaState = String($json.sla_status || 'at_risk').trim(); const severity = slaState === 'breached' ? 'critical' : 'warning'; const eventType = slaState === 'breached' ? 'sla_breached' : 'sla_at_risk'; const title = 'SLA ' + (slaState === 'breached' ? 'Breach' : 'Risk') + ' : ' + ticketId; const body = ($json.title || ('Ticket ' + ticketId)) + ' — SLA ' + slaState + ', priority ' + ($json.priority || 'N/A') + ', assigned to ' + ($json.assignee || 'N/A'); return { title, body, severity, event_type: eventType, user_id: null, source: 'n8n_workflow', link: '/tickets/' + ticketId, dedupe_key: 'sla_' + slaState + '_' + ticketId + '_' + new Date().toISOString().slice(0, 13) }; })() }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "sla-create-notification",
+      "name": "Create In-App SLA Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2120,
+        280
+      ],
+      "continueOnFail": true
     }
   ],
   "connections": {
@@ -347,7 +432,29 @@
             "index": 0
           }
         ],
-        []
+        [
+          {
+            "node": "Send SLA Teams Message",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Create In-App SLA Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send SLA Teams Message": {
+      "main": [
+        [
+          {
+            "node": "Log Teams Delivery",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     }
   },

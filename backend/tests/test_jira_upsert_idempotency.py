@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.integrations.jira import service
-from app.models.enums import TicketCategory, TicketPriority, TicketStatus
+from app.models.enums import TicketCategory, TicketPriority, TicketStatus, TicketType
 from app.services import problems as problems_service
 
 
@@ -124,7 +124,7 @@ def test_upsert_ticket_applies_ai_category_for_unknown_jsm_issue_type(monkeypatc
     monkeypatch.setattr(
         service,
         "classify_ticket",
-        lambda title, description: (TicketPriority.high, TicketCategory.network, ["rec"]),
+        lambda title, description: (TicketPriority.high, TicketType.incident, TicketCategory.network, ["rec"]),
     )
 
     issue = {
@@ -152,5 +152,7 @@ def test_upsert_ticket_applies_ai_category_for_unknown_jsm_issue_type(monkeypatc
     assert ticket.status == TicketStatus.open
     assert ticket.category == TicketCategory.network
     assert ticket.priority == TicketPriority.medium
+    assert ticket.ticket_type == TicketType.service_request
     assert ticket.predicted_category == TicketCategory.network
     assert ticket.predicted_priority == TicketPriority.high
+    assert ticket.predicted_ticket_type == TicketType.incident

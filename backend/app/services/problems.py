@@ -21,7 +21,11 @@ from app.schemas.problem import ProblemUpdate
 from app.services.ai import classify_ticket, score_recommendations
 from app.services.automation_webhooks import trigger_problem_detected
 from app.services.embeddings import compute_embedding
-from app.services.notifications_service import create_notifications_for_users, resolve_problem_recipients
+from app.services.notifications_service import (
+    EVENT_PROBLEM_CREATED,
+    create_notifications_for_users,
+    resolve_problem_recipients,
+)
 from app.services.tickets import select_best_assignee, update_status
 from app.services.users import list_assignees
 
@@ -251,6 +255,11 @@ def _ticket_similarity_text(ticket: Ticket) -> str:
     return normalize_text(f"{ticket.title} {ticket.description} {tags}")
 
 
+def _ticket_similarity_semantic_text(ticket: Ticket) -> str:
+    # Keep semantic similarity focused on user-visible problem signal text.
+    return normalize_text(f"{ticket.title} {ticket.description}")
+
+
 def _problem_similarity_tokens(problem: Problem, linked_tickets: list[Ticket]) -> set[str]:
     tokens = _extract_similarity_tokens(problem.similarity_key)
     tokens.update(_normalize_tokens(problem.title))
@@ -382,15 +391,31 @@ def find_similar_tickets(
     limit: int = 5,
     min_score: float = 0.3,
     require_semantic: bool = False,
+    semantic_only: bool = False,
 ) -> list[tuple[Ticket, float]]:
-    """Rank similar tickets using the same hybrid lexical+semantic score used for Problem detection."""
+    """Rank similar tickets for ticket detail lookup.
+
+    - `semantic_only=True`: category-gated semantic similarity using title+description only.
+    - otherwise: existing hybrid lexical+semantic score.
+    """
     ranked: list[tuple[Ticket, float]] = []
+    query_semantic_text = _ticket_similarity_semantic_text(ticket) if semantic_only else ""
     for candidate in candidates:
         if candidate.id == ticket.id:
             continue
-        _, semantic, score = _ticket_pair_similarity_components(ticket, candidate)
-        if require_semantic and semantic is None:
-            continue
+
+        if semantic_only:
+            if ticket.category != candidate.category:
+                continue
+            semantic = _semantic_similarity(query_semantic_text, _ticket_similarity_semantic_text(candidate))
+            if semantic is None:
+                continue
+            score = semantic
+        else:
+            _, semantic, score = _ticket_pair_similarity_components(ticket, candidate)
+            if require_semantic and semantic is None:
+                continue
+
         if score < min_score:
             continue
         ranked.append((candidate, score))
@@ -686,7 +711,11 @@ def link_ticket_to_problem(db: Session, ticket: Ticket) -> Problem | None:
             metadata_json={
                 "workflow_name": "problem_linking_detector",
                 "trigger_ticket_id": ticket.id,
+                "problem_id": problem.id,
             },
+            action_type="view",
+            action_payload={"problem_id": problem.id},
+            event_type=EVENT_PROBLEM_CREATED,
         )
         trigger_problem_detected(db, problem)
     return problem
@@ -840,6 +869,10 @@ def upsert_problem(db: Session, *, similarity_key: str, tickets: list[Ticket]) -
             link=f"/problems/{problem.id}",
             source="n8n",
             cooldown_minutes=30,
+            metadata_json={"problem_id": problem.id},
+            action_type="view",
+            action_payload={"problem_id": problem.id},
+            event_type=EVENT_PROBLEM_CREATED,
         )
         db.commit()
         trigger_problem_detected(db, problem)
@@ -1121,7 +1154,7 @@ def build_problem_ai_suggestions(db: Session, problem: Problem, *, tickets: list
         " ".join((ticket.title or "") for ticket in linked[:6]),
     ]
     description = " ".join(part for part in description_parts if part).strip()
-    _, _, ai_recommendations = classify_ticket(problem.title, description or problem.title)
+    _, _, _, ai_recommendations = classify_ticket(problem.title, description or problem.title)
     ai_scored = score_recommendations(
         ai_recommendations,
         start_confidence=80,

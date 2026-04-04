@@ -6,7 +6,6 @@ import { AppShell } from "@/components/app-shell"
 import { TicketTable } from "@/components/ticket-table"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { PlusCircle } from "lucide-react"
 import Link from "next/link"
 import { type Ticket } from "@/lib/ticket-data"
 import { useAuth } from "@/lib/auth"
@@ -24,6 +23,18 @@ export default function TicketsPage() {
   }, [])
 
   const view = (searchParams.get("view") || "").toLowerCase()
+  const ticketTypeParam = (searchParams.get("ticketType") || "").toLowerCase()
+  const initialSearch = searchParams.get("q") || ""
+  const resolvedTicketType =
+    view === "incident"
+      ? "incident"
+      : view === "service-request" || view === "service_request"
+        ? "service_request"
+        : ticketTypeParam === "incident"
+          ? "incident"
+          : ticketTypeParam === "service-request" || ticketTypeParam === "service_request"
+            ? "service_request"
+            : "all"
   const focusConfig = (() => {
     if (view === "in-progress") {
       return {
@@ -93,6 +104,27 @@ export default function TicketsPage() {
         label: t("tickets.focusTotal"),
         status: "all",
         priority: "all",
+        ticketType: "all",
+        category: "all",
+        staleDays: 0,
+      }
+    }
+    if (resolvedTicketType === "incident") {
+      return {
+        label: ticketTypeFocusLabel("incident", t),
+        status: "all",
+        priority: "all",
+        ticketType: "incident",
+        category: "all",
+        staleDays: 0,
+      }
+    }
+    if (resolvedTicketType === "service_request") {
+      return {
+        label: ticketTypeFocusLabel("service_request", t),
+        status: "all",
+        priority: "all",
+        ticketType: "service_request",
         category: "all",
         staleDays: 0,
       }
@@ -114,14 +146,6 @@ export default function TicketsPage() {
                 {t("tickets.subtitle")}
               </p>
             </div>
-            {hasPermission("create_ticket") && (
-              <Link href="/tickets/new">
-                <Button className="h-11 gap-2 rounded-xl bg-primary px-5 text-primary-foreground shadow-sm hover:bg-primary/90">
-                  <PlusCircle className="h-4 w-4" />
-                  {t("tickets.new")}
-                </Button>
-              </Link>
-            )}
           </div>
         </div>
 
@@ -149,10 +173,22 @@ export default function TicketsPage() {
           tickets={tickets}
           initialStatusFilter={focusConfig?.status ?? "all"}
           initialPriorityFilter={focusConfig?.priority ?? "all"}
+          initialTicketTypeFilter={focusConfig?.ticketType ?? resolvedTicketType}
           initialCategoryFilter={focusConfig?.category ?? "all"}
+          initialSearch={initialSearch}
           minInactiveDays={focusConfig?.staleDays ?? 0}
         />
       </div>
     </AppShell>
   )
+}
+
+function ticketTypeFocusLabel(
+  ticketType: "incident" | "service_request",
+  t: (key: "type.incident" | "type.service_request") => string
+): string {
+  if (ticketType === "incident") {
+    return t("type.incident")
+  }
+  return t("type.service_request")
 }

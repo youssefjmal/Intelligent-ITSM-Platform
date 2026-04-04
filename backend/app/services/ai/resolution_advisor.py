@@ -3,10 +3,31 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+from app.services.ai.calibration import (
+    ADVISOR_ACTIONABILITY_WEIGHTS,
+    ADVISOR_ACTION_ALIGNMENT_WEIGHTS,
+    ADVISOR_ALIGNMENT_THRESHOLDS,
+    ADVISOR_CAUSE_CONFIRMATION,
+    ADVISOR_CONFIDENCE_WEIGHTS,
+    ADVISOR_EVIDENCE_BASE_WEIGHTS as _EVIDENCE_BASE_WEIGHTS,
+    ADVISOR_FALLBACK_CONFIDENCE,
+    ADVISOR_RELEVANCE_WEIGHTS,
+    ADVISOR_SOURCE_LABEL_BONUS as _SOURCE_LABEL_BONUS,
+    CONFIDENCE_HIGH_THRESHOLD,
+    CONFIDENCE_MEDIUM_THRESHOLD,
+    DISPLAY_MODE_LLM_GENERAL as _DISPLAY_MODE_LLM_GENERAL,
+    LLM_GENERAL_ADVISORY_CONFIDENCE as _LLM_ADVISORY_CONFIDENCE,
+    confidence_band,
+)
+from app.services.ai.action_refiner import generate_low_trust_incident_actions
+
+log = logging.getLogger(__name__)
 from app.services.ai.retrieval import (
     candidate_topic_signature,
     cluster_evidence,
@@ -15,6 +36,202 @@ from app.services.ai.retrieval import (
     score_candidate_coherence,
     select_primary_cluster,
 )
+from app.services.ai.taxonomy import (
+    ACTION_HINTS as _ACTION_HINTS,
+    CATEGORY_HINTS as _CATEGORY_HINTS,
+    HIGH_SIGNAL_VOCAB as _HIGH_SIGNAL_VOCAB,
+    LOW_SIGNAL_TOKENS as _LOW_SIGNAL_TOKENS,
+    OUTCOME_HINTS as _OUTCOME_HINTS,
+    TOPIC_HINTS as _TOPIC_HINTS,
+    TOPIC_VOCAB as _TOPIC_VOCAB,
+)
+from app.services.ai.topic_templates import (
+    topic_grounded_action_reasons,
+    topic_grounded_action_templates,
+    topic_safe_diagnostic_action,
+    topic_supporting_context,
+    topic_validation_actions,
+    topic_validation_step,
+)
+
+@dataclass
+class LLMGeneralAdvisory:
+    """Advisory produced from LLM general IT knowledge when local evidence
+    is insufficient to ground a specific recommendation.
+
+    This is the lowest-trust output mode in the system.  It sits below
+    tentative_diagnostic in the evidence hierarchy and must never be
+    visually promoted above it in the frontend.
+
+    This dataclass is only populated when:
+    1. The retrieval pipeline returned no dominant cluster.
+    2. display_mode would otherwise be no_strong_match.
+    3. The LLM call succeeded and returned parseable output.
+
+    Fields:
+        probable_causes: 2-3 common causes for this category of issue,
+            stated as possibilities, never as confirmed facts.
+        suggested_checks: 2-4 diagnostic steps ordered from least
+            invasive to most invasive.
+        escalation_hint: Present only when priority is critical or high.
+            Suggests when to escalate rather than continue diagnosing.
+        knowledge_source: Always "llm_general_knowledge".  Used by the
+            frontend to select the correct visual treatment and to ensure
+            the Apply button is never shown on this card type.
+        confidence: Always 0.25.  Fixed — never inferred from LLM output.
+            General knowledge is never as reliable as local evidence.
+        language: Language the response was generated in ("fr" or "en").
+    """
+
+    probable_causes: list[str]
+    suggested_checks: list[str]
+    escalation_hint: str | None
+    knowledge_source: str = "llm_general_knowledge"
+    confidence: float = _LLM_ADVISORY_CONFIDENCE
+    language: str = "fr"
+
+
+def _extract_concurrent_families(candidate_clusters: list[dict[str, Any]]) -> list[str]:
+    """Extract topic families that were detected in retrieval but had no dominant cluster.
+
+    Used to pass ambiguity context to the LLM general advisory prompt so the
+    LLM can acknowledge that multiple domains were detected.
+
+    Args:
+        candidate_clusters: List of cluster dicts from _build_candidate_clusters().
+            Each dict may contain ``dominant_topic``, ``cluster_id``, and
+            ``signature_terms`` keys.  May be empty if retrieval returned no
+            candidates.
+
+    Returns:
+        List of up to 5 family/topic strings, deduplicated, excluding the
+        generic placeholder "generic".  Empty list if the input is empty or
+        all entries are generic.
+    """
+    families: list[str] = []
+    seen: set[str] = set()
+    for cluster in (candidate_clusters or []):
+        topic = str(cluster.get("dominant_topic") or cluster.get("cluster_id") or "").strip().lower()
+        if topic and topic != "generic" and topic not in seen:
+            seen.add(topic)
+            families.append(topic)
+    return families[:5]
+
+
+def build_llm_general_advisory(
+    ticket_title: str,
+    ticket_description: str,
+    ticket_category: str,
+    ticket_priority: str,
+    attempted_steps: list[str],
+    concurrent_families: list[str],
+    language: str = "fr",
+) -> LLMGeneralAdvisory | None:
+    """Call the LLM to produce a general-knowledge advisory when local
+    evidence retrieval returns no dominant cluster.
+
+    This function is the ONLY entry point for the LLM general advisory path.
+    It enforces:
+    - Fixed confidence of 0.25 regardless of LLM response content.
+    - knowledge_source always set to "llm_general_knowledge".
+    - Safe JSON parsing via json.loads() only — no ast.literal_eval().
+    - Graceful None return on any failure — caller must handle None.
+
+    The LLM output is validated before returning:
+    - probable_causes must be a non-empty list.
+    - suggested_checks must be a non-empty list.
+    - Any item from attempted_steps found in suggested_checks is removed.
+    - confidence is always overwritten to _LLM_ADVISORY_CONFIDENCE after parsing.
+
+    Args:
+        ticket_title: Ticket title.
+        ticket_description: Ticket description (truncated to 600 chars
+            inside the prompt builder to avoid context overflow).
+        ticket_category: IT category string.
+        ticket_priority: Priority string.
+        attempted_steps: Already-tried steps to exclude from output.
+        concurrent_families: Topic families from retrieval with no dominant
+            cluster.  Passed to the prompt for context.
+        language: Response language, "fr" or "en".  Defaults to "fr".
+
+    Returns:
+        LLMGeneralAdvisory if the LLM call succeeds and output is valid.
+        None if the LLM is unavailable, times out, returns unparseable
+        output, or returns empty lists for required fields.
+        Caller must degrade gracefully when None is returned.
+
+    Edge cases:
+        - Returns None (not raises) on any exception, including network errors.
+        - Empty string from LLM returns None.
+        - JSON arrays / scalars instead of a dict return None.
+        - escalation_hint is forced to None when empty string is returned.
+    """
+    from app.services.ai.llm import ollama_generate, extract_json
+    from app.services.ai.prompts import build_general_advisory_prompt
+
+    try:
+        system_prompt, user_prompt = build_general_advisory_prompt(
+            ticket_title=ticket_title,
+            ticket_description=ticket_description,
+            ticket_category=ticket_category,
+            ticket_priority=ticket_priority,
+            attempted_steps=attempted_steps,
+            concurrent_families=concurrent_families,
+            language=language,
+        )
+        # Combine system + user prompt into a single string for ollama_generate.
+        combined_prompt = f"{system_prompt}\n\n{user_prompt}"
+        raw = ollama_generate(combined_prompt, json_mode=True)
+
+        if not raw:
+            log.warning("build_llm_general_advisory: LLM returned empty response")
+            return None
+
+        parsed = extract_json(raw)
+        if not isinstance(parsed, dict):
+            log.warning(
+                "build_llm_general_advisory: could not parse LLM output as dict. "
+                "First 120 chars: %s",
+                raw[:120],
+            )
+            return None
+
+        probable_causes = parsed.get("probable_causes") or []
+        suggested_checks = parsed.get("suggested_checks") or []
+        escalation_hint = parsed.get("escalation_hint") or None
+
+        if not isinstance(probable_causes, list):
+            log.warning("build_llm_general_advisory: probable_causes is not a list")
+            return None
+        if not isinstance(suggested_checks, list):
+            log.warning("build_llm_general_advisory: suggested_checks is not a list")
+            return None
+
+        # Remove any attempted steps that leaked into suggested_checks.
+        if attempted_steps:
+            attempted_lower = {s.lower() for s in attempted_steps}
+            suggested_checks = [
+                s for s in suggested_checks
+                if not any(a in s.lower() for a in attempted_lower)
+            ]
+
+        # Normalise escalation_hint: blank string → None.
+        if isinstance(escalation_hint, str) and not escalation_hint.strip():
+            escalation_hint = None
+
+        return LLMGeneralAdvisory(
+            probable_causes=[str(c) for c in probable_causes[:3]],
+            suggested_checks=[str(c) for c in suggested_checks[:4]],
+            escalation_hint=str(escalation_hint) if escalation_hint else None,
+            knowledge_source="llm_general_knowledge",
+            confidence=_LLM_ADVISORY_CONFIDENCE,  # always fixed, never from LLM
+            language=language,
+        )
+
+    except Exception:  # noqa: BLE001
+        log.warning("build_llm_general_advisory: unexpected error", exc_info=True)
+        return None
+
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_\-]{2,}", re.IGNORECASE)
 _STOPWORDS = {
@@ -33,163 +250,6 @@ _STOPWORDS = {
     "category",
     "ticket_type",
 }
-_CATEGORY_HINTS = {
-    "network": {"network", "vpn", "dns", "router", "switch", "wifi"},
-    "security": {"security", "auth", "token", "access", "iam", "certificate", "sso"},
-    "application": {"application", "app", "export", "import", "csv", "report", "parser", "format", "date", "workbook", "payroll"},
-    "hardware": {"hardware", "laptop", "printer", "device", "keyboard", "dock", "monitor", "mouse", "usb"},
-    "email": {"email", "mail", "smtp", "outlook", "mailbox", "relay", "connector", "queue"},
-}
-_LOW_SIGNAL_TOKENS = {
-    "issue",
-    "issues",
-    "service",
-    "services",
-    "problem",
-    "problems",
-    "failed",
-    "failure",
-    "update",
-    "updates",
-    "updated",
-    "system",
-    "systems",
-    "error",
-    "errors",
-    "stuck",
-    "stalled",
-    "queue",
-}
-_TOPIC_HINTS = {
-    "crm_integration": {
-        "crm",
-        "sync",
-        "integration",
-        "worker",
-        "scheduler",
-        "job",
-        "token",
-        "oauth",
-        "credential",
-        "secret",
-        "requeue",
-        "pipeline",
-        "contact",
-        "contacts",
-    },
-    "mail_transport": {
-        "mail",
-        "email",
-        "smtp",
-        "relay",
-        "transport",
-        "delivery",
-        "mailbox",
-        "forwarding",
-        "connector",
-        "deferred",
-        "queue",
-        "outbound",
-    },
-    "payroll_export": {
-        "payroll",
-        "export",
-        "csv",
-        "date",
-        "formatter",
-        "format",
-        "parser",
-        "parsing",
-        "serializer",
-        "serialization",
-        "workbook",
-        "import",
-    },
-    "network_access": {
-        "vpn",
-        "dns",
-        "route",
-        "routing",
-        "gateway",
-        "mfa",
-        "wifi",
-        "remote",
-        "split",
-        "tunnel",
-        "subnet",
-        "reconnect",
-    },
-    "database_data": {
-        "database",
-        "postgres",
-        "postgresql",
-        "sql",
-        "query",
-        "table",
-        "index",
-        "migration",
-        "schema",
-    },
-    "notification_distribution": {
-        "notification",
-        "distribution",
-        "recipient",
-        "recipients",
-        "approval",
-        "manager",
-        "managers",
-        "notice",
-        "notices",
-    },
-}
-_TOPIC_VOCAB = {token for hints in _TOPIC_HINTS.values() for token in hints}
-_HIGH_SIGNAL_VOCAB = _TOPIC_VOCAB.union(
-    {
-        token
-        for hints in _CATEGORY_HINTS.values()
-        for token in hints
-        if token not in _LOW_SIGNAL_TOKENS
-    }
-)
-_ACTION_HINTS = (
-    "restart",
-    "reboot",
-    "reset",
-    "clear",
-    "flush",
-    "recreate",
-    "rebuild",
-    "update",
-    "patch",
-    "rollback",
-    "replace",
-    "renew",
-    "reinstall",
-    "rotate",
-    "restore",
-    "enable",
-    "disable",
-    "unlock",
-    "remove",
-    "add",
-    "assign",
-    "sync",
-    "reimport",
-    "import",
-    "apply",
-    "switch",
-    "move",
-    "increase",
-    "decrease",
-    "whitelist",
-    "allowlist",
-    "reconfigure",
-    "redeploy",
-    "correct",
-    "align",
-    "realign",
-    "drain",
-)
 _GENERIC_HINTS = (
     "follow best practices",
     "contact support",
@@ -208,7 +268,6 @@ _GENERIC_HINTS = (
     "review the problem",
     "check the problem",
 )
-_OUTCOME_HINTS = ("resolved", "fixed", "restored", "worked", "mitigated", "verified", "closed")
 _GENERIC_ACTION_VERBS = {
     "check",
     "verify",
@@ -291,21 +350,6 @@ _ACTION_VERB_MAP = {
     "validated": "validate",
     "verified": "verify",
 }
-_EVIDENCE_BASE_WEIGHTS = {
-    "resolved ticket": 0.4,
-    "similar ticket": 0.34,
-    "KB article": 0.3,
-    "comment": 0.26,
-    "related problem": 0.22,
-}
-_SOURCE_LABEL_BONUS = {
-    "hybrid_jira_local": 0.03,
-    "jira_semantic": 0.025,
-    "local_semantic": 0.02,
-    "local_lexical": 0.015,
-    "kb_empty": -0.05,
-    "fallback_rules": -0.06,
-}
 _MODE_BY_EVIDENCE = {
     "resolved ticket": "resolved_ticket_grounded",
     "similar ticket": "evidence_grounded",
@@ -313,9 +357,6 @@ _MODE_BY_EVIDENCE = {
     "comment": "comment_grounded",
     "related problem": "evidence_grounded",
 }
-_LOW_CONFIDENCE_THRESHOLD = 0.56
-_ACTION_RELEVANCE_THRESHOLD = 0.22
-_HARD_ACTION_RELEVANCE_THRESHOLD = 0.18
 _NO_STRONG_MATCH_DISPLAY = "no_strong_match"
 _TENTATIVE_DIAGNOSTIC_DISPLAY = "tentative_diagnostic"
 _EVIDENCE_ACTION_DISPLAY = "evidence_action"
@@ -328,6 +369,121 @@ _ACTIVE_TICKET_STATUSES = {
     "waiting_for_support_vendor",
     "waiting-for-support-vendor",
     "pending",
+}
+_TOPIC_DOMAIN_EXPECTATIONS = {
+    "crm_integration": frozenset({"application", "infrastructure", "security"}),
+    "mail_transport": frozenset({"email"}),
+    "payroll_export": frozenset({"application"}),
+    "network_access": frozenset({"network", "security"}),
+    "database_data": frozenset({"application", "infrastructure"}),
+    "notification_distribution": frozenset({"email", "application"}),
+    "auth_path": frozenset({"security"}),
+    # webhook_rotation is only valid in application/infrastructure domains — never in network/security/VPN
+    "webhook_rotation": frozenset({"application", "infrastructure"}),
+    # scheduled_maintenance is only valid as service_request or application
+    "scheduled_maintenance": frozenset({"service_request", "application"}),
+}
+_WEAK_FAMILY_TOKENS = frozenset(
+    {
+        "token",
+        "auth",
+        "authentication",
+        "error",
+        "errors",
+        "connection",
+        "connections",
+        "access",
+        "policy",
+        "service",
+    }
+)
+_QUERY_TOPIC_SOURCE_WEIGHTS = {
+    "strong_terms": 4.0,
+    "focus_terms": 3.2,
+    "title_tokens": 2.2,
+    "tokens": 1.0,
+}
+_FAMILY_SELECTION_THRESHOLDS = {
+    "score_min": 3.0,
+    "structured_min": 2,
+    "margin_min": 0.9,
+    "high_score": 6.0,
+    "high_explicit_hits": 2,
+    "medium_score": 4.0,
+    "broad_family_score": 4.8,
+}
+_AUTH_PATH_REQUIRED_ANCHORS = frozenset({"sso", "signin", "login", "certificate", "identity"})
+_OPERATION_SIGNAL_HINTS = frozenset(
+    {
+        "sync",
+        "export",
+        "import",
+        "login",
+        "signin",
+        "route",
+        "routing",
+        "delivery",
+        "forwarding",
+        "approval",
+        "send",
+        "reconnect",
+        "query",
+    }
+)
+_CONTEXT_SIGNAL_HINTS = frozenset(
+    {
+        "rotation",
+        "rotate",
+        "rotated",
+        "update",
+        "updated",
+        "after",
+        "fails",
+        "fail",
+        "stalls",
+        "stalled",
+        "timeout",
+        "timeouts",
+        "deferred",
+        "denied",
+        "missing",
+        "expired",
+    }
+)
+_AFFECTED_OBJECT_HINTS = frozenset(
+    {
+        "token",
+        "credential",
+        "secret",
+        "certificate",
+        "route",
+        "gateway",
+        "schema",
+        "mapping",
+        "date",
+        "columns",
+        "queue",
+        "connector",
+        "recipient",
+        "workbook",
+        "contact",
+        "contacts",
+        "mailbox",
+    }
+)
+
+_TOPIC_HINT_FREQUENCY: dict[str, int] = {}
+for _topic_hints in _TOPIC_HINTS.values():
+    for _token in _topic_hints:
+        _TOPIC_HINT_FREQUENCY[_token] = _TOPIC_HINT_FREQUENCY.get(_token, 0) + 1
+
+_UNIQUE_TOPIC_HINTS = {
+    topic: frozenset(
+        token
+        for token in hints
+        if _TOPIC_HINT_FREQUENCY.get(token, 0) == 1 and token not in _LOW_SIGNAL_TOKENS and token not in _WEAK_FAMILY_TOKENS
+    )
+    for topic, hints in _TOPIC_HINTS.items()
 }
 
 
@@ -549,21 +705,21 @@ def _candidate_relevance(
     domain_mismatch = bool(row.get("domain_mismatch")) or bool(alignment["domain_mismatch"])
     topic_mismatch = bool(row.get("topic_mismatch")) or bool(alignment["topic_mismatch"])
     computed = (
-        (0.26 * float(alignment["title_overlap"]))
-        + (0.22 * float(alignment["focus_overlap"]))
-        + (0.12 * float(alignment["lexical_overlap"]))
-        + (0.22 * float(alignment["strong_overlap"]))
-        + (0.1 * float(alignment["topic_overlap"]))
+        (ADVISOR_RELEVANCE_WEIGHTS["title_overlap"] * float(alignment["title_overlap"]))
+        + (ADVISOR_RELEVANCE_WEIGHTS["entity_overlap"] * float(alignment["focus_overlap"]))
+        + (ADVISOR_RELEVANCE_WEIGHTS["noun_overlap"] * float(alignment["lexical_overlap"]))
+        + (ADVISOR_RELEVANCE_WEIGHTS["strong_overlap"] * float(alignment["strong_overlap"]))
+        + (ADVISOR_RELEVANCE_WEIGHTS["topic_overlap"] * float(alignment["topic_overlap"]))
     )
     if int(alignment["exact_strong_hits"]) >= 2:
-        computed += 0.04
+        computed += ADVISOR_RELEVANCE_WEIGHTS["strong_hit_step"]
     if topic_mismatch:
-        computed -= 0.24
+        computed -= ADVISOR_RELEVANCE_WEIGHTS["domain_mismatch_penalty"]
     if domain_mismatch:
-        computed -= 0.18
+        computed -= ADVISOR_ALIGNMENT_THRESHOLDS["hard_action_relevance"]
     row_context = float(row.get("context_score") or 0.0)
     computed = max(0.0, min(1.0, computed))
-    relevance = max(computed, min(row_context, computed + 0.12))
+    relevance = max(computed, min(row_context, computed + ADVISOR_RELEVANCE_WEIGHTS["strong_hit_cap"]))
     lexical = max(float(row.get("lexical_overlap") or 0.0), float(alignment["lexical_overlap"]))
     return round(relevance, 4), {
         "context_score": round(max(0.0, min(1.0, max(row_context, computed))), 4),
@@ -626,12 +782,12 @@ def _actionability_score(text: str) -> float:
         structure_hits += 1
 
     score = 0.0
-    score += min(0.7, action_hits * 0.2)
-    score += min(0.2, outcome_hits * 0.08)
-    score += min(0.15, structure_hits * 0.08)
-    score -= min(0.25, generic_hits * 0.12)
+    score += min(ADVISOR_ACTIONABILITY_WEIGHTS["action_hit_cap"], action_hits * ADVISOR_ACTIONABILITY_WEIGHTS["action_hit_step"])
+    score += min(ADVISOR_ACTIONABILITY_WEIGHTS["outcome_hit_cap"], outcome_hits * ADVISOR_ACTIONABILITY_WEIGHTS["outcome_hit_step"])
+    score += min(ADVISOR_ACTIONABILITY_WEIGHTS["structure_hit_cap"], structure_hits * ADVISOR_ACTIONABILITY_WEIGHTS["structure_hit_step"])
+    score -= min(ADVISOR_ACTIONABILITY_WEIGHTS["generic_penalty_cap"], generic_hits * ADVISOR_ACTIONABILITY_WEIGHTS["generic_penalty_step"])
     if len(lowered) < 20:
-        score -= 0.1
+        score -= ADVISOR_ACTIONABILITY_WEIGHTS["short_text_penalty"]
     return max(0.0, min(1.0, score))
 
 
@@ -913,6 +1069,18 @@ def build_root_cause(
     )
     if not root_cause and excerpt_root_cause_supported:
         root_cause = _extract_root_cause_text(primary.excerpt, *(item.excerpt for item in support[1:]))
+    if not root_cause and root_problem_ref is None and primary.relevance >= 0.5 and not primary.domain_mismatch and list(retrieval.get("related_problems") or []):
+        fallback_problem = next(
+            (
+                row
+                for row in list(retrieval.get("related_problems") or [])
+                if _normalize_text(row.get("root_cause")) and float(row.get("similarity_score") or 0.0) >= 0.7
+            ),
+            None,
+        )
+        if fallback_problem is not None:
+            root_cause = _truncate(_normalize_text(fallback_problem.get("root_cause")), limit=160)
+            root_problem_ref = str(fallback_problem.get("id") or fallback_problem.get("title") or "").strip() or None
     return root_cause, root_problem_ref
 
 
@@ -931,39 +1099,10 @@ def build_supporting_context(
     tokens = set(_ordered_query_terms(query_context))
     if not tokens:
         return None
-
-    if tokens.intersection({"vpn", "remote", "mfa", "gateway", "dns", "route"}) and not action_tokens.intersection(
-        {"vpn", "remote", "mfa", "gateway", "dns", "route"}
-    ):
-        return (
-            "Confirmez aussi le contexte d'acces distant, de session VPN ou de routage avant de generaliser le correctif."
-            if lang == "fr"
-            else "Also confirm the remote-access, VPN-session, or routing context before rolling the fix out more broadly."
-        )
-    if tokens.intersection({"token", "oauth", "credential", "identity", "sso", "auth", "certificate"}) and not action_tokens.intersection(
-        {"token", "oauth", "credential", "identity", "sso", "auth", "certificate"}
-    ):
-        return (
-            "Confirmez la propagation d'identite, du token ou du certificat autour du correctif principal."
-            if lang == "fr"
-            else "Confirm the surrounding identity, token, or certificate propagation after the primary fix."
-        )
-    if tokens.intersection({"export", "csv", "date", "formatter", "parser", "workbook", "payroll"}) and not action_tokens.intersection(
-        {"export", "csv", "date", "formatter", "parser", "workbook", "payroll"}
-    ):
-        return (
-            "Validez le flux d'export ou d'import de bout en bout avec un echantillon representatif."
-            if lang == "fr"
-            else "Validate the end-to-end export or import flow with a representative sample."
-        )
-    if tokens.intersection({"mail", "email", "relay", "connector", "mailbox", "forwarding", "distribution"}) and not action_tokens.intersection(
-        {"mail", "email", "relay", "connector", "mailbox", "forwarding", "distribution"}
-    ):
-        return (
-            "Confirmez aussi le contexte de routage, de distribution ou de destinataires avec un test controle."
-            if lang == "fr"
-            else "Also confirm routing, distribution, or recipient context with a controlled test."
-        )
+    for topic in ("network_access", "auth_path", "payroll_export", "mail_transport"):
+        topic_hints = set(_TOPIC_HINTS.get(topic) or [])
+        if tokens.intersection(topic_hints) and not action_tokens.intersection(topic_hints):
+            return topic_supporting_context(topic, lang=lang)
     return None
 
 
@@ -987,34 +1126,67 @@ def extract_ticket_operational_signals(
         *(candidate.excerpt for candidate in support[1:]),
         *(candidate.action_text or "" for candidate in support[1:]),
     ]
-    combined_tokens = set()
+    evidence_tokens = set()
     for text in evidence_texts:
-        combined_tokens.update(_meaningful_tokens(text))
+        evidence_tokens.update(_meaningful_tokens(text))
     matched_terms = _match_terms(query_context, *evidence_texts, limit=6)
     query_terms = _ordered_query_terms(query_context)
-    signal_tokens = combined_tokens.union(query_terms)
-    dominant_topic = next((topic for topic in list(query_context.get("topics") or []) if topic in _TOPIC_HINTS), None)
+    signal_tokens = evidence_tokens.union(query_terms)
+    evidence_topics = list(_ordered_topic_matches(evidence_tokens))
+    dominant_topic = next(
+        (
+            topic
+            for topic in list(query_context.get("topics") or [])
+            if topic in _TOPIC_HINTS and (topic == primary.cluster_id or topic in evidence_topics)
+        ),
+        None,
+    )
     if not dominant_topic and primary.cluster_id in _TOPIC_HINTS:
         dominant_topic = primary.cluster_id
     if not dominant_topic:
-        dominant_topic = next(iter(_ordered_topic_matches(signal_tokens)), None)
+        dominant_topic = next(iter(evidence_topics), None)
+    if not dominant_topic:
+        dominant_topic = next((topic for topic in list(query_context.get("topics") or []) if topic in _TOPIC_HINTS), None)
     topic_terms = list(_TOPIC_HINTS.get(dominant_topic or "", set()))
     subject = _subject_label(query_context) or ", ".join(matched_terms[:3])
     return {
         "dominant_topic": dominant_topic,
+        "dominant_topic_overlap": dominant_topic,
         "query_terms": query_terms,
         "matched_terms": matched_terms,
         "combined_tokens": signal_tokens,
+        "evidence_tokens": sorted(evidence_tokens),
         "subject": subject,
         "topic_terms": topic_terms,
         "primary_reference": primary.reference,
         "support_references": [candidate.reference for candidate in support[:3] if candidate.reference],
-        "integration_auth": bool(signal_tokens.intersection({"crm", "sync", "integration", "worker", "job", "scheduler"}) and signal_tokens.intersection({"token", "oauth", "credential", "secret", "auth", "authentication"})),
-        "export_mapping": bool(signal_tokens.intersection({"export", "csv", "date", "formatter", "parser", "serializer", "mapping", "schema", "import"})),
-        "mail_routing": bool(signal_tokens.intersection({"mail", "email", "relay", "connector", "forwarding", "distribution", "mailbox", "queue"})),
-        "network_access": bool(signal_tokens.intersection({"vpn", "route", "routing", "gateway", "dns", "remote", "tunnel", "mfa"})),
-        "auth_path": bool(signal_tokens.intersection({"auth", "authentication", "sso", "certificate", "signin", "login", "token", "policy"})),
-        "notification_distribution": bool(signal_tokens.intersection({"distribution", "notification", "recipient", "approval", "manager", "managers", "notice", "notices"})),
+        "integration_auth": bool(
+            evidence_tokens.intersection({"crm", "sync", "integration", "worker", "job", "scheduler"})
+            and evidence_tokens.intersection({"token", "oauth", "credential", "secret", "auth", "authentication"})
+        ),
+        "export_mapping": bool(
+            evidence_tokens.intersection({"export", "csv", "import", "workbook", "payroll"})
+            and evidence_tokens.intersection({"date", "formatter", "parser", "serializer", "mapping", "schema"})
+        ),
+        "mail_routing": bool(
+            evidence_tokens.intersection({"mail", "email", "relay", "connector", "mailbox"})
+            and evidence_tokens.intersection({"forwarding", "distribution", "queue", "transport", "delivery", "connector", "relay"})
+        ),
+        "network_access": bool(
+            evidence_tokens.intersection({"vpn", "remote", "tunnel", "gateway"})
+            and evidence_tokens.intersection({"route", "routing", "dns", "mfa", "policy", "session"})
+        ),
+        "auth_path": bool(
+            evidence_tokens.intersection({"auth", "authentication", "sso", "signin", "login"})
+            or (
+                evidence_tokens.intersection({"token", "certificate"})
+                and evidence_tokens.intersection({"policy", "identity", "access", "auth", "authentication"})
+            )
+        ),
+        "notification_distribution": bool(
+            evidence_tokens.intersection({"notification", "distribution", "recipient", "approval", "manager", "notice"})
+            and evidence_tokens.intersection({"notification", "distribution", "approval", "recipient"})
+        ),
     }
 
 
@@ -1132,6 +1304,7 @@ def build_grounded_actions(
     support: list[EvidenceCandidate],
     probable_root_cause: str | None,
     lang: str,
+    tentative: bool = False,
 ) -> list[GroundedActionStep]:
     signals = extract_ticket_operational_signals(
         query_context,
@@ -1165,7 +1338,7 @@ def build_grounded_actions(
         or primary.exact_strong_hits >= 1
         or primary.strong_overlap >= 0.18
     )
-    if primary_action and primary_action_is_strong and not action_is_too_generic(primary_action, query_context):
+    if not tentative and primary_action and primary_action_is_strong and not action_is_too_generic(primary_action, query_context):
         bound = bind_action_to_evidence(
             step=1,
             text=primary_action,
@@ -1175,145 +1348,50 @@ def build_grounded_actions(
         if bound is not None:
             action_steps.append(bound)
 
-    if preferred_family == "crm_integration":
-        templates = [
-            (
-                "Verify the CRM integration token currently stored after the recent token rotation."
-                if lang == "en"
-                else "Verifiez le token d'integration CRM actuellement stocke apres la rotation recente."
-            ),
-            (
-                "Check the sync worker logs for authentication failures or stale-token reuse before the next retry."
-                if lang == "en"
-                else "Controlez les logs du worker de synchronisation pour des erreurs d'authentification ou une reutilisation d'ancien token avant le prochain retry."
-            ),
-            (
-                "Trigger a controlled CRM sync on one affected record to confirm new updates are processed with the refreshed credential."
-                if lang == "en"
-                else "Declenchez une synchronisation CRM controlee sur un element affecte pour confirmer que les nouvelles mises a jour passent avec le credential rafraichi."
-            ),
-        ]
-        reasons = [
-            default_reason,
-            (
-                "Recent evidence points to worker-side credential reuse after token rotation."
-                if lang == "en"
-                else "Les preuves recentes pointent vers une reutilisation du credential par le worker apres la rotation du token."
-            ),
-            (
-                "The incident reports stalled updates, so one controlled sync validates the fix on the affected workflow."
-                if lang == "en"
-                else "L'incident signale des mises a jour bloquees, donc une synchronisation controlee valide le correctif sur le flux affecte."
-            ),
-        ]
-        for text, reason in zip(templates, reasons, strict=False):
+    template_seed_supported = bool(
+        preferred_family
+        and (
+            primary.exact_focus_hits >= 1
+            or primary.exact_strong_hits >= 1
+            or primary.strong_overlap >= ADVISOR_CAUSE_CONFIRMATION["supported_excerpt_overlap"]
+            or primary.relevance >= ADVISOR_CAUSE_CONFIRMATION["supported_excerpt_relevance"]
+            or primary.context_score >= ADVISOR_CAUSE_CONFIRMATION["supported_excerpt_context_strong"]
+            or len(matched_terms) >= 2
+            or any(
+                candidate.reference != primary.reference
+                and candidate.cluster_id == primary.cluster_id
+                and not candidate.topic_mismatch
+                and not candidate.domain_mismatch
+                for candidate in support[1:]
+            )
+            or (
+                primary.evidence_type != "KB article"
+                and not primary.domain_mismatch
+                and not primary.topic_mismatch
+                and primary.score >= 0.72
+            )
+            or (
+                preferred_family in list(query_context.get("topics") or [])
+                and primary.evidence_type != "KB article"
+                and not primary.concrete
+                and not primary.topic_mismatch
+            )
+        )
+    )
+    template_texts = topic_grounded_action_templates(preferred_family, lang=lang) if template_seed_supported else []
+    template_reasons = topic_grounded_action_reasons(preferred_family, lang=lang) if template_seed_supported else []
+    if template_texts:
+        for index, text in enumerate(template_texts):
+            reason = template_reasons[index] if index < len(template_reasons) and template_reasons[index] else default_reason
             bound = bind_action_to_evidence(step=len(action_steps) + 1, text=text, reason=reason, evidence=evidence_rows)
             if bound is not None:
                 action_steps.append(bound)
-    elif preferred_family == "notification_distribution":
-        templates = [
-            (
-                "Verify the payroll approval notification distribution rule and confirm the expected manager recipient mapping."
-                if lang == "en"
-                else "Verifiez la regle de distribution des notifications d'approbation paie et confirmez le mapping attendu des responsables destinataires."
-            ),
-            (
-                "Send one controlled approval notice and confirm it reaches the expected manager recipient path."
-                if lang == "en"
-                else "Envoyez un avis d'approbation controle et confirmez qu'il atteint le chemin attendu vers le responsable destinataire."
-            ),
-        ]
-        for text in templates:
-            bound = bind_action_to_evidence(step=len(action_steps) + 1, text=text, reason=default_reason, evidence=evidence_rows)
-            if bound is not None:
-                action_steps.append(bound)
-    elif preferred_family == "payroll_export":
-        templates = [
-            (
-                "Verify the payroll export formatter and the date-column mapping before the next import."
-                if lang == "en"
-                else "Verifiez le formateur d'export paie et le mapping des colonnes de date avant le prochain import."
-            ),
-            (
-                "Generate one control export and compare its date serialization against a known-good file."
-                if lang == "en"
-                else "Generez un export de controle et comparez sa serialisation de date avec un fichier valide."
-            ),
-            (
-                "Run one import validation with the corrected export to confirm the downstream parser accepts the schema."
-                if lang == "en"
-                else "Lancez une validation d'import avec l'export corrige pour confirmer que le parseur aval accepte le schema."
-            ),
-        ]
-        reasons = [
-            default_reason,
-            (
-                "The strongest evidence stays in the export/date-format family, so the control sample must confirm the exact serialization path."
-                if lang == "en"
-                else "La preuve la plus forte reste dans la famille export/format de date, donc l'echantillon de controle doit confirmer le chemin exact de serialisation."
-            ),
-            (
-                "A downstream import check confirms the fix on the same schema path that is failing now."
-                if lang == "en"
-                else "Une verification d'import aval confirme le correctif sur le meme chemin de schema qui echoue actuellement."
-            ),
-        ]
-        for text, reason in zip(templates, reasons, strict=False):
-            bound = bind_action_to_evidence(step=len(action_steps) + 1, text=text, reason=reason, evidence=evidence_rows)
-            if bound is not None:
-                action_steps.append(bound)
-    elif preferred_family == "mail_transport":
-        templates = [
-            (
-                "Verify the affected relay, connector, or forwarding rule configuration on the current mail path."
-                if lang == "en"
-                else "Verifiez la configuration du relay, du connecteur ou de la regle de transfert sur le flux mail concerne."
-            ),
-            (
-                "Send one controlled test message and confirm it clears the expected queue or routing path."
-                if lang == "en"
-                else "Envoyez un message de test controle et confirmez qu'il traverse la file ou le routage attendu."
-            ),
-        ]
-        for text in templates:
-            bound = bind_action_to_evidence(step=len(action_steps) + 1, text=text, reason=default_reason, evidence=evidence_rows)
-            if bound is not None:
-                action_steps.append(bound)
-    elif preferred_family == "network_access":
-        templates = [
-            (
-                "Verify the VPN route, gateway, or policy path that matches the affected access flow."
-                if lang == "en"
-                else "Verifiez la route VPN, la passerelle ou la politique qui correspond au flux d'acces affecte."
-            ),
-            (
-                "Retest access from one affected user after the route or policy check to confirm the same path is restored."
-                if lang == "en"
-                else "Retestez l'acces depuis un utilisateur affecte apres la verification de route ou de politique pour confirmer que le meme chemin est retabli."
-            ),
-        ]
-        for text in templates:
-            bound = bind_action_to_evidence(step=len(action_steps) + 1, text=text, reason=default_reason, evidence=evidence_rows)
-            if bound is not None:
-                action_steps.append(bound)
-    elif preferred_family == "auth_path":
-        templates = [
-            (
-                "Verify the relevant authentication token, certificate, or policy state on the affected sign-in path."
-                if lang == "en"
-                else "Verifiez l'etat du token, du certificat ou de la politique d'authentification sur le chemin de connexion affecte."
-            ),
-            (
-                "Retest one affected sign-in after the policy or certificate check to confirm access is restored."
-                if lang == "en"
-                else "Retestez une connexion affectee apres la verification de la politique ou du certificat pour confirmer que l'acces est retabli."
-            ),
-        ]
-        for text in templates:
-            bound = bind_action_to_evidence(step=len(action_steps) + 1, text=text, reason=default_reason, evidence=evidence_rows)
-            if bound is not None:
-                action_steps.append(bound)
-    elif not action_steps and subject and any(query_context.get(key) for key in ("strong_terms", "topics", "domains")):
+    elif (
+        not action_steps
+        and subject
+        and any(query_context.get(key) for key in ("strong_terms", "topics", "domains"))
+        and (template_seed_supported or primary.evidence_type != "KB article")
+    ):
         fallback_text = (
             f"Verify the failing {subject} path against one affected case before applying a broader change."
             if lang == "en"
@@ -1338,57 +1416,11 @@ def build_validation_from_actions(
     action_tokens = _meaningful_tokens(action_text)
     query_tokens = set(_ordered_query_terms(query_context))
     combined_tokens = action_tokens.union(query_tokens)
-
-    if combined_tokens.intersection({"crm", "sync", "integration", "worker", "token", "credential", "oauth"}):
-        return [
-            (
-                "Trigger one controlled CRM sync on an affected record and confirm the worker no longer logs authentication or stale-token failures."
-                if lang == "en"
-                else "Declenchez une synchronisation CRM controlee sur un element affecte et confirmez que le worker ne journalise plus d'erreurs d'authentification ou d'ancien token."
-            ),
-            (
-                "Confirm the latest contact update is written with the refreshed integration credential."
-                if lang == "en"
-                else "Confirmez que la derniere mise a jour de contact est ecrite avec le credential d'integration rafraichi."
-            ),
-        ]
-    if combined_tokens.intersection({"distribution", "notification", "recipient", "approval", "manager", "notice"}):
-        return [
-            (
-                "Send one controlled approval notice and confirm it reaches the expected manager recipient."
-                if lang == "en"
-                else "Envoyez un avis d'approbation controle et confirmez qu'il atteint le responsable destinataire attendu."
-            ),
-        ]
-    if combined_tokens.intersection({"payroll", "export", "csv", "date", "formatter", "mapping", "schema", "import"}):
-        return [
-            (
-                "Generate one control export and validate the corrected date columns in the downstream import."
-                if lang == "en"
-                else "Generez un export de controle et validez les colonnes de date corrigees dans l'import aval."
-            ),
-            (
-                "Confirm the parser accepts the corrected export schema without shifting date fields."
-                if lang == "en"
-                else "Confirmez que le parseur accepte le schema d'export corrige sans deplacer les champs de date."
-            ),
-        ]
-    if combined_tokens.intersection({"mail", "email", "relay", "connector", "forwarding", "distribution", "queue"}):
-        return [
-            (
-                "Send one controlled test message and confirm the expected relay or connector path is restored."
-                if lang == "en"
-                else "Envoyez un message de test controle et confirmez que le chemin relay ou connecteur attendu est retabli."
-            ),
-        ]
-    if combined_tokens.intersection({"vpn", "route", "routing", "gateway", "dns", "remote", "tunnel", "mfa"}):
-        return [
-            (
-                "Retest access from one affected user and confirm the same route or policy path stays stable."
-                if lang == "en"
-                else "Retestez l'acces depuis un utilisateur affecte et confirmez que le meme chemin de route ou de politique reste stable."
-            ),
-        ]
+    for topic in ("crm_integration", "notification_distribution", "payroll_export", "mail_transport", "network_access"):
+        if combined_tokens.intersection(set(_TOPIC_HINTS.get(topic) or [])):
+            topic_steps = topic_validation_actions(topic, lang=lang)
+            if topic_steps:
+                return topic_steps
     return [
         (
             "Validate the corrected workflow on one affected case before broader rollout."
@@ -1591,34 +1623,30 @@ def is_action_relevant_to_ticket(query_context: dict[str, Any], action_text: str
     topic_mismatch = bool(query_topics and action_topics and query_topics.isdisjoint(action_topics))
 
     score = (
-        (0.24 * title_overlap)
-        + (0.16 * description_overlap)
-        + (0.22 * entity_overlap)
-        + (0.12 * noun_overlap)
-        + (0.14 * strong_overlap)
-        + (0.08 * topic_overlap)
-        + min(0.16, key_hits * 0.03)
-        + min(0.12, strong_hits * 0.04)
+        (ADVISOR_RELEVANCE_WEIGHTS["title_overlap"] * title_overlap)
+        + (ADVISOR_RELEVANCE_WEIGHTS["description_overlap"] * description_overlap)
+        + (ADVISOR_RELEVANCE_WEIGHTS["entity_overlap"] * entity_overlap)
+        + (ADVISOR_RELEVANCE_WEIGHTS["noun_overlap"] * noun_overlap)
+        + (ADVISOR_RELEVANCE_WEIGHTS["strong_overlap"] * strong_overlap)
+        + (ADVISOR_RELEVANCE_WEIGHTS["topic_overlap"] * topic_overlap)
+        + min(ADVISOR_RELEVANCE_WEIGHTS["key_hit_cap"], key_hits * ADVISOR_RELEVANCE_WEIGHTS["key_hit_step"])
+        + min(ADVISOR_RELEVANCE_WEIGHTS["strong_hit_cap"], strong_hits * ADVISOR_RELEVANCE_WEIGHTS["strong_hit_step"])
     )
     if domain_match or category_match:
-        score += 0.08
+        score += ADVISOR_RELEVANCE_WEIGHTS["domain_or_category_bonus"]
     if topic_mismatch:
-        score -= 0.4
+        score -= ADVISOR_RELEVANCE_WEIGHTS["topic_mismatch_penalty"]
     if domain_mismatch:
-        score -= 0.24
+        score -= ADVISOR_RELEVANCE_WEIGHTS["domain_mismatch_penalty"]
     if strong_hits == 0 and key_hits == 0 and title_overlap < 0.08 and entity_overlap < 0.08:
-        score = min(score, 0.09)
+        score = min(score, ADVISOR_RELEVANCE_WEIGHTS["weak_signal_cap"])
     if topic_mismatch and strong_hits == 0:
-        score = min(score, 0.14)
+        score = min(score, ADVISOR_RELEVANCE_WEIGHTS["topic_cap"])
     return round(max(0.0, min(1.0, score)), 4)
 
 
 def _confidence_band(value: float) -> str:
-    if value >= 0.78:
-        return "high"
-    if value >= 0.52:
-        return "medium"
-    return "low"
+    return confidence_band(value)
 
 
 def classify_confidence(value: float) -> str:
@@ -1641,8 +1669,10 @@ def enforce_action_alignment(
             max(
                 action_relevance_score,
                 min(
-                    0.92,
-                    (primary.relevance * 0.6) + (_actionability_score(action_text) * 0.25) + (min(1.0, primary.score) * 0.15),
+                    ADVISOR_ACTION_ALIGNMENT_WEIGHTS["score_cap"],
+                    (primary.relevance * ADVISOR_ACTION_ALIGNMENT_WEIGHTS["relevance_weight"])
+                    + (_actionability_score(action_text) * ADVISOR_ACTION_ALIGNMENT_WEIGHTS["actionability_weight"])
+                    + (min(1.0, primary.score) * ADVISOR_ACTION_ALIGNMENT_WEIGHTS["primary_score_weight"]),
                 ),
             ),
             4,
@@ -1656,9 +1686,9 @@ def enforce_action_alignment(
         or (
             not primary.domain_mismatch
             and not primary.topic_mismatch
-            and action_relevance_score >= 0.18
+            and action_relevance_score >= ADVISOR_ALIGNMENT_THRESHOLDS["hard_action_relevance"]
         )
-        or (not has_query_signals and (primary.relevance >= 0.22 or primary.score >= 0.72))
+        or (not has_query_signals and (primary.relevance >= ADVISOR_ALIGNMENT_THRESHOLDS["action_relevance"] or primary.score >= 0.72))
     )
     component_match = bool(
         not primary.domain_mismatch
@@ -1667,7 +1697,7 @@ def enforce_action_alignment(
             primary.exact_strong_hits >= 1
             or primary.strong_overlap >= 0.12
             or primary.exact_focus_hits >= 1
-            or action_relevance_score >= 0.22
+            or action_relevance_score >= ADVISOR_ALIGNMENT_THRESHOLDS["action_relevance"]
             or not has_query_signals
         )
     )
@@ -1676,17 +1706,21 @@ def enforce_action_alignment(
         and (
             (
                 action_relevance_score >= 0.24
-                and (_actionability_score(action_text) >= 0.18 or agreement_count >= 2 or len(support) >= 2)
+                and (_actionability_score(action_text) >= ADVISOR_ALIGNMENT_THRESHOLDS["hard_action_relevance"] or agreement_count >= 2 or len(support) >= 2)
             )
             or (
                 not has_query_signals
-                and _actionability_score(action_text) >= 0.18
+                and _actionability_score(action_text) >= ADVISOR_ALIGNMENT_THRESHOLDS["hard_action_relevance"]
                 and (primary.concrete or agreement_count >= 1)
             )
         )
     )
     safe_for_action = symptom_match and component_match and resolution_pattern_match
-    downgrade_to_tentative = (symptom_match and component_match and action_relevance_score >= 0.18) and not safe_for_action
+    downgrade_to_tentative = (
+        symptom_match
+        and component_match
+        and action_relevance_score >= ADVISOR_ALIGNMENT_THRESHOLDS["hard_action_relevance"]
+    ) and not safe_for_action
     return {
         "action_relevance_score": round(max(0.0, min(1.0, action_relevance_score)), 4),
         "symptom_match": symptom_match,
@@ -1705,76 +1739,16 @@ def _action_step_text(action: str) -> str:
 
 def _validation_step(query_context: dict[str, Any], *, lang: str) -> str:
     tokens = set(_ordered_query_terms(query_context))
-    integration_tokens = {"crm", "sync", "integration", "worker", "job", "scheduler", "token", "oauth", "credential", "secret", "requeue"}
-    auth_tokens = {"auth", "sso", "token", "certificate"}
-    network_tokens = {"vpn", "dns", "route", "mfa", "remote", "gateway"}
     preferred_topic = _preferred_query_topic(query_context)
-    if preferred_topic == "crm_integration":
-        return (
-            "Retestez le service d'integration avec un element affecte et confirmez que le worker recharge bien le credential ou token attendu."
-            if lang == "fr"
-            else "Retest the integration on an affected record and confirm the worker reloaded the expected credential or token."
-        )
-    if preferred_topic == "notification_distribution":
-        return (
-            "Envoyez un avis d'approbation controle et confirmez qu'il atteint le responsable destinataire attendu."
-            if lang == "fr"
-            else "Send one controlled approval notice and confirm it reaches the expected manager recipient."
-        )
-    if preferred_topic == "payroll_export":
-        return (
-            "Generez un export de controle et validez les champs corriges avant cloture."
-            if lang == "fr"
-            else "Generate a control export and validate the corrected fields before closure."
-        )
-    if preferred_topic == "mail_transport":
-        return (
-            "Envoyez un test controle et confirmez que le routage ou le transfert est retabli."
-            if lang == "fr"
-            else "Send a controlled test and confirm routing or forwarding is restored."
-        )
-    if preferred_topic == "network_access":
-        return (
-            "Retestez la connectivite ou la connexion avec un utilisateur distant affecte."
-            if lang == "fr"
-            else "Retest connectivity or sign-in with an affected remote user."
-        )
-    if preferred_topic == "auth_path":
-        return (
-            "Retestez l'acces ou la connexion pour un utilisateur affecte et confirmez l'etat de la politique."
-            if lang == "fr"
-            else "Retest access or sign-in for an affected user and confirm the policy state."
-        )
-    if tokens.intersection(integration_tokens):
-        return (
-            "Retestez le service d'integration avec un element affecte et confirmez que le worker recharge bien le credential ou token attendu."
-            if lang == "fr"
-            else "Retest the integration on an affected record and confirm the worker reloaded the expected credential or token."
-        )
-    if tokens.intersection(auth_tokens) or (tokens.intersection({"signin", "login"}) and not tokens.intersection(network_tokens)):
-        return (
-            "Retestez l'acces ou la connexion pour un utilisateur affecte et confirmez l'etat de la politique."
-            if lang == "fr"
-            else "Retest access or sign-in for an affected user and confirm the policy state."
-        )
-    if tokens.intersection(network_tokens):
-        return (
-            "Retestez la connectivite ou la connexion avec un utilisateur distant affecte."
-            if lang == "fr"
-            else "Retest connectivity or sign-in with an affected remote user."
-        )
-    if tokens.intersection({"csv", "export", "import", "date", "parser", "format", "payroll", "workbook"}):
-        return (
-            "Generez un export de controle et validez les champs corriges avant cloture."
-            if lang == "fr"
-            else "Generate a control export and validate the corrected fields before closure."
-        )
-    if tokens.intersection({"mail", "email", "connector", "forwarding", "relay", "mailbox", "teams"}):
-        return (
-            "Envoyez un test controle et confirmez que le routage ou le transfert est retabli."
-            if lang == "fr"
-            else "Send a controlled test and confirm routing or forwarding is restored."
-        )
+    if preferred_topic:
+        step = topic_validation_step(preferred_topic, lang=lang)
+        if step:
+            return step
+    for topic in ("crm_integration", "auth_path", "network_access", "payroll_export", "mail_transport", "notification_distribution"):
+        if tokens.intersection(set(_TOPIC_HINTS.get(topic) or [])):
+            step = topic_validation_step(topic, lang=lang)
+            if step:
+                return step
     if tokens.intersection({"printer", "keyboard", "dock", "device", "hardware"}):
         return (
             "Validez l'etat du poste ou du peripherique avec le demandeur avant cloture."
@@ -1999,12 +1973,12 @@ def _best_from_bucket(rows: list[EvidenceCandidate]) -> list[EvidenceCandidate]:
         key=lambda item: (
             1 if not item.topic_mismatch else 0,
             1 if not item.domain_mismatch else 0,
+            item.score,
             item.coherence_score,
             item.strong_overlap,
             item.exact_strong_hits,
             item.context_score,
             item.relevance,
-            item.score,
             item.concrete,
         ),
         reverse=True,
@@ -2267,7 +2241,12 @@ def _build_buckets(retrieval: dict[str, Any], *, query_context: dict[str, Any]) 
 def _passes_relevance_gate(candidate: EvidenceCandidate, *, allow_weak: bool = False) -> bool:
     if candidate.topic_mismatch and candidate.exact_focus_hits == 0 and candidate.exact_strong_hits == 0 and candidate.strong_overlap < 0.12:
         return False
-    if candidate.domain_mismatch and candidate.exact_focus_hits == 0 and candidate.strong_overlap < 0.12 and candidate.relevance < 0.22:
+    if (
+        candidate.domain_mismatch
+        and candidate.exact_focus_hits == 0
+        and candidate.strong_overlap < 0.12
+        and candidate.relevance < ADVISOR_ALIGNMENT_THRESHOLDS["action_relevance"]
+    ):
         return False
     if candidate.relevance >= 0.24 and not candidate.topic_mismatch:
         return True
@@ -2341,13 +2320,21 @@ def _pick_primary_candidate(
     buckets: list[list[EvidenceCandidate]],
     *,
     selected_cluster_id: str | None = None,
+    query_context: dict[str, Any] | None = None,
 ) -> tuple[EvidenceCandidate | None, bool]:
+    qc = query_context or {}
+    _query_has_signals = bool(
+        (qc.get("tokens") or [])
+        or (qc.get("strong_terms") or [])
+        or (qc.get("topics") or [])
+        or (qc.get("domains") or [])
+    )
     scoped_buckets = (
         [
             [candidate for candidate in bucket if candidate.cluster_id == selected_cluster_id]
             for bucket in buckets
         ]
-        if selected_cluster_id
+        if selected_cluster_id and _query_has_signals
         else buckets
     )
     for bucket in scoped_buckets[:-1]:
@@ -2355,7 +2342,15 @@ def _pick_primary_candidate(
         if concrete_rows:
             return concrete_rows[0], False
 
-    for bucket in scoped_buckets:
+    # When there are no query signals, the relevance gate is meaningless (no tokens to compare
+    # against). Fall back to any concrete item ranked by score, trusting the retrieval similarity.
+    if not _query_has_signals:
+        for bucket in scoped_buckets[:-1]:
+            concrete_rows = [item for item in bucket if item.concrete]
+            if concrete_rows:
+                return concrete_rows[0], False
+
+    for bucket in scoped_buckets[:-1]:
         weak_rows = [item for item in bucket if _passes_relevance_gate(item, allow_weak=True)]
         if weak_rows:
             return weak_rows[0], True
@@ -2439,27 +2434,40 @@ def _confidence_score(
     agreement_count: int,
 ) -> float:
     base = _EVIDENCE_BASE_WEIGHTS.get(primary.evidence_type, 0.55)
-    semantic_bonus = max(0.0, min(0.14, primary.score * 0.14))
-    lexical_bonus = min(0.12, (primary.lexical_overlap * 0.06) + (primary.exact_focus_hits * 0.02) + (primary.strong_overlap * 0.04))
+    semantic_bonus = max(
+        0.0,
+        min(ADVISOR_CONFIDENCE_WEIGHTS["semantic_bonus_cap"], primary.score * ADVISOR_CONFIDENCE_WEIGHTS["semantic_bonus_cap"]),
+    )
+    lexical_bonus = min(
+        ADVISOR_CONFIDENCE_WEIGHTS["lexical_bonus_cap"],
+        (primary.lexical_overlap * 0.06) + (primary.exact_focus_hits * 0.02) + (primary.strong_overlap * 0.04),
+    )
     domain_bonus = (
-        0.06
+        ADVISOR_CONFIDENCE_WEIGHTS["anchor_bonus"]
         if not primary.domain_mismatch and not primary.topic_mismatch and (
             primary.lexical_overlap >= 0.16 or primary.exact_focus_hits >= 2 or primary.exact_strong_hits >= 2
         )
         else 0.0
     )
     action_basis = primary.action_text or primary.excerpt
-    action_bonus = min(0.07, _actionability_score(action_basis) * 0.07)
-    support_bonus = min(0.08, max(0, len(support) - 1) * 0.04)
-    agreement_bonus = 0.1 if agreement_count >= 2 else 0.0
+    action_bonus = min(ADVISOR_CONFIDENCE_WEIGHTS["action_bonus_cap"], _actionability_score(action_basis) * ADVISOR_CONFIDENCE_WEIGHTS["action_bonus_cap"])
+    support_bonus = min(
+        ADVISOR_CONFIDENCE_WEIGHTS["support_bonus_cap"],
+        max(0, len(support) - 1) * ADVISOR_CONFIDENCE_WEIGHTS["support_bonus_step"],
+    )
+    agreement_bonus = ADVISOR_CONFIDENCE_WEIGHTS["agreement_bonus"] if agreement_count >= 2 else 0.0
     source_bonus = _SOURCE_LABEL_BONUS.get(source_label, 0.0)
-    tentative_penalty = 0.25 if tentative else 0.0
-    mismatch_penalty = 0.4 if primary.domain_mismatch else 0.0
-    topic_mismatch_penalty = 0.34 if primary.topic_mismatch else 0.0
+    tentative_penalty = ADVISOR_CONFIDENCE_WEIGHTS["tentative_penalty"] if tentative else 0.0
+    mismatch_penalty = ADVISOR_CONFIDENCE_WEIGHTS["domain_mismatch_penalty"] if primary.domain_mismatch else 0.0
+    topic_mismatch_penalty = ADVISOR_CONFIDENCE_WEIGHTS["topic_mismatch_penalty"] if primary.topic_mismatch else 0.0
     weak_lexical_penalty = (
-        0.16
+        ADVISOR_CONFIDENCE_WEIGHTS["weak_lexical_penalty"]
         if primary.lexical_overlap < 0.08 and primary.exact_focus_hits == 0 and primary.exact_strong_hits == 0
-        else (0.08 if primary.lexical_overlap < 0.18 and primary.exact_focus_hits < 2 and primary.exact_strong_hits < 2 else 0.0)
+        else (
+            ADVISOR_CONFIDENCE_WEIGHTS["medium_lexical_penalty"]
+            if primary.lexical_overlap < 0.18 and primary.exact_focus_hits < 2 and primary.exact_strong_hits < 2
+            else 0.0
+        )
     )
     confidence = (
         base
@@ -2483,135 +2491,259 @@ def _subject_terms(query_context: dict[str, Any], *, limit: int = 4) -> list[str
     return [term for term in terms if term][:limit]
 
 
+def _query_context_domains(query_context: dict[str, Any]) -> set[str]:
+    domains = {
+        str(domain or "").strip().lower()
+        for domain in list(query_context.get("domains") or [])
+        if str(domain or "").strip()
+    }
+    category = str((query_context.get("metadata") or {}).get("category") or "").strip().lower()
+    if category:
+        domains.add(category)
+    return {domain for domain in domains if domain in _CATEGORY_HINTS}
+
+
+def _source_signal_tokens(query_context: dict[str, Any], source: str) -> set[str]:
+    return {
+        str(token or "").strip().lower()
+        for token in list(query_context.get(source) or [])
+        if str(token or "").strip()
+    }
+
+
+def _topic_signal_profile(
+    query_context: dict[str, Any],
+    *,
+    topic: str,
+    cluster_id: str | None = None,
+    evidence_topics: list[str] | None = None,
+) -> dict[str, Any]:
+    hints = set(_TOPIC_HINTS.get(topic) or [])
+    unique_hints = set(_UNIQUE_TOPIC_HINTS.get(topic) or [])
+    all_tokens = set(_ordered_query_terms(query_context))
+    explicit_hits: set[str] = set()
+    supporting_hits: set[str] = set()
+    weak_hits: set[str] = set()
+    score = 0.0
+
+    for source, weight in _QUERY_TOPIC_SOURCE_WEIGHTS.items():
+        source_tokens = _source_signal_tokens(query_context, source)
+        unique_hits = source_tokens.intersection(unique_hints)
+        strong_hits = source_tokens.intersection(hints.difference(_WEAK_FAMILY_TOKENS).difference(unique_hints))
+        weak_source_hits = source_tokens.intersection(hints.intersection(_WEAK_FAMILY_TOKENS))
+        explicit_hits.update(unique_hits)
+        supporting_hits.update(strong_hits)
+        weak_hits.update(weak_source_hits)
+        score += len(unique_hits) * weight
+        score += len(strong_hits) * (weight * 0.55)
+        score += len(weak_source_hits) * 0.08
+
+    query_topics = {
+        str(candidate or "").strip().lower()
+        for candidate in list(query_context.get("topics") or [])
+        if str(candidate or "").strip()
+    }
+    if topic in query_topics:
+        score += 0.35
+
+    query_domains = _query_context_domains(query_context)
+    domain_hits = query_domains.intersection(_TOPIC_DOMAIN_EXPECTATIONS.get(topic, frozenset()))
+    if domain_hits:
+        score += 0.9 + (0.2 * max(0, len(domain_hits) - 1))
+
+    operation_hits = all_tokens.intersection(_OPERATION_SIGNAL_HINTS).intersection(hints)
+    context_hits = all_tokens.intersection(_CONTEXT_SIGNAL_HINTS)
+    object_hits = all_tokens.intersection(_AFFECTED_OBJECT_HINTS).intersection(hints)
+    if operation_hits and (explicit_hits or supporting_hits):
+        score += 0.85
+    if context_hits and (explicit_hits or supporting_hits or operation_hits):
+        score += 0.35
+    if object_hits and (explicit_hits or supporting_hits):
+        score += 0.45
+
+    if cluster_id == topic and (explicit_hits or supporting_hits or domain_hits):
+        score += 0.7
+    if topic in set(evidence_topics or []) and (explicit_hits or supporting_hits):
+        score += 0.3
+
+    auth_anchor_hits: set[str] = set()
+    if topic == "auth_path":
+        auth_anchor_hits = all_tokens.intersection(_AUTH_PATH_REQUIRED_ANCHORS)
+        if auth_anchor_hits:
+            score += 0.8 * len(auth_anchor_hits)
+        else:
+            score = min(score, _FAMILY_SELECTION_THRESHOLDS["medium_score"] - 0.1)
+
+    structured_signal_count = len(explicit_hits) + len(supporting_hits)
+    if domain_hits:
+        structured_signal_count += 1
+    if operation_hits:
+        structured_signal_count += 1
+    if object_hits:
+        structured_signal_count += 1
+    if context_hits and (explicit_hits or supporting_hits or operation_hits):
+        structured_signal_count += 1
+
+    weak_keyword_only = not explicit_hits and not supporting_hits and bool(weak_hits)
+    accepted = (
+        not weak_keyword_only
+        and score >= _FAMILY_SELECTION_THRESHOLDS["score_min"]
+        and (
+            bool(explicit_hits)
+            or structured_signal_count >= _FAMILY_SELECTION_THRESHOLDS["structured_min"]
+            or (cluster_id == topic and structured_signal_count >= 1)
+        )
+    )
+    if topic == "auth_path" and not auth_anchor_hits and not explicit_hits:
+        accepted = False
+
+    return {
+        "topic": topic,
+        "score": round(score, 4),
+        "explicit_hits": sorted(explicit_hits),
+        "supporting_hits": sorted(supporting_hits),
+        "weak_hits": sorted(weak_hits),
+        "domain_hits": sorted(domain_hits),
+        "operation_hits": sorted(operation_hits),
+        "context_hits": sorted(context_hits),
+        "object_hits": sorted(object_hits),
+        "auth_anchor_hits": sorted(auth_anchor_hits),
+        "structured_signal_count": structured_signal_count,
+        "weak_keyword_only": weak_keyword_only,
+        "accepted": accepted,
+    }
+
+
+def _resolve_query_signal_family(
+    query_context: dict[str, Any],
+    *,
+    cluster_id: str | None = None,
+    evidence_topics: list[str] | None = None,
+) -> dict[str, Any]:
+    profiles = [
+        _topic_signal_profile(
+            query_context,
+            topic=topic,
+            cluster_id=cluster_id,
+            evidence_topics=evidence_topics,
+        )
+        for topic in _TOPIC_HINTS
+    ]
+    ranked = sorted(profiles, key=lambda profile: (-float(profile["score"]), profile["topic"]))
+    best = ranked[0] if ranked else None
+    if best is None or not best["accepted"]:
+        return {
+            "selected_family": None,
+            "confidence": "low",
+            "basis": "weak_keywords",
+            "score": 0.0,
+            "margin": 0.0,
+            "profile": best or {},
+            "profiles": ranked,
+        }
+
+    next_score = max(float(profile["score"]) for profile in ranked[1:] if profile["accepted"]) if any(profile["accepted"] for profile in ranked[1:]) else 0.0
+    margin = round(float(best["score"]) - next_score, 4)
+    explicit_hit_count = len(list(best["explicit_hits"]))
+    structured_signal_count = int(best["structured_signal_count"])
+
+    if explicit_hit_count >= 1:
+        basis = "explicit_signals"
+    elif structured_signal_count >= _FAMILY_SELECTION_THRESHOLDS["structured_min"]:
+        basis = "structured_signals"
+    else:
+        basis = "weak_keywords"
+
+    confidence = "low"
+    if basis != "weak_keywords":
+        if explicit_hit_count >= _FAMILY_SELECTION_THRESHOLDS["high_explicit_hits"] or (
+            float(best["score"]) >= _FAMILY_SELECTION_THRESHOLDS["high_score"]
+            and margin >= _FAMILY_SELECTION_THRESHOLDS["margin_min"]
+        ):
+            confidence = "high"
+        elif float(best["score"]) >= _FAMILY_SELECTION_THRESHOLDS["medium_score"] and (
+            margin >= _FAMILY_SELECTION_THRESHOLDS["margin_min"]
+            or explicit_hit_count >= 1
+            or structured_signal_count > _FAMILY_SELECTION_THRESHOLDS["structured_min"]
+        ):
+            confidence = "medium"
+
+    if best["topic"] == "auth_path" and not list(best["auth_anchor_hits"]) and confidence != "high":
+        confidence = "low"
+    if float(best["score"]) < _FAMILY_SELECTION_THRESHOLDS["broad_family_score"] and best["topic"] == "auth_path" and explicit_hit_count < 1:
+        confidence = "low"
+
+    selected_family = str(best["topic"]) if confidence in {"medium", "high"} else None
+    return {
+        "selected_family": selected_family,
+        "confidence": confidence,
+        "basis": basis,
+        "score": round(float(best["score"]), 4),
+        "margin": margin,
+        "profile": best,
+        "profiles": ranked,
+    }
+
+
+def _cluster_family_supported(
+    query_context: dict[str, Any],
+    *,
+    primary: EvidenceCandidate,
+    support: list[EvidenceCandidate],
+) -> bool:
+    if primary.cluster_id not in _TOPIC_HINTS or primary.topic_mismatch or primary.domain_mismatch:
+        return False
+    if (
+        primary.exact_focus_hits >= 1
+        or primary.exact_strong_hits >= 1
+        or primary.strong_overlap >= ADVISOR_CAUSE_CONFIRMATION["supported_excerpt_overlap"]
+        or primary.relevance >= ADVISOR_CAUSE_CONFIRMATION["supported_excerpt_relevance"]
+        or primary.context_score >= ADVISOR_CAUSE_CONFIRMATION["supported_excerpt_context_strong"]
+    ):
+        return True
+    query_tokens = set(_ordered_query_terms(query_context))
+    if query_tokens.intersection(set(_UNIQUE_TOPIC_HINTS.get(primary.cluster_id) or [])):
+        return True
+    return any(
+        candidate.reference != primary.reference
+        and candidate.cluster_id == primary.cluster_id
+        and not candidate.topic_mismatch
+        and not candidate.domain_mismatch
+        and candidate.coherence_score >= ADVISOR_CAUSE_CONFIRMATION["candidate_gate_coherence"]
+        for candidate in support[1:]
+    )
+
+
 def _preferred_query_topic(query_context: dict[str, Any]) -> str | None:
-    for topic in list(query_context.get("topics") or []):
-        normalized = str(topic or "").strip().lower()
-        if normalized in _TOPIC_HINTS:
-            return normalized
-    return None
+    resolution = _resolve_query_signal_family(query_context)
+    selected_family = str(resolution.get("selected_family") or "").strip().lower()
+    return selected_family if selected_family in _TOPIC_HINTS else None
 
 
 def _preferred_signal_topic(signals: dict[str, Any]) -> str | None:
-    dominant_topic = str(signals.get("dominant_topic") or "").strip().lower()
+    dominant_topic = str(signals.get("dominant_topic_overlap") or signals.get("dominant_topic") or "").strip().lower()
     if dominant_topic in _TOPIC_HINTS:
         return dominant_topic
-    if signals.get("integration_auth"):
-        return "crm_integration"
-    if signals.get("export_mapping"):
-        return "payroll_export"
-    if signals.get("notification_distribution"):
-        return "notification_distribution"
-    if signals.get("mail_routing"):
-        return "mail_transport"
-    if signals.get("network_access"):
-        return "network_access"
-    if signals.get("auth_path"):
-        return "auth_path"
     return None
 
 
+def _has_specific_guidance_context(query_context: dict[str, Any]) -> bool:
+    resolution = _resolve_query_signal_family(query_context)
+    if str(resolution.get("confidence") or "").strip().lower() in {"medium", "high"}:
+        return True
+    strong_terms = [str(term).strip().lower() for term in list(query_context.get("strong_terms") or []) if str(term).strip()]
+    salient_terms = [term for term in strong_terms if term not in _LOW_SIGNAL_TOKENS and term not in _WEAK_FAMILY_TOKENS]
+    return len(salient_terms) >= 3
+
+
 def _safe_diagnostic_action(query_context: dict[str, Any], *, lang: str) -> str | None:
-    terms = _subject_terms(query_context)
-    if not terms:
+    resolution = _resolve_query_signal_family(query_context)
+    if str(resolution.get("confidence") or "").strip().lower() not in {"medium", "high"}:
         return None
-    tokens = set(_ordered_query_terms(query_context))
-    integration_tokens = {"crm", "sync", "integration", "worker", "job", "scheduler", "token", "oauth", "credential", "secret", "requeue"}
-    auth_tokens = {"auth", "sso", "token", "certificate"}
-    network_tokens = {"vpn", "mfa", "signin", "login", "gateway", "route", "split", "dns", "remote"}
-    category = str((query_context.get("metadata") or {}).get("category") or "").strip().lower()
-    subject = ", ".join(terms[:3])
-    preferred_topic = _preferred_query_topic(query_context)
-
-    if preferred_topic == "payroll_export":
-        return (
-            "Verifiez le formatteur d'export, comparez les colonnes de dates avec un export valide, puis confirmez le mapping attendu avant nouvel import."
-            if lang == "fr"
-            else "Verify the export formatter, compare the date columns against a known-good export, and confirm the expected mapping before re-import."
-        )
-    if preferred_topic == "notification_distribution":
-        return (
-            "Verifiez la regle de distribution des notifications d'approbation paie et confirmez le mapping attendu des responsables destinataires."
-            if lang == "fr"
-            else "Verify the payroll approval notification distribution rule and confirm the expected manager recipient mapping."
-        )
-    if preferred_topic == "crm_integration":
-        return (
-            "Verifiez que le credential ou token d'integration tourne est valide, confirmez que le worker de synchronisation a recharge la nouvelle valeur, puis inspectez les journaux du worker pour une erreur d'authentification ou de reprise."
-            if lang == "fr"
-            else "Verify the rotated integration credential or token is valid, confirm the sync worker reloaded the new value, and inspect the worker logs for authentication or retry failures."
-        )
-    if preferred_topic == "mail_transport":
-        return (
-            "Verifiez la regle de distribution ou le mapping des destinataires, puis confirmez le routage attendu avec un test controle."
-            if lang == "fr"
-            else "Verify the distribution rule or recipient mapping, then confirm the expected routing with a controlled test."
-        )
-    if preferred_topic == "network_access":
-        return (
-            "Verifiez la configuration de session ou de routage VPN et retestez l'acces avec un utilisateur affecte."
-            if lang == "fr"
-            else "Verify the VPN session or routing configuration and retest access with an affected user."
-        )
-    if preferred_topic == "auth_path":
-        return (
-            "Verifiez la politique d'authentification ou le certificat concerne, puis retestez l'acces attendu."
-            if lang == "fr"
-            else "Verify the relevant authentication policy or certificate, then retest the expected access path."
-        )
-
-    if {"payroll", "distribution", "approval"}.issubset(tokens):
-        return (
-            "Verifiez la regle de distribution des notifications d'approbation paie et confirmez le mapping attendu des responsables destinataires."
-            if lang == "fr"
-            else "Verify the payroll approval notification distribution rule and confirm the expected manager recipient mapping."
-        )
-    if tokens.intersection({"csv", "export", "import", "date", "parser", "format", "formatter", "serializer", "workbook", "payroll"}):
-        return (
-            "Verifiez le formatteur d'export, comparez les colonnes de dates avec un export valide, puis confirmez le mapping attendu avant nouvel import."
-            if lang == "fr"
-            else "Verify the export formatter, compare the date columns against a known-good export, and confirm the expected mapping before re-import."
-        )
-    if tokens.intersection({"mail", "email", "mailbox", "forwarding", "connector", "distribution", "notification", "recipient"}):
-        return (
-            "Verifiez la regle de distribution ou le mapping des destinataires, puis confirmez le routage attendu avec un test controle."
-            if lang == "fr"
-            else "Verify the distribution rule or recipient mapping, then confirm the expected routing with a controlled test."
-        )
-    if tokens.intersection(integration_tokens):
-        return (
-            "Verifiez que le credential ou token d'integration tourne est valide, confirmez que le worker de synchronisation a recharge la nouvelle valeur, puis inspectez les journaux du worker pour une erreur d'authentification ou de reprise."
-            if lang == "fr"
-            else "Verify the rotated integration credential or token is valid, confirm the sync worker reloaded the new value, and inspect the worker logs for authentication or retry failures."
-        )
-    if tokens.intersection(auth_tokens) or (tokens.intersection({"signin", "login"}) and not tokens.intersection(network_tokens)):
-        return (
-            "Verifiez la politique d'authentification ou le certificat concerne, puis retestez l'acces attendu."
-            if lang == "fr"
-            else "Verify the relevant authentication policy or certificate, then retest the expected access path."
-        )
-    if tokens.intersection(network_tokens):
-        return (
-            "Verifiez la configuration de session ou de routage VPN et retestez l'acces avec un utilisateur affecte."
-            if lang == "fr"
-            else "Verify the VPN session or routing configuration and retest access with an affected user."
-        )
-    if category == "application":
-        return (
-            f"Verifiez la configuration {subject} et comparez le resultat en echec avec le comportement attendu."
-            if lang == "fr"
-            else f"Verify the {subject} configuration and compare the failing output with the expected behavior."
-        )
-    if category in {"email", "service_request"}:
-        return (
-            f"Verifiez le flux {subject} et confirmez les destinataires, regles ou autorisations attendus."
-            if lang == "fr"
-            else f"Verify the {subject} flow and confirm the expected recipients, rules, or permissions."
-        )
-    return (
-        f"Verifiez le flux {subject} et confirmez le resultat attendu avant d'appliquer une correction plus large."
-        if lang == "fr"
-        else f"Verify the {subject} path and confirm the expected outcome before applying a broader fix."
-    )
+    preferred_topic = str(resolution.get("selected_family") or "").strip().lower()
+    if preferred_topic not in _TOPIC_HINTS:
+        return None
+    return topic_safe_diagnostic_action(preferred_topic, lang=lang)
 
 
 def _build_response_text(
@@ -2692,7 +2824,7 @@ def _insufficient_evidence_payload(
     reasoning: str,
     conflicting_clusters: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    confidence = 0.16
+    confidence = ADVISOR_FALLBACK_CONFIDENCE["insufficient_evidence"]
     conflict_lines: list[str] = []
     cluster_subjects = [_cluster_subject(cluster) for cluster in list(conflicting_clusters or [])[:2] if _cluster_subject(cluster)]
     if cluster_subjects:
@@ -2774,7 +2906,11 @@ def _fallback_diagnostic_payload(
             action_relevance_score=action_relevance_score,
         )
 
-    confidence = 0.34 if filtered_weak_match else 0.42
+    confidence = (
+        ADVISOR_FALLBACK_CONFIDENCE["weak_match_filtered"]
+        if filtered_weak_match
+        else ADVISOR_FALLBACK_CONFIDENCE["fallback_diagnostic"]
+    )
     next_best_actions = [step.text for step in grounded_steps[1:]] if grounded_steps else _next_best_actions(
         recommended_action=recommended_action,
         probable_root_cause=probable_root_cause,
@@ -2863,7 +2999,7 @@ def _no_strong_match_payload(
         reasoning = f"{reasoning} Sujet detecte: {subject}."
     elif lang == "en" and subject:
         reasoning = f"{reasoning} Detected scope: {subject}."
-    confidence = 0.18
+    confidence = ADVISOR_FALLBACK_CONFIDENCE["cause_insufficient"]
     display_mode = _NO_STRONG_MATCH_DISPLAY
     fallback_action = build_fallback_action(
         query_context,
@@ -2910,6 +3046,115 @@ def _no_strong_match_payload(
     }
 
 
+def _low_trust_incident_fallback_payload(
+    retrieval: dict[str, Any],
+    *,
+    query_context: dict[str, Any],
+    lang: str,
+    reasoning: str | None = None,
+    filtered_weak_match: bool = False,
+    action_relevance_score: float = 0.0,
+    next_best_actions: list[str] | None = None,
+    validation_steps: list[str] | None = None,
+    missing_information: list[str] | None = None,
+    concurrent_families: list[str] | None = None,
+) -> dict[str, Any]:
+    payload = _no_strong_match_payload(
+        retrieval,
+        query_context=query_context,
+        lang=lang,
+        reasoning=reasoning,
+        filtered_weak_match=filtered_weak_match,
+        action_relevance_score=action_relevance_score,
+    )
+    if next_best_actions is not None:
+        payload["next_best_actions"] = [
+            _normalize_text(item)
+            for item in list(next_best_actions)
+            if _normalize_text(item)
+        ][:4]
+    if validation_steps is not None:
+        payload["validation_steps"] = [
+            _normalize_text(item)
+            for item in list(validation_steps)
+            if _normalize_text(item)
+        ][:3]
+    if missing_information is not None:
+        payload["missing_information"] = [
+            _normalize_text(item)
+            for item in list(missing_information)
+            if _normalize_text(item)
+        ][:3]
+
+    attempted_steps = list((query_context.get("metadata") or {}).get("attempted_steps") or [])
+    families = list(concurrent_families or [])
+    low_trust_action_package = generate_low_trust_incident_actions(
+        ticket_title=str(query_context.get("title") or ""),
+        ticket_description=str(query_context.get("description") or ""),
+        ticket_category=str((query_context.get("metadata") or {}).get("category") or ""),
+        ticket_priority=str((query_context.get("metadata") or {}).get("priority") or ""),
+        attempted_steps=attempted_steps,
+        concurrent_families=families,
+        deterministic_fallback=str(payload.get("fallback_action") or "") or None,
+        language=lang,
+    )
+    _has_specific_signals = bool(
+        (query_context.get("strong_terms") or [])
+        and (
+            (query_context.get("topics") or [])
+            or (query_context.get("domains") or [])
+        )
+    )
+    llm_advisory = (
+        build_llm_general_advisory(
+            ticket_title=str(query_context.get("title") or ""),
+            ticket_description=str(query_context.get("description") or ""),
+            ticket_category=str((query_context.get("metadata") or {}).get("category") or ""),
+            ticket_priority=str((query_context.get("metadata") or {}).get("priority") or ""),
+            attempted_steps=attempted_steps,
+            concurrent_families=families,
+            language=lang,
+        )
+        if not _has_specific_signals
+        else None
+    )
+    payload["base_recommended_action"] = payload.get("fallback_action")
+    payload["base_next_best_actions"] = list(payload.get("next_best_actions") or [])
+    payload["base_validation_steps"] = list(payload.get("validation_steps") or [])
+    payload["action_refinement_source"] = "none"
+    if low_trust_action_package is not None:
+        payload["display_mode"] = _DISPLAY_MODE_LLM_GENERAL
+        payload["mode"] = _DISPLAY_MODE_LLM_GENERAL
+        payload["recommendation_mode"] = "llm_assisted"
+        payload["knowledge_source"] = "llm_general_knowledge"
+        payload["recommended_action"] = low_trust_action_package.recommended_action
+        payload["next_best_actions"] = list(low_trust_action_package.next_best_actions)
+        payload["validation_steps"] = list(low_trust_action_package.validation_steps)
+        payload["action_refinement_source"] = "llm_general_knowledge"
+        reasoning_note = str(low_trust_action_package.reasoning_note or "").strip()
+        if reasoning_note:
+            payload["reasoning"] = reasoning_note
+        payload["response_text"] = _build_response_text(
+            recommended_action=payload.get("recommended_action"),
+            reasoning=str(payload.get("reasoning") or ""),
+            confidence=float(payload.get("confidence") or _LLM_ADVISORY_CONFIDENCE),
+            evidence_sources=[],
+            lang=lang,
+            display_mode=_DISPLAY_MODE_LLM_GENERAL,
+        )
+    if llm_advisory is not None:
+        payload["knowledge_source"] = llm_advisory.knowledge_source
+        payload["llm_general_advisory"] = {
+            "probable_causes": llm_advisory.probable_causes,
+            "suggested_checks": llm_advisory.suggested_checks,
+            "escalation_hint": llm_advisory.escalation_hint,
+            "knowledge_source": llm_advisory.knowledge_source,
+            "confidence": llm_advisory.confidence,
+            "language": llm_advisory.language,
+        }
+    return payload
+
+
 def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> dict[str, Any] | None:
     query_context = _query_context(retrieval)
     buckets = _build_buckets(retrieval, query_context=query_context)
@@ -2941,12 +3186,12 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
             if lang == "fr"
             else "Evidence is split across different incident families, so no single remediation path can be recommended safely."
         )
-        return _insufficient_evidence_payload(
+        return _low_trust_incident_fallback_payload(
             retrieval,
             query_context=query_context,
             lang=lang,
             reasoning=reasoning,
-            conflicting_clusters=candidate_clusters[:2],
+            concurrent_families=_extract_concurrent_families(candidate_clusters),
         )
     if len(candidate_clusters) >= 2 and selected_cluster is None:
         reasoning = (
@@ -2954,17 +3199,68 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
             if lang == "fr"
             else "No incident family provides enough coherent support to recommend a fix."
         )
-        return _insufficient_evidence_payload(
+        return _low_trust_incident_fallback_payload(
             retrieval,
             query_context=query_context,
             lang=lang,
             reasoning=reasoning,
-            conflicting_clusters=candidate_clusters[:2],
+            concurrent_families=_extract_concurrent_families(candidate_clusters),
         )
 
-    primary, tentative = _pick_primary_candidate(buckets, selected_cluster_id=selected_cluster_id)
+    _query_has_signals = bool(
+        (query_context.get("tokens") or [])
+        or (query_context.get("strong_terms") or [])
+        or (query_context.get("topics") or [])
+        or (query_context.get("domains") or [])
+    )
+
+    # Compute incident_cluster early so it can be included in no-primary early returns.
+    incident_cluster = _incident_cluster(retrieval, query_context, lang=lang, selected_cluster_id=selected_cluster_id)
+    impact_summary = _impact_summary(query_context, lang=lang, cluster=incident_cluster)
+
+    # Extract probable_root_cause from related problems for early-return paths.
+    _early_probable_root_cause: str | None = None
+    for _prob_row in list(retrieval.get("related_problems") or []):
+        _rc = str(_prob_row.get("root_cause") or "").strip()
+        if _rc:
+            _early_probable_root_cause = _rc
+            break
+
+    primary, tentative = _pick_primary_candidate(
+        buckets,
+        selected_cluster_id=selected_cluster_id,
+        query_context=query_context,
+    )
     if primary is None:
-        return _no_strong_match_payload(retrieval, query_context=query_context, lang=lang)
+        if _has_specific_guidance_context(query_context) and list(query_context.get("topics") or []):
+            reasoning = (
+                "The historical evidence is too generic to reuse directly, so a safe ticket-specific diagnostic is returned."
+                if lang == "en"
+                else "Les preuves historiques restent trop generiques pour etre reutilisees directement, donc un diagnostic prudent et specifique au ticket est renvoye."
+            )
+            return _fallback_diagnostic_payload(
+                retrieval,
+                query_context=query_context,
+                lang=lang,
+                reasoning=reasoning,
+                filtered_weak_match=False,
+                action_relevance_score=0.0,
+                probable_root_cause=_early_probable_root_cause,
+                incident_cluster=incident_cluster,
+                impact_summary=impact_summary,
+            )
+        reasoning = (
+            "Les signaux recuperes restent trop generiques pour proposer un diagnostic exploitable."
+            if lang == "fr"
+            else "The retrieved signals stay too generic to propose a useful diagnostic."
+        )
+        return _low_trust_incident_fallback_payload(
+            retrieval,
+            query_context=query_context,
+            lang=lang,
+            reasoning=reasoning,
+            concurrent_families=_extract_concurrent_families(candidate_clusters),
+        )
 
     support = _supporting_evidence(primary, buckets, selected_cluster_id=selected_cluster_id)
     agreement_count = _action_agreement_count(primary, support)
@@ -2979,8 +3275,6 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
     if tentative and primary.action_text and agreement_count >= 2 and not primary.domain_mismatch and not primary.topic_mismatch:
         tentative = False
     recommendation_mode = _recommendation_mode(primary, tentative=tentative)
-    incident_cluster = _incident_cluster(retrieval, query_context, lang=lang, selected_cluster_id=selected_cluster_id)
-    impact_summary = _impact_summary(query_context, lang=lang, cluster=incident_cluster)
     candidate_action = primary.action_text or primary.excerpt
     supporting_context = build_supporting_context(query_context, recommended_action=candidate_action, lang=lang)
     why_this_matches = build_match_explanation(
@@ -3006,8 +3300,32 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
         support=support,
         probable_root_cause=root_cause,
         lang=lang,
+        tentative=tentative,
     )
     retrieval["grounded_action_steps"] = _serialize_action_steps(grounded_action_steps)
+    weak_kb_template_seed = (
+        primary.evidence_type == "KB article"
+        and not grounded_action_steps
+        and tentative
+        and primary.relevance < ADVISOR_CAUSE_CONFIRMATION["supported_excerpt_relevance"]
+        and primary.context_score < ADVISOR_CAUSE_CONFIRMATION["supported_excerpt_context_strong"]
+        and primary.exact_focus_hits == 0
+        and primary.exact_strong_hits == 0
+    )
+    if weak_kb_template_seed:
+        reasoning = (
+            "The retrieved KB guidance does not align closely enough with the current ticket to show a safe action."
+            if lang == "en"
+            else "La guidance issue de la base de connaissances ne s'aligne pas assez avec le ticket courant pour afficher une action sure."
+        )
+        return _no_strong_match_payload(
+            retrieval,
+            query_context=query_context,
+            lang=lang,
+            reasoning=reasoning,
+            filtered_weak_match=False,
+            action_relevance_score=0.0,
+        )
     if grounded_action_steps:
         candidate_action = grounded_action_steps[0].text
     confidence = _confidence_score(
@@ -3017,18 +3335,21 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
         source_label=source_label,
         agreement_count=agreement_count,
     )
-    if selected_cluster_id and any(candidate.cluster_id != selected_cluster_id for candidate in support):
+    if _query_has_signals and selected_cluster_id and any(candidate.cluster_id != selected_cluster_id for candidate in support):
         reasoning = (
             "L'evidence retenue n'a pas pu etre contenue dans une seule famille d'incident, donc aucune action n'est proposee."
             if lang == "fr"
             else "The supporting evidence could not be contained within one incident family, so no action is proposed."
         )
-        return _insufficient_evidence_payload(
+        conflict_checks = _conflict_next_checks(query_context, candidate_clusters[:2], lang=lang)
+        return _low_trust_incident_fallback_payload(
             retrieval,
             query_context=query_context,
             lang=lang,
             reasoning=reasoning,
-            conflicting_clusters=candidate_clusters[:2],
+            next_best_actions=conflict_checks,
+            validation_steps=conflict_checks[:2],
+            concurrent_families=_extract_concurrent_families(candidate_clusters),
         )
     alignment = enforce_action_alignment(
         query_context,
@@ -3038,22 +3359,21 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
         agreement_count=agreement_count,
     )
     action_relevance_score = alignment["action_relevance_score"]
-    hard_mismatch = action_relevance_score < _HARD_ACTION_RELEVANCE_THRESHOLD and (
+    hard_mismatch = action_relevance_score < ADVISOR_ALIGNMENT_THRESHOLDS["hard_action_relevance"] and (
         primary.domain_mismatch
         or primary.topic_mismatch
         or (primary.strong_overlap < 0.1 and primary.exact_strong_hits == 0 and primary.lexical_overlap < 0.12)
     )
     filtered_weak_match = hard_mismatch or (
-        confidence < _LOW_CONFIDENCE_THRESHOLD and action_relevance_score < _ACTION_RELEVANCE_THRESHOLD
+        confidence < ADVISOR_ALIGNMENT_THRESHOLDS["low_confidence"]
+        and action_relevance_score < ADVISOR_ALIGNMENT_THRESHOLDS["action_relevance"]
     )
     low_signal_query = not any(query_context.get(key) for key in ("strong_terms", "topics", "domains"))
     if not grounded_action_steps and (
         low_signal_query
-        or
-        candidate_action is None
+        or candidate_action is None
         or action_is_too_generic(candidate_action or "", query_context)
         or tentative
-        or filtered_weak_match
         or alignment["downgrade_to_tentative"]
         or not alignment["resolution_pattern_match"]
     ):
@@ -3062,12 +3382,21 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
             if lang == "en"
             else "La famille d'incident selectionnee reste coherente, mais les preuves ne soutiennent pas encore une action concrete de maniere suffisante."
         )
-        return _insufficient_evidence_payload(
+        return _fallback_diagnostic_payload(
             retrieval,
             query_context=query_context,
             lang=lang,
             reasoning=reasoning,
-            conflicting_clusters=[],
+            filtered_weak_match=filtered_weak_match,
+            action_relevance_score=action_relevance_score,
+            probable_root_cause=root_cause,
+            supporting_context=supporting_context,
+            why_this_matches=why_this_matches,
+            match_summary=match_summary,
+            incident_cluster=incident_cluster,
+            impact_summary=impact_summary,
+            evidence_sources=evidence_sources,
+            action_steps=grounded_action_steps,
         )
 
     if not alignment["symptom_match"] or not alignment["component_match"]:
@@ -3139,8 +3468,19 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
 
     recommended_action = grounded_action_steps[0].text if grounded_action_steps else candidate_action
     confidence_band = classify_confidence(confidence)
-    confirmed_root_cause = root_cause if (root_problem_ref or confidence >= 0.78) else None
+    confirmed_root_cause = root_cause if (root_problem_ref or confidence >= CONFIDENCE_HIGH_THRESHOLD) else None
+    # Use grounded step texts for next_best_actions when available; fall back to
+    # the _next_best_actions helper so the list is never empty for evidence_action.
     next_best_actions = [step.text for step in grounded_action_steps[1:]]
+    if not next_best_actions:
+        next_best_actions = _next_best_actions(
+            recommended_action=recommended_action or "",
+            probable_root_cause=root_cause,
+            tentative=tentative,
+            query_context=query_context,
+            support=support,
+            lang=lang,
+        )
     validation_steps = build_validation_from_actions(query_context, action_steps=grounded_action_steps, lang=lang)
     fallback_action = build_fallback_action(
         query_context,

@@ -8,7 +8,9 @@ import { RecentActivity } from "@/components/recent-activity"
 import { OperationalInsights } from "@/components/operational-insights"
 import { ProblemInsights } from "@/components/problem-insights"
 import { PerformanceMetrics } from "@/components/performance-metrics"
-import { type Ticket, type TicketCategory } from "@/lib/ticket-data"
+import { AIFeedbackAnalytics } from "@/components/ai-feedback-analytics"
+import { DashboardPriorityInsights } from "@/components/dashboard-priority-insights"
+import { type Ticket, type TicketCategory, type TicketType } from "@/lib/ticket-data"
 import { useI18n } from "@/lib/i18n"
 import { fetchTicketInsights, fetchTickets } from "@/lib/tickets-api"
 import { Separator } from "@/components/ui/separator"
@@ -17,9 +19,14 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
+import { AlertTriangle } from "lucide-react"
+import Link from "next/link"
 
 type Insights = {
   weekly: Array<{ week: string; opened: number; closed: number; pending: number }>
+  ticket_type: Array<{ ticket_type: string; count: number }>
   category: Array<{ category: string; count: number }>
   priority: Array<{ priority: string; count: number; fill: string }>
   problems: Array<{
@@ -52,6 +59,7 @@ type Insights = {
         | "pending"
         | "resolved"
         | "closed"
+      ticket_type: TicketType
       category: TicketCategory
       assignee: string
       created_at: string
@@ -71,6 +79,7 @@ type Insights = {
         | "pending"
         | "resolved"
         | "closed"
+      ticket_type: TicketType
       category: TicketCategory
       assignee: string
       created_at: string
@@ -154,12 +163,15 @@ type Insights = {
   }
 }
 
-export default function DashboardPage() {
-  const { t, locale } = useI18n()
-  const [tickets, setTickets] = useState<Ticket[]>([])
-  const [loading, setLoading] = useState(true)
-  const [insights, setInsights] = useState<Insights>({
+type InsightsPayload = Partial<Insights> & {
+  ticketType?: Insights["ticket_type"]
+  ticket_types?: Insights["ticket_type"]
+}
+
+function createEmptyInsights(): Insights {
+  return {
     weekly: [],
+    ticket_type: [],
     category: [],
     priority: [],
     problems: [],
@@ -221,7 +233,89 @@ export default function DashboardPage() {
       active_total: 0,
       top: [],
     },
-  })
+  }
+}
+
+function asArray<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : []
+}
+
+function asNullableNumberRecord(value: unknown): Record<string, number | null> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {}
+  }
+  return value as Record<string, number | null>
+}
+
+function normalizeInsights(raw: InsightsPayload | null | undefined): Insights {
+  const empty = createEmptyInsights()
+  const emptyProblemManagement = empty.problem_management ?? {
+    total: 0,
+    open: 0,
+    investigating: 0,
+    known_error: 0,
+    resolved: 0,
+    closed: 0,
+    active_total: 0,
+    top: [],
+  }
+  const operational =
+    raw?.operational && typeof raw.operational === "object" ? raw.operational : empty.operational
+  const performance =
+    raw?.performance && typeof raw.performance === "object" ? raw.performance : empty.performance
+  const problemManagement =
+    raw?.problem_management && typeof raw.problem_management === "object"
+      ? raw.problem_management
+      : empty.problem_management
+
+  return {
+    ...empty,
+    ...raw,
+    weekly: asArray(raw?.weekly),
+    ticket_type: asArray(raw?.ticket_type ?? raw?.ticketType ?? raw?.ticket_types),
+    category: asArray(raw?.category),
+    priority: asArray(raw?.priority),
+    problems: asArray(raw?.problems),
+    operational: {
+      ...empty.operational,
+      ...operational,
+      critical_recent: asArray(operational.critical_recent),
+      stale_active: asArray(operational.stale_active),
+      counts: {
+        ...empty.operational.counts,
+        ...(operational.counts && typeof operational.counts === "object" ? operational.counts : {}),
+      },
+    },
+    performance: {
+      ...empty.performance,
+      ...performance,
+      mttr_hours: {
+        ...empty.performance.mttr_hours,
+        ...(performance.mttr_hours && typeof performance.mttr_hours === "object" ? performance.mttr_hours : {}),
+      },
+      mttr_by_priority_hours: asNullableNumberRecord(performance.mttr_by_priority_hours),
+      mttr_by_category_hours: asNullableNumberRecord(performance.mttr_by_category_hours),
+    },
+    problem_management: {
+      ...emptyProblemManagement,
+      ...problemManagement,
+      total: problemManagement?.total ?? emptyProblemManagement.total,
+      open: problemManagement?.open ?? emptyProblemManagement.open,
+      investigating: problemManagement?.investigating ?? emptyProblemManagement.investigating,
+      known_error: problemManagement?.known_error ?? emptyProblemManagement.known_error,
+      resolved: problemManagement?.resolved ?? emptyProblemManagement.resolved,
+      closed: problemManagement?.closed ?? emptyProblemManagement.closed,
+      active_total: problemManagement?.active_total ?? emptyProblemManagement.active_total,
+      top: asArray(problemManagement?.top),
+    },
+  }
+}
+
+export default function DashboardPage() {
+  const { t, locale } = useI18n()
+  const [tickets, setTickets] = useState<Ticket[]>([])
+  const [loading, setLoading] = useState(true)
+  const [insights, setInsights] = useState<Insights>(() => createEmptyInsights())
 
   useEffect(() => {
     const load = async () => {
@@ -230,7 +324,7 @@ export default function DashboardPage() {
         const [ticketList, insightsRes] = await Promise.all([fetchTickets(), fetchTicketInsights()])
 
         setTickets(ticketList)
-        setInsights(insightsRes)
+        setInsights(normalizeInsights(insightsRes))
       } finally {
         setLoading(false)
       }
@@ -267,6 +361,35 @@ export default function DashboardPage() {
   const [globalAssignee, setGlobalAssignee] = useState("all")
   const [globalDateFrom, setGlobalDateFrom] = useState("")
   const [globalDateTo, setGlobalDateTo] = useState("")
+  const [selectedSlaAlert, setSelectedSlaAlert] = useState<Ticket | null>(null)
+
+  const slaDeadlineAlerts = useMemo(() => {
+    const activeStatuses = new Set(["open", "in-progress", "waiting-for-customer", "waiting-for-support-vendor", "pending"])
+    return tickets
+      .filter((ticket) => activeStatuses.has(ticket.status))
+      .filter((ticket) => ticket.slaStatus === "breached" || ticket.slaStatus === "at_risk")
+      .sort((a, b) => {
+        const left =
+          a.slaStatus === "breached"
+            ? 0
+            : Number.isFinite(a.slaRemainingMinutes)
+              ? Math.max(0, Math.floor(Number(a.slaRemainingMinutes) * 60))
+              : Number.MAX_SAFE_INTEGER
+        const right =
+          b.slaStatus === "breached"
+            ? 0
+            : Number.isFinite(b.slaRemainingMinutes)
+              ? Math.max(0, Math.floor(Number(b.slaRemainingMinutes) * 60))
+              : Number.MAX_SAFE_INTEGER
+        return left - right
+      })
+  }, [tickets])
+
+  const slaAlertSummary = useMemo(() => {
+    const breached = slaDeadlineAlerts.filter((ticket) => ticket.slaStatus === "breached").length
+    const atRisk = slaDeadlineAlerts.filter((ticket) => ticket.slaStatus === "at_risk").length
+    return { breached, atRisk, total: slaDeadlineAlerts.length }
+  }, [slaDeadlineAlerts])
 
   const globalFilteredTickets = useMemo(() => {
     const fromMs = globalDateFrom ? Date.parse(`${globalDateFrom}T00:00:00.000Z`) : null
@@ -406,6 +529,137 @@ export default function DashboardPage() {
     setGlobalDateTo("")
   }
 
+  const slaInsightSection = (
+    <section className="section-block">
+      <div className="surface-card rounded-2xl border border-border/70 p-4 transition-all duration-300 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg hover:shadow-primary/10 sm:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="section-title">{isFr ? "Deadlines SLA a haut risque" : "High-Risk Deadlines"}</h3>
+            <p className="section-subtitle">
+              {isFr
+                ? "Tickets actifs sous SLA, tries par temps restant (secondes) ascendant."
+                : "Active SLA tickets sorted by remaining seconds (ascending)."}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Badge className="border border-amber-200 bg-amber-100 text-amber-800">
+              {isFr ? `A risque: ${slaAlertSummary.atRisk}` : `At risk: ${slaAlertSummary.atRisk}`}
+            </Badge>
+            <Badge className="border border-red-200 bg-red-100 text-red-800">
+              {isFr ? `Breach: ${slaAlertSummary.breached}` : `Breached: ${slaAlertSummary.breached}`}
+            </Badge>
+          </div>
+        </div>
+        {slaDeadlineAlerts.length === 0 ? (
+          <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3 text-sm text-emerald-800">
+            {isFr
+              ? "Aucun ticket actif a haut risque SLA pour le moment."
+              : "No high-risk SLA tickets at the moment."}
+          </div>
+        ) : (
+          <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
+            {slaDeadlineAlerts.slice(0, 6).map((ticket) => {
+              const remainingMinutes = Number.isFinite(ticket.slaRemainingMinutes)
+                ? Number(ticket.slaRemainingMinutes)
+                : null
+              const shouldPulseCountdown =
+                ticket.slaStatus !== "breached" &&
+                remainingMinutes !== null &&
+                remainingMinutes > 0 &&
+                remainingMinutes <= 15
+              return (
+                <HoverCard key={`sla-alert-${ticket.id}`} openDelay={120} closeDelay={100}>
+                  <HoverCardTrigger asChild>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSlaAlert(ticket)}
+                      className="group cursor-pointer rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-left transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-primary/50 hover:bg-accent/35 hover:shadow-lg hover:shadow-primary/10 hover:ring-1 hover:ring-primary/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-foreground">{ticket.id}</p>
+                        <Badge
+                          className={
+                            ticket.slaStatus === "breached"
+                              ? "border border-red-200 bg-red-100 text-red-800"
+                              : "border border-amber-200 bg-amber-100 text-amber-800"
+                          }
+                        >
+                          {ticket.slaStatus === "breached" ? "breached" : "at_risk"}
+                        </Badge>
+                      </div>
+                      <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">{ticket.title}</p>
+                      <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+                        <span>{isFr ? `Assigne: ${ticket.assignee}` : `Assignee: ${ticket.assignee}`}</span>
+                        <Badge
+                          variant="outline"
+                          className={`border-border bg-background/80 text-[10px] font-medium ${shouldPulseCountdown ? "animate-pulse border-amber-300 text-amber-700" : "text-muted-foreground"}`}
+                        >
+                          {formatSlaRemainingLabel(ticket.slaRemainingMinutes, isFr)}
+                        </Badge>
+                      </div>
+                    </button>
+                  </HoverCardTrigger>
+                  <HoverCardContent align="start" className="w-[340px] rounded-xl border border-border/70 p-3">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-foreground">{ticket.id}</p>
+                        <Badge
+                          className={
+                            ticket.slaStatus === "breached"
+                              ? "border border-red-200 bg-red-100 text-red-800"
+                              : "border border-amber-200 bg-amber-100 text-amber-800"
+                          }
+                        >
+                          {ticket.slaStatus || "unknown"}
+                        </Badge>
+                      </div>
+                      <p className="line-clamp-2 text-xs text-muted-foreground">{ticket.title}</p>
+                      <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                        <div className="rounded-md border border-border/60 bg-muted/20 p-2">
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                            {isFr ? "Temps restant" : "Remaining time"}
+                          </p>
+                          <p className="mt-1 font-medium text-foreground">
+                            {formatSlaRemainingLabel(ticket.slaRemainingMinutes, isFr)}
+                          </p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-muted/20 p-2">
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                            {isFr ? "Assigne" : "Assignee"}
+                          </p>
+                          <p className="mt-1 truncate font-medium text-foreground">{ticket.assignee}</p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-muted/20 p-2">
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                            {isFr ? "Echeance 1re reponse" : "First response due"}
+                          </p>
+                          <p className="mt-1 font-medium text-foreground">
+                            {formatDateTimeLabel(ticket.slaFirstResponseDueAt, isFr)}
+                          </p>
+                        </div>
+                        <div className="rounded-md border border-border/60 bg-muted/20 p-2">
+                          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                            {isFr ? "Echeance resolution" : "Resolution due"}
+                          </p>
+                          <p className="mt-1 font-medium text-foreground">
+                            {formatDateTimeLabel(ticket.slaResolutionDueAt, isFr)}
+                          </p>
+                        </div>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground">
+                        {isFr ? "Cliquez pour ouvrir les details complets du ticket." : "Click to open full ticket details."}
+                      </p>
+                    </div>
+                  </HoverCardContent>
+                </HoverCard>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+
   return (
     <AppShell>
       <div className="relative fade-slide-in space-y-6">
@@ -519,7 +773,7 @@ export default function DashboardPage() {
           )}
         </section>
 
-        <Separator className="bg-border/60" />
+        <DashboardPriorityInsights />
 
         <section className="section-block">
           {loading ? (
@@ -528,6 +782,12 @@ export default function DashboardPage() {
             <PerformanceMetrics performance={insights.performance} assignees={assigneeOptions} tickets={tickets} />
           )}
         </section>
+
+        <section className="section-block">
+          <AIFeedbackAnalytics />
+        </section>
+
+        {slaInsightSection}
 
         <Separator className="bg-border/60" />
 
@@ -573,6 +833,7 @@ export default function DashboardPage() {
               ) : (
                 <DashboardCharts
                   weeklyData={insights.weekly}
+                  ticketTypeData={insights.ticket_type}
                   categoryData={insights.category}
                   priorityData={insights.priority}
                 />
@@ -583,9 +844,100 @@ export default function DashboardPage() {
             </div>
           </div>
         </section>
+
+        <Dialog open={Boolean(selectedSlaAlert)} onOpenChange={(open) => !open && setSelectedSlaAlert(null)}>
+          <DialogContent className="sm:max-w-xl">
+            {selectedSlaAlert ? (
+              <>
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2 text-base">
+                    <AlertTriangle className="h-4 w-4 text-amber-600" />
+                    {isFr ? "Details alerte SLA" : "SLA alert details"} - {selectedSlaAlert.id}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {selectedSlaAlert.title}
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground">SLA status</p>
+                    <p className="mt-1 text-sm font-semibold text-foreground">{selectedSlaAlert.slaStatus || "unknown"}</p>
+                  </div>
+                  <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      {isFr ? "Temps restant" : "Remaining time"}
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-foreground">
+                      {formatSlaRemainingLabel(selectedSlaAlert.slaRemainingMinutes, isFr)}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      {isFr ? "Echeance premiere reponse" : "First response due"}
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-foreground">
+                      {formatDateTimeLabel(selectedSlaAlert.slaFirstResponseDueAt, isFr)}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      {isFr ? "Echeance resolution" : "Resolution due"}
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-foreground">
+                      {formatDateTimeLabel(selectedSlaAlert.slaResolutionDueAt, isFr)}
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      {isFr ? "Assigne" : "Assignee"}
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-foreground">{selectedSlaAlert.assignee}</p>
+                  </div>
+                  <div className="rounded-xl border border-border/70 bg-muted/20 p-3">
+                    <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      {isFr ? "Derniere sync SLA" : "Last SLA sync"}
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-foreground">
+                      {formatDateTimeLabel(selectedSlaAlert.slaLastSyncedAt, isFr)}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-2 flex justify-end">
+                  <Button asChild size="sm">
+                    <Link href={`/tickets/${selectedSlaAlert.id}`}>{isFr ? "Ouvrir le ticket" : "Open ticket"}</Link>
+                  </Button>
+                </div>
+              </>
+            ) : null}
+          </DialogContent>
+        </Dialog>
       </div>
     </AppShell>
   )
+}
+
+function formatSlaRemainingLabel(value: number | null | undefined, isFr: boolean): string {
+  if (!Number.isFinite(value)) {
+    return isFr ? "Temps restant indisponible" : "Remaining time unavailable"
+  }
+  const minutes = Number(value)
+  if (minutes <= 0) {
+    return isFr ? "Deadline depassee" : "Deadline passed"
+  }
+  return isFr ? `${minutes} min restantes` : `${minutes} min remaining`
+}
+
+function formatDateTimeLabel(value: string | null | undefined, isFr: boolean): string {
+  if (!value) return isFr ? "Indisponible" : "Unavailable"
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return isFr ? "Indisponible" : "Unavailable"
+  return date.toLocaleString(isFr ? "fr-FR" : "en-US", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  })
 }
 
 function DashboardKpiSkeleton() {
@@ -650,7 +1002,7 @@ function InsightsSkeleton({ compact = false }: { compact?: boolean }) {
 
 function ChartsSkeleton() {
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-3">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-4">
       <div className="surface-card rounded-2xl p-5 lg:col-span-2">
         <Skeleton className="h-4 w-44" />
         <Skeleton className="mt-4 h-[260px] w-full rounded-xl" />
@@ -659,7 +1011,11 @@ function ChartsSkeleton() {
         <Skeleton className="h-4 w-40" />
         <Skeleton className="mt-4 h-[260px] w-full rounded-xl" />
       </div>
-      <div className="surface-card rounded-2xl p-5 xl:col-span-3">
+      <div className="surface-card rounded-2xl p-5">
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="mt-4 h-[260px] w-full rounded-xl" />
+      </div>
+      <div className="surface-card rounded-2xl p-5 xl:col-span-4">
         <Skeleton className="h-4 w-48" />
         <Skeleton className="mt-4 h-[200px] w-full rounded-xl" />
       </div>

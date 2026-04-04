@@ -16,16 +16,12 @@ _task: asyncio.Task | None = None
 
 
 def _jira_ready() -> bool:
-    return bool(
-        settings.JIRA_BASE_URL.strip()
-        and settings.JIRA_EMAIL.strip()
-        and settings.JIRA_API_TOKEN.strip()
-    )
+    return settings.jira_ready
 
 
 def _run_once() -> None:
     if not _jira_ready():
-        logger.debug("Skipping Jira auto reconcile: Jira credentials are not configured")
+        logger.warning("Skipping Jira auto reconcile: Jira credentials are not configured (check JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN in .env)")
         return
 
     db = SessionLocal()

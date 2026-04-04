@@ -118,7 +118,12 @@ export default function NotificationDebugPage() {
                   <SelectItem value="in-app">in-app</SelectItem>
                   <SelectItem value="email-sent">email-sent</SelectItem>
                   <SelectItem value="email-failed">email-failed</SelectItem>
+                  <SelectItem value="n8n-sent">n8n-sent</SelectItem>
+                  <SelectItem value="n8n-failed">n8n-failed</SelectItem>
+                  <SelectItem value="digest-sent">digest-sent</SelectItem>
+                  <SelectItem value="digest-failed">digest-failed</SelectItem>
                   <SelectItem value="pending-digest">pending-digest</SelectItem>
+                  <SelectItem value="suppressed">suppressed</SelectItem>
                 </SelectContent>
               </Select>
               <Button size="sm" className="h-8 text-xs" onClick={() => load().catch(() => {})} disabled={loading}>
@@ -182,7 +187,7 @@ export default function NotificationDebugPage() {
                       </div>
                     </div>
                     <div className="mt-1 grid gap-1 text-[11px] text-muted-foreground">
-                      <p>Severity: {row.severity} | Source: {row.source || "system"} | {prettyTime(row.created_at)}</p>
+                      <p>Severity: {row.severity} | Event: {row.event_type || "system_alert"} | Source: {row.source || "system"} | {prettyTime(row.created_at)}</p>
                       <p>Workflow: {row.workflow_name || "n/a"} | Trace: {row.trace_id || "n/a"}</p>
                       <p>Recipients: {row.recipients.length ? row.recipients.join(", ") : "n/a"}</p>
                       <p>Duplicate suppression: {row.duplicate_suppression || "none"}</p>

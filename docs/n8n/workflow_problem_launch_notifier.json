@@ -284,6 +284,53 @@
     },
     {
       "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TEAMS_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => { const problemId = $json.problem_id || 'N/A'; const title = $json.title || 'Problem Detected'; const status = $json.status || 'open'; const priority = String($json.priority || 'high').toUpperCase(); const affectedCount = $json.affected_tickets_count !== undefined ? String($json.affected_tickets_count) : '0'; const problemUrl = $json.problem_url || (($env.FRONTEND_BASE_URL || 'http://localhost:3000') + '/problems/' + problemId); const severity = priority === 'CRITICAL' ? 'Critical' : 'High'; const themeColor = severity === 'Critical' ? 'C62828' : 'EF6C00'; return { '@type': 'MessageCard', '@context': 'https://schema.org/extensions', summary: `ITSM problem alert - ${problemId}`, themeColor, title: `${severity} Problem Alert`, sections: [{ activityTitle: `${problemId} - ${title}`, text: `[Open problem](${problemUrl})`, facts: [{ name: 'Problem', value: problemId }, { name: 'Status', value: status }, { name: 'Priority', value: priority }, { name: 'Affected Tickets', value: affectedCount }, { name: 'Root Cause', value: $json.root_cause || 'Under investigation' }, { name: 'Assignee', value: $json.assignee || 'N/A' }], markdown: true }], potentialAction: [{ '@type': 'OpenUri', 'name': 'Open Problem', targets: [{ os: 'default', uri: problemUrl }] }] }; })() }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "problem-send-teams",
+      "name": "Send Teams Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2320,
+        180
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = {\n  workflow: 'Problem Launch Notifier',\n  channel: 'teams',\n  timestamp: new Date().toISOString(),\n  route: $json.error ? 'error' : 'ok',\n  status: $json.statusCode || null,\n  error: $json.error || null,\n  response: $json.body || $json.data || null,\n};\nif (payload.route === 'error') {\n  console.error('[n8n][problem-notifier][teams]', JSON.stringify(payload));\n} else {\n  console.log('[n8n][problem-notifier][teams]', JSON.stringify(payload));\n}\nreturn [{ json: payload }];"
+      },
+      "id": "problem-log-teams",
+      "name": "Log Teams Delivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2560,
+        180
+      ]
+    },
+    {
+      "parameters": {
         "width": 460,
         "height": 120,
         "content": "## 4. Error Handling\nAll failure paths converge here. Errors are logged to console for n8n execution logs."
@@ -313,17 +360,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ ($env.ITSM_BASE_URL || 'http://host.docker.internal:8000') + '/api/notifications' }}",
+        "url": "={{ ($env.ITSM_BASE_URL || 'http://host.docker.internal:8000') + '/api/notifications/system' }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "X-Automation-Secret",
               "value": "={{ $env.AUTOMATION_SECRET }}"
-            },
-            {
-              "name": "X-Actor",
-              "value": "system:n8n"
             },
             {
               "name": "Content-Type",
@@ -333,7 +376,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { problem_id: $json.problem_id, type: 'problem', title: 'Problem Detected', body: $json.generated_summary || $json.title || ('Problem ' + $json.problem_id), severity: 'critical', link: '/problems/' + $json.problem_id, source: 'n8n' } }}",
+        "jsonBody": "={{ { title: 'Problème détecté : ' + $json.problem_id, body: $json.generated_summary || $json.title || ('Problem ' + $json.problem_id), severity: 'critical', event_type: 'problem_created', user_id: null, source: 'n8n_workflow', link: '/problems/' + $json.problem_id, dedupe_key: 'problem_' + $json.problem_id + '_' + new Date().toISOString().slice(0, 13) } }}",
         "options": {
           "response": {
             "response": {
@@ -491,7 +534,23 @@
         ],
         [
           {
+            "node": "Send Teams Alert",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Create In-App Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Teams Alert": {
+      "main": [
+        [
+          {
+            "node": "Log Teams Delivery",
             "type": "main",
             "index": 0
           }
@@ -520,7 +579,8 @@
   "tags": [
     "itsm",
     "problems",
-    "notifications"
+    "notifications",
+    "teams"
   ]
 }
 

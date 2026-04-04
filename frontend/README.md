@@ -37,7 +37,7 @@ Role-sensitive actions are hidden or disabled when user permissions do not allow
 Environment file: `frontend/.env.local`
 
 Required variable:
-- `NEXT_PUBLIC_API_URL` (example: `http://localhost:8000/api`)
+- `NEXT_PUBLIC_API_URL` (example: `http://localhost:8052/api`)
 
 Template file:
 - `frontend/.env.local.example`

@@ -45,6 +45,12 @@ function prettyTime(iso: string): string {
   return `${Math.floor(diff / 86400)}d ago`
 }
 
+function eventLabel(eventType: string | undefined): string {
+  const normalized = String(eventType || "").replace(/_/g, " ").trim()
+  if (!normalized) return "update"
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1)
+}
+
 export default function NotificationsPage() {
   const router = useRouter()
   const [rows, setRows] = React.useState<NotificationItem[]>([])
@@ -59,7 +65,16 @@ export default function NotificationsPage() {
   const [prefs, setPrefs] = React.useState<{
     email_enabled: boolean
     email_min_severity: "info" | "warning" | "high" | "critical"
+    immediate_email_min_severity: "info" | "warning" | "high" | "critical"
+    digest_enabled: boolean
     digest_frequency: "none" | "hourly"
+    quiet_hours_enabled: boolean
+    critical_bypass_quiet_hours: boolean
+    ticket_assignment_enabled: boolean
+    ticket_comment_enabled: boolean
+    sla_notifications_enabled: boolean
+    problem_notifications_enabled: boolean
+    ai_notifications_enabled: boolean
   } | null>(null)
 
   const load = React.useCallback(async () => {
@@ -90,7 +105,16 @@ export default function NotificationsPage() {
         setPrefs({
           email_enabled: data.email_enabled,
           email_min_severity: data.email_min_severity,
+          immediate_email_min_severity: data.immediate_email_min_severity,
+          digest_enabled: data.digest_enabled,
           digest_frequency: data.digest_frequency,
+          quiet_hours_enabled: data.quiet_hours_enabled,
+          critical_bypass_quiet_hours: data.critical_bypass_quiet_hours,
+          ticket_assignment_enabled: data.ticket_assignment_enabled,
+          ticket_comment_enabled: data.ticket_comment_enabled,
+          sla_notifications_enabled: data.sla_notifications_enabled,
+          problem_notifications_enabled: data.problem_notifications_enabled,
+          ai_notifications_enabled: data.ai_notifications_enabled,
         })
       )
       .catch(() => setPrefs(null))
@@ -128,7 +152,7 @@ export default function NotificationsPage() {
     setMarkAllBusy(true)
     try {
       await markAllNotificationsRead()
-      setRows((prev) => prev.map((n) => ({ ...n, read_at: n.read_at || new Date().toISOString() })))
+      await load()
     } finally {
       setMarkAllBusy(false)
     }
@@ -164,9 +188,30 @@ export default function NotificationsPage() {
     }
     const ticketId = ticketIdFromNotification(item)
     if (!ticketId) return
-    const endpoint = actionType === "approve" ? `/tickets/${ticketId}/approve` : `/tickets/${ticketId}/escalate`
-    await apiFetch(endpoint, { method: "PATCH" })
+    if (actionType === "reassign") {
+      const assignee = String(item.action_payload?.assignee || item.metadata_json?.assignee || "").trim()
+      if (!assignee) return
+      await apiFetch(`/tickets/${ticketId}/triage`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          assignee,
+          comment: "Applied from SLA high-risk notification action.",
+        }),
+      })
+    } else {
+      const endpoint = actionType === "approve" ? `/tickets/${ticketId}/approve` : `/tickets/${ticketId}/escalate`
+      await apiFetch(endpoint, { method: "PATCH" })
+    }
     await onMark(item, true)
+  }
+
+  const actionLabel = (actionType: string | null | undefined): string => {
+    const normalized = String(actionType || "").toLowerCase()
+    if (normalized === "reassign") return "Reassign"
+    if (normalized === "approve") return "Approve"
+    if (normalized === "escalate") return "Escalate"
+    if (normalized === "dismiss") return "Dismiss"
+    return normalized || "Action"
   }
 
   const updatePrefs = async (next: Partial<NonNullable<typeof prefs>>) => {
@@ -176,12 +221,30 @@ export default function NotificationsPage() {
       const updated = await patchNotificationPreferences({
         email_enabled: next.email_enabled ?? prefs.email_enabled,
         email_min_severity: next.email_min_severity ?? prefs.email_min_severity,
+        immediate_email_min_severity: next.immediate_email_min_severity ?? prefs.immediate_email_min_severity,
+        digest_enabled: next.digest_enabled ?? prefs.digest_enabled,
         digest_frequency: next.digest_frequency ?? prefs.digest_frequency,
+        quiet_hours_enabled: next.quiet_hours_enabled ?? prefs.quiet_hours_enabled,
+        critical_bypass_quiet_hours: next.critical_bypass_quiet_hours ?? prefs.critical_bypass_quiet_hours,
+        ticket_assignment_enabled: next.ticket_assignment_enabled ?? prefs.ticket_assignment_enabled,
+        ticket_comment_enabled: next.ticket_comment_enabled ?? prefs.ticket_comment_enabled,
+        sla_notifications_enabled: next.sla_notifications_enabled ?? prefs.sla_notifications_enabled,
+        problem_notifications_enabled: next.problem_notifications_enabled ?? prefs.problem_notifications_enabled,
+        ai_notifications_enabled: next.ai_notifications_enabled ?? prefs.ai_notifications_enabled,
       })
       setPrefs({
         email_enabled: updated.email_enabled,
         email_min_severity: updated.email_min_severity,
+        immediate_email_min_severity: updated.immediate_email_min_severity,
+        digest_enabled: updated.digest_enabled,
         digest_frequency: updated.digest_frequency,
+        quiet_hours_enabled: updated.quiet_hours_enabled,
+        critical_bypass_quiet_hours: updated.critical_bypass_quiet_hours,
+        ticket_assignment_enabled: updated.ticket_assignment_enabled,
+        ticket_comment_enabled: updated.ticket_comment_enabled,
+        sla_notifications_enabled: updated.sla_notifications_enabled,
+        problem_notifications_enabled: updated.problem_notifications_enabled,
+        ai_notifications_enabled: updated.ai_notifications_enabled,
       })
     } finally {
       setPrefsBusy(false)
@@ -249,12 +312,15 @@ export default function NotificationsPage() {
                   <SelectTrigger className="h-8 w-[140px] text-xs">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All sources</SelectItem>
-                    <SelectItem value="n8n">n8n</SelectItem>
-                    <SelectItem value="system">System</SelectItem>
-                    <SelectItem value="user">User</SelectItem>
-                    <SelectItem value="sla">SLA</SelectItem>
+                    <SelectContent>
+                      <SelectItem value="all">All sources</SelectItem>
+                      <SelectItem value="n8n">n8n</SelectItem>
+                      <SelectItem value="ticket">Ticket</SelectItem>
+                      <SelectItem value="problem">Problem</SelectItem>
+                      <SelectItem value="ai">AI</SelectItem>
+                      <SelectItem value="system">System</SelectItem>
+                      <SelectItem value="user">User</SelectItem>
+                      <SelectItem value="sla">SLA</SelectItem>
                   </SelectContent>
                 </Select>
 
@@ -277,10 +343,10 @@ export default function NotificationsPage() {
                   const rowContent = (
                     <div
                       key={item.id}
-                      className={`rounded-lg border border-border/60 bg-background px-3 py-2 ${isLink ? "cursor-pointer transition-colors hover:border-primary/40 hover:bg-accent/30" : ""}`}
+                      className={`rounded-lg border border-border/60 px-3 py-2 ${isUnread ? "bg-[var(--color-background-secondary)]" : "bg-[var(--color-background-primary)]"} ${item.severity === "critical" ? "border-l-[4px] border-l-[#E24B4A]" : item.severity === "warning" || item.severity === "high" ? "border-l-[4px] border-l-[#EF9F27]" : item.severity === "info" ? "border-l-[4px] border-l-[#378ADD]" : ""} ${isLink ? "cursor-pointer transition-colors hover:border-primary/40 hover:bg-accent/30" : ""}`}
                       title={
                         isLink
-                          ? `${item.title}${item.body ? `\n${item.body}` : ""}\nSeverity: ${item.severity} | Source: ${item.source || "system"}\nClick to open details`
+                          ? `${item.title}${item.body ? `\n${item.body}` : ""}\nSeverité: ${item.severity} | Source: ${item.source || "system"}\nHover for preview — click to open details`
                           : undefined
                       }
                       onClick={() => {
@@ -308,10 +374,12 @@ export default function NotificationsPage() {
                           {item.body ? <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.body}</p> : null}
                           <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                             <Badge className={`border text-[10px] ${severityBadgeClass(item.severity)}`}>{item.severity}</Badge>
+                            <Badge variant="outline" className="text-[10px]">{eventLabel(item.event_type)}</Badge>
                             {item.source ? <Badge variant="outline" className="text-[10px]">{item.source}</Badge> : null}
+                            {item.pinned_until_read && !item.read_at ? <Badge variant="outline" className="text-[10px]">Pinned</Badge> : null}
                             <span>{prettyTime(item.created_at)}</span>
                             <span>{isUnread ? "Unread" : "Read"}</span>
-                            {isLink ? <span className="text-primary/80">Hover for preview - click row to open</span> : null}
+                            {/* tooltip text moved to title attribute on container */}
                           </div>
                         </div>
                         <div className="flex items-center gap-1">
@@ -326,7 +394,7 @@ export default function NotificationsPage() {
                                 onInlineAction(item).catch(() => {})
                               }}
                             >
-                              {item.action_type}
+                              {actionLabel(item.action_type)}
                             </Button>
                           ) : null}
                           {!item.link ? (
@@ -367,6 +435,7 @@ export default function NotificationsPage() {
                           <p className="text-xs font-semibold">{item.title}</p>
                           {item.body ? <p className="text-xs text-muted-foreground">{item.body}</p> : null}
                           <div className="text-[11px] text-muted-foreground">
+                            <p>Event: {eventLabel(item.event_type)}</p>
                             <p>Severity: {item.severity}</p>
                             <p>Source: {item.source || "system"}</p>
                             <p>Click to open details</p>
@@ -381,7 +450,7 @@ export default function NotificationsPage() {
               </div>
             )}
 
-            <div className="mt-4 flex items-center justify-end gap-2">
+            <div className="mt-4 flex items-center justify-center gap-2">
               <Button
                 variant="outline"
                 size="sm"
@@ -423,18 +492,20 @@ export default function NotificationsPage() {
                   {prefs.email_enabled ? "Email enabled" : "Email disabled"}
                 </Button>
                 <Select
-                  value={prefs.email_min_severity}
-                  onValueChange={(v) => updatePrefs({ email_min_severity: v as typeof prefs.email_min_severity }).catch(() => {})}
+                  value={prefs.immediate_email_min_severity}
+                  onValueChange={(v) =>
+                    updatePrefs({ immediate_email_min_severity: v as typeof prefs.immediate_email_min_severity }).catch(() => {})
+                  }
                   disabled={prefsBusy}
                 >
                   <SelectTrigger className="h-8 w-[170px] text-xs">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="critical">Min severity: Critical</SelectItem>
-                    <SelectItem value="high">Min severity: High</SelectItem>
-                    <SelectItem value="warning">Min severity: Warning</SelectItem>
-                    <SelectItem value="info">Min severity: Info</SelectItem>
+                    <SelectItem value="critical">Immediate email: Critical</SelectItem>
+                    <SelectItem value="high">Immediate email: High</SelectItem>
+                    <SelectItem value="warning">Immediate email: Warning</SelectItem>
+                    <SelectItem value="info">Immediate email: Info</SelectItem>
                   </SelectContent>
                 </Select>
                 <Select
@@ -450,6 +521,42 @@ export default function NotificationsPage() {
                     <SelectItem value="none">Digest: Off</SelectItem>
                   </SelectContent>
                 </Select>
+                <Button
+                  variant={prefs.digest_enabled ? "default" : "outline"}
+                  size="sm"
+                  className="h-8 text-xs"
+                  disabled={prefsBusy}
+                  onClick={() => updatePrefs({ digest_enabled: !prefs.digest_enabled }).catch(() => {})}
+                >
+                  {prefs.digest_enabled ? "Digest enabled" : "Digest disabled"}
+                </Button>
+                <Button
+                  variant={prefs.sla_notifications_enabled ? "default" : "outline"}
+                  size="sm"
+                  className="h-8 text-xs"
+                  disabled={prefsBusy}
+                  onClick={() => updatePrefs({ sla_notifications_enabled: !prefs.sla_notifications_enabled }).catch(() => {})}
+                >
+                  SLA alerts
+                </Button>
+                <Button
+                  variant={prefs.ticket_assignment_enabled ? "default" : "outline"}
+                  size="sm"
+                  className="h-8 text-xs"
+                  disabled={prefsBusy}
+                  onClick={() => updatePrefs({ ticket_assignment_enabled: !prefs.ticket_assignment_enabled }).catch(() => {})}
+                >
+                  Assignment alerts
+                </Button>
+                <Button
+                  variant={prefs.ticket_comment_enabled ? "default" : "outline"}
+                  size="sm"
+                  className="h-8 text-xs"
+                  disabled={prefsBusy}
+                  onClick={() => updatePrefs({ ticket_comment_enabled: !prefs.ticket_comment_enabled }).catch(() => {})}
+                >
+                  Comment alerts
+                </Button>
               </div>
             )}
           </CardContent>

@@ -1,7 +1,6 @@
 "use client"
 
 import { AppShell } from "@/components/app-shell"
-import { TicketForm } from "@/components/ticket-form"
 import { useI18n } from "@/lib/i18n"
 
 export default function NewTicketPage() {
@@ -16,11 +15,10 @@ export default function NewTicketPage() {
             {t("newTicket.title")}
           </h2>
           <p className="mt-2 max-w-3xl text-sm text-muted-foreground sm:text-base">
-            {t("newTicket.subtitle")}
+            La création de tickets se fait via Jira Service Management.
+            Les tickets sont synchronisés automatiquement dans cette plateforme.
           </p>
         </div>
-
-        <TicketForm />
       </div>
     </AppShell>
   )

@@ -24,11 +24,11 @@ logger = logging.getLogger(__name__)
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    has_vector = bind.execute(sa.text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")).scalar()
-    if not has_vector:
-        logger.warning("pgvector extension not installed; skipping kb_chunks migration")
-        return
+    # pgvector extension must be installed in PostgreSQL before this
+    # migration runs. Install with: CREATE EXTENSION IF NOT EXISTS vector;
+    # If the pgvector binary is not installed in PostgreSQL, this will fail with:
+    # "type 'vector' does not exist"
+    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
     op.create_table(
         "kb_chunks",

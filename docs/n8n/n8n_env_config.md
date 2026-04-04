@@ -52,12 +52,10 @@ Note: The Email node still requires an SMTP credential configured in n8n (host, 
 
 ## Microsoft Teams
 
-- `TEAMS_SLA_WEBHOOK_URL`
-  - Incoming webhook URL used by SLA workflow.
-- `TEAMS_ESCALATION_WEBHOOK_URL`
-  - Incoming webhook URL for critical escalation alerts.
-- `TEAMS_PROBLEM_WEBHOOK_URL`
-  - Incoming webhook URL for problem launch adaptive cards.
+- `TEAMS_WEBHOOK_URL`
+  - Incoming webhook URL used by the SLA, critical-ticket, and problem-notifier workflows.
+  - Point this to the target Teams channel for alert delivery.
+  - If you later want per-workflow channels, you can split this back into multiple env vars without changing backend logic.
 
 ## Optional operational variables
 

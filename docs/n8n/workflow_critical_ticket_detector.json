@@ -241,6 +241,53 @@
     },
     {
       "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TEAMS_WEBHOOK_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (() => { const ticketId = $json.ticket_id || 'N/A'; const title = $json.title || 'Critical Ticket'; const status = $json.status || 'open'; const priority = String($json.priority || 'critical').toUpperCase(); const assignee = $json.assignee || 'Unassigned'; const slaInfo = $json.sla_status || $json.sla_risk || 'Not available'; const ticketUrl = $json.ticket_url || (($env.FRONTEND_BASE_URL || 'http://localhost:3000') + '/tickets/' + ticketId); const severity = priority === 'CRITICAL' ? 'Critical' : 'High'; const themeColor = severity === 'Critical' ? 'C62828' : 'EF6C00'; return { '@type': 'MessageCard', '@context': 'https://schema.org/extensions', summary: `ITSM critical ticket alert - ${ticketId}`, themeColor, title: `${severity} Ticket Alert`, sections: [{ activityTitle: `${ticketId} - ${title}`, text: `[Open ticket](${ticketUrl})`, facts: [{ name: 'Ticket', value: ticketId }, { name: 'Status', value: status }, { name: 'Priority', value: priority }, { name: 'Assignee', value: assignee }, { name: 'SLA', value: slaInfo }, { name: 'Trace', value: $json.trace_id || 'N/A' }], markdown: true }], potentialAction: [{ '@type': 'OpenUri', 'name': 'Open Ticket', targets: [{ os: 'default', uri: ticketUrl }] }] }; })() }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "ctd-send-teams",
+      "name": "Send Teams Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2580,
+        180
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = {\n  workflow: 'Critical Ticket Detector',\n  channel: 'teams',\n  timestamp: new Date().toISOString(),\n  route: $json.error ? 'error' : 'ok',\n  status: $json.statusCode || null,\n  error: $json.error || null,\n  response: $json.body || $json.data || null,\n};\nif (payload.route === 'error') {\n  console.error('[n8n][critical-ticket-detector][teams]', JSON.stringify(payload));\n} else {\n  console.log('[n8n][critical-ticket-detector][teams]', JSON.stringify(payload));\n}\nreturn [{ json: payload }];"
+      },
+      "id": "ctd-log-teams",
+      "name": "Log Teams Delivery",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2820,
+        180
+      ]
+    },
+    {
+      "parameters": {
         "width": 460,
         "height": 120,
         "content": "## Error Handling\nAny real failure routes here. Success responses are ignored."
@@ -270,17 +317,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ ($env.ITSM_BASE_URL || 'http://host.docker.internal:8000') + '/api/notifications' }}",
+        "url": "={{ ($env.ITSM_BASE_URL || 'http://host.docker.internal:8000') + '/api/notifications/system' }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "X-Automation-Secret",
               "value": "={{ $env.AUTOMATION_SECRET }}"
-            },
-            {
-              "name": "X-Actor",
-              "value": "system:n8n"
             },
             {
               "name": "Content-Type",
@@ -290,7 +333,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { ticket_id: $json.ticket_id, type: 'ticket', title: 'Critical Ticket Created', body: $json.title || ('Ticket ' + $json.ticket_id), severity: 'critical', link: '/tickets/' + $json.ticket_id, source: 'n8n' } }}",
+        "jsonBody": "={{ { title: 'Ticket critique détecté : ' + $json.ticket_id, body: ($json.title || ('Ticket ' + $json.ticket_id)) + ' — Priorité critique, assigné à ' + ($json.assignee || 'N/A'), severity: 'critical', event_type: 'ticket_created', user_id: null, source: 'n8n_workflow', link: '/tickets/' + $json.ticket_id, dedupe_key: 'critical_ticket_' + $json.ticket_id + '_' + new Date().toISOString().slice(0, 13) } }}",
         "options": {
           "response": {
             "response": {
@@ -448,7 +491,23 @@
         ],
         [
           {
+            "node": "Send Teams Alert",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Create In-App Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Teams Alert": {
+      "main": [
+        [
+          {
+            "node": "Log Teams Delivery",
             "type": "main",
             "index": 0
           }
@@ -478,7 +537,8 @@
     "itsm",
     "critical",
     "notifications",
-    "email"
+    "email",
+    "teams"
   ]
 }
 

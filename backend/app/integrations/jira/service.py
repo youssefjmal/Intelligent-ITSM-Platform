@@ -17,7 +17,7 @@ from app.core.config import settings
 from app.integrations.jira.client import JiraClient
 from app.integrations.jira.mapper import JIRA_SOURCE, map_issue, map_issue_comment
 from app.integrations.jira.schemas import JiraReconcileRequest, JiraReconcileResult, JiraWebhookResponse
-from app.models.enums import TicketCategory, TicketPriority, TicketStatus
+from app.models.enums import TicketCategory, TicketPriority, TicketStatus, TicketType
 from app.models.jira_sync_state import JiraSyncState
 from app.models.ticket import Ticket, TicketComment
 from app.models.user import User
@@ -28,12 +28,21 @@ logger = logging.getLogger(__name__)
 
 WEBHOOK_SECRET_HEADER = "X-Jira-Webhook-Secret"
 LEGACY_WEBHOOK_SIGNATURE_HEADER = "X-Signature"
-SYNC_FIELDS = "summary,description,comment,priority,status,assignee,reporter,created,updated,labels,components,issuetype"
+SYNC_FIELDS = "summary,description,comment,priority,status,assignee,reporter,created,updated,duedate,labels,components,issuetype,customfield_10010"
 RECONCILE_SAFETY_WINDOW = dt.timedelta(minutes=2)
 LOCAL_TICKET_SUMMARY_RE = re.compile(r"^\[(TW-\d+)\]\s*", re.IGNORECASE)
 LOCAL_TICKET_LABEL_PREFIXES = ("twseed_tw_", "local_tw_")
 DONE_STATUSES = {TicketStatus.resolved, TicketStatus.closed}
-KNOWN_JIRA_ISSUE_TYPES = {"incident", "service request", "task", "bug", "problem"}
+KNOWN_JIRA_ISSUE_TYPES = {
+    "incident",
+    "[system] incident",
+    "service request",
+    "[system] service request",
+    "[system] service request with approvals",
+    "task",
+    "bug",
+    "problem",
+}
 KNOWN_JIRA_PRIORITIES = {"highest", "critical", "high", "medium", "low", "lowest"}
 
 
@@ -293,6 +302,45 @@ def _resolve_assignee_specialization(db: Session, assignee_name: str) -> str:
     return ", ".join(specializations[:3])
 
 
+def _identity_slug(value: str | None) -> str:
+    return re.sub(r"_+", "_", re.sub(r"[^a-z0-9]", "_", str(value or "").strip().lower())).strip("_")
+
+
+def _preserved_local_identity(db: Session, issue: dict[str, Any], *, label_prefix: str) -> str | None:
+    fields = issue.get("fields") or {}
+    labels = [str(label).strip().lower() for label in list(fields.get("labels") or []) if str(label).strip()]
+    target_slug = ""
+    for label in labels:
+        if not label.startswith(label_prefix):
+            continue
+        target_slug = label[len(label_prefix) :].strip()
+        if target_slug:
+            break
+    if not target_slug:
+        return None
+
+    try:
+        users = db.query(User).all()
+    except Exception:  # noqa: BLE001
+        users = []
+    for user in users:
+        if _identity_slug(user.name) == target_slug:
+            return user.name
+
+    words = [part for part in target_slug.replace("-", "_").split("_") if part]
+    if not words:
+        return None
+    return " ".join(word[:1].upper() + word[1:] for word in words)
+
+
+def _preserved_local_assignee(db: Session, issue: dict[str, Any]) -> str | None:
+    return _preserved_local_identity(db, issue, label_prefix="local_assignee_")
+
+
+def _preserved_local_reporter(db: Session, issue: dict[str, Any]) -> str | None:
+    return _preserved_local_identity(db, issue, label_prefix="local_reporter_")
+
+
 def _enforce_generated_description_policy(text: str) -> str:
     cleaned = " ".join(str(text or "").split()).strip()
     if not cleaned:
@@ -359,12 +407,28 @@ def _priority_was_defaulted(issue: dict[str, Any], mapped_priority: TicketPriori
     return mapped_priority == TicketPriority.medium
 
 
-def _classify_inbound_ticket(title: str, description: str) -> tuple[TicketPriority | None, TicketCategory | None]:
+def _classify_inbound_ticket(
+    title: str,
+    description: str,
+    *,
+    ticket_id: str | None = None,
+) -> tuple[TicketPriority | None, TicketType | None, TicketCategory | None]:
     try:
-        priority, category, _recommendations = classify_ticket(title, description)
-        return priority, category
+        priority, ticket_type, category, _recommendations = classify_ticket(
+            title, description, ticket_id=ticket_id, trigger="jira_sync",
+        )
+        return priority, ticket_type, category
     except Exception:  # noqa: BLE001
-        return None, None
+        return None, None, None
+
+
+def _ticket_type_was_defaulted(issue: dict[str, Any], mapped_ticket_type: TicketType) -> bool:
+    issue_type = _issue_type_name(issue)
+    if not issue_type:
+        return True
+    if issue_type in KNOWN_JIRA_ISSUE_TYPES:
+        return False
+    return mapped_ticket_type == TicketType.incident
 
 
 def _find_ticket_for_issue(
@@ -404,6 +468,29 @@ def _should_update_ticket(existing: Ticket, incoming_updated: dt.datetime | None
 def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
     now = _utcnow()
     mapped = map_issue(issue)
+    preserved_assignee = _preserved_local_assignee(db, issue)
+    preserved_reporter = _preserved_local_reporter(db, issue)
+    if (preserved_assignee and preserved_assignee != mapped.assignee) or (
+        preserved_reporter and preserved_reporter != mapped.reporter
+    ):
+        mapped = mapped.__class__(
+            jira_key=mapped.jira_key,
+            jira_issue_id=mapped.jira_issue_id,
+            source=mapped.source,
+            title=mapped.title,
+            description=mapped.description,
+            status=mapped.status,
+            priority=mapped.priority,
+            ticket_type=mapped.ticket_type,
+            category=mapped.category,
+            assignee=preserved_assignee or mapped.assignee,
+            reporter=preserved_reporter or mapped.reporter,
+            tags=mapped.tags,
+            jira_created_at=mapped.jira_created_at,
+            jira_updated_at=mapped.jira_updated_at,
+            due_at=mapped.due_at,
+            raw_payload=mapped.raw_payload,
+        )
     specialization = _resolve_assignee_specialization(db, mapped.assignee)
     if _issue_description_missing(issue):
         mapped = mapped.__class__(
@@ -418,12 +505,14 @@ def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
             ),
             status=mapped.status,
             priority=mapped.priority,
+            ticket_type=mapped.ticket_type,
             category=mapped.category,
             assignee=mapped.assignee,
             reporter=mapped.reporter,
             tags=mapped.tags,
             jira_created_at=mapped.jira_created_at,
             jira_updated_at=mapped.jira_updated_at,
+            due_at=mapped.due_at,
             raw_payload=mapped.raw_payload,
         )
     local_ticket_id = _extract_local_ticket_id(issue)
@@ -435,19 +524,35 @@ def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
     )
 
     ai_priority: TicketPriority | None = None
+    ai_ticket_type: TicketType | None = None
     ai_category: TicketCategory | None = None
     resolved_priority = mapped.priority
+    resolved_ticket_type = mapped.ticket_type
     resolved_category = mapped.category
     ai_applied = False
+    needs_ai_classification = any(
+        (
+            _category_was_defaulted(issue, mapped.category),
+            _ticket_type_was_defaulted(issue, mapped.ticket_type),
+            _priority_was_defaulted(issue, mapped.priority),
+        )
+    )
 
     def resolve_classification() -> None:
-        nonlocal ai_priority, ai_category, resolved_priority, resolved_category, ai_applied
-        ai_priority, ai_category = _classify_inbound_ticket(mapped.title, mapped.description)
+        nonlocal ai_priority, ai_ticket_type, ai_category, resolved_priority, resolved_ticket_type, resolved_category, ai_applied
+        if not needs_ai_classification:
+            return
+        ai_priority, ai_ticket_type, ai_category = _classify_inbound_ticket(
+            mapped.title, mapped.description,
+            ticket_id=str(issue.get("key") or ""),
+        )
         if ai_category is not None and _category_was_defaulted(issue, mapped.category):
             resolved_category = ai_category
+        if ai_ticket_type is not None and _ticket_type_was_defaulted(issue, mapped.ticket_type):
+            resolved_ticket_type = ai_ticket_type
         if ai_priority is not None and _priority_was_defaulted(issue, mapped.priority):
             resolved_priority = ai_priority
-        ai_applied = ai_priority is not None or ai_category is not None
+        ai_applied = ai_priority is not None or ai_ticket_type is not None or ai_category is not None
 
     if ticket is None:
         resolve_classification()
@@ -457,6 +562,7 @@ def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
             description=mapped.description,
             status=mapped.status,
             priority=resolved_priority,
+            ticket_type=resolved_ticket_type,
             category=resolved_category,
             assignee=mapped.assignee,
             reporter=mapped.reporter,
@@ -466,6 +572,7 @@ def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
             auto_priority_applied=ai_applied,
             priority_model_version="smart-v1" if ai_applied else "jira-native",
             predicted_priority=ai_priority,
+            predicted_ticket_type=ai_ticket_type,
             predicted_category=ai_category,
             assignment_change_count=0,
             first_action_at=None,
@@ -474,6 +581,7 @@ def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
             jira_issue_id=mapped.jira_issue_id,
             jira_created_at=mapped.jira_created_at,
             jira_updated_at=mapped.jira_updated_at,
+            due_at=mapped.due_at,
             source=mapped.source,
             external_id=mapped.jira_key,
             external_source=mapped.source,
@@ -503,11 +611,13 @@ def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
     ticket.description = mapped.description
     ticket.status = mapped.status
     ticket.priority = resolved_priority
+    ticket.ticket_type = resolved_ticket_type
     ticket.category = resolved_category
     ticket.assignee = mapped.assignee
     ticket.reporter = mapped.reporter
     ticket.tags = mapped.tags
     ticket.predicted_priority = ai_priority
+    ticket.predicted_ticket_type = ai_ticket_type
     ticket.predicted_category = ai_category
     ticket.auto_priority_applied = ai_applied
     ticket.priority_model_version = "smart-v1" if ai_applied else ticket.priority_model_version or "jira-native"
@@ -516,6 +626,7 @@ def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
     ticket.jira_issue_id = mapped.jira_issue_id
     ticket.jira_created_at = mapped.jira_created_at
     ticket.jira_updated_at = mapped.jira_updated_at
+    ticket.due_at = mapped.due_at
     ticket.source = ticket.source or JIRA_SOURCE
     ticket.external_id = mapped.jira_key
     ticket.external_source = JIRA_SOURCE
@@ -729,7 +840,10 @@ def reconcile(db: Session, payload: JiraReconcileRequest) -> JiraReconcileResult
                 logger.exception("Jira reconcile failed for issue %s", issue_key)
 
         start_at += len(issues)
-        if start_at >= int(page.get("total") or 0):
+        total = page.get("total")
+        if total is not None and start_at >= int(total):
+            break
+        if total is None and len(issues) < max(1, settings.JIRA_SYNC_PAGE_SIZE):
             break
 
     state.last_synced_at = max_processed_updated or state.last_synced_at

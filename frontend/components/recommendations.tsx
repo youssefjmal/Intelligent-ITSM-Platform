@@ -44,6 +44,7 @@ import {
 } from "@/lib/ai-feedback-api"
 import { RecommendationFeedbackControls } from "@/components/recommendation-feedback-controls"
 import {
+  LLMAdvisoryBlock,
   RecommendationActionBlock,
   RecommendationEvidenceAccordion,
   RecommendationMatchBlock,
@@ -169,7 +170,7 @@ export function RecommendationsPanel() {
   const [search, setSearch] = useState<string>("")
   const [impactFilter, setImpactFilter] = useState<string>("all")
   const [confidenceFilter, setConfidenceFilter] = useState<string>("all")
-  const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest")
+  const [sortOrder, setSortOrder] = useState<"newest" | "confidence" | "impact">("newest")
   const [selectedRec, setSelectedRec] = useState<Recommendation | null>(null)
   const [feedbackSubmittingById, setFeedbackSubmittingById] = useState<Record<string, boolean>>({})
   const [feedbackMessageById, setFeedbackMessageById] = useState<Record<string, string>>({})
@@ -213,7 +214,7 @@ export function RecommendationsPanel() {
     }
   }, [recommendations])
 
-  const filtered = useMemo(() => {
+  const filteredRecommendations = useMemo(() => {
     const q = search.trim().toLowerCase()
     let result = recommendations.filter((rec) => {
       if (q) {
@@ -238,10 +239,20 @@ export function RecommendationsPanel() {
       }
       return true
     })
-    result = [...result].sort((a, b) => {
-      const diff = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-      return sortOrder === "newest" ? -diff : diff
-    })
+    if (sortOrder === "newest") {
+      result = [...result].sort((a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      )
+    } else if (sortOrder === "confidence") {
+      result = [...result].sort((a, b) => b.confidence - a.confidence)
+    } else if (sortOrder === "impact") {
+      const order = { high: 0, medium: 1, low: 2 }
+      result = [...result].sort(
+        (a, b) =>
+          (order[a.impact as keyof typeof order] ?? 3) -
+          (order[b.impact as keyof typeof order] ?? 3)
+      )
+    }
     return result
   }, [recommendations, search, filter, impactFilter, confidenceFilter, sortOrder])
 
@@ -581,7 +592,7 @@ export function RecommendationsPanel() {
               <>
                 <div className="flex flex-wrap gap-2">
                   <Badge className="border border-blue-200 bg-blue-100 text-blue-800">
-                    {locale === "fr" ? "RAG governance" : "RAG governance"}
+                    {locale === "fr" ? "Gouvernance RAG" : "RAG Governance"}
                   </Badge>
                   <Badge className="border border-slate-200 bg-slate-100 text-slate-700">
                     {locale === "fr" ? `Confiance: ${Math.round(slaStrategies.confidence * 100)}%` : `Confidence: ${Math.round(slaStrategies.confidence * 100)}%`}
@@ -591,7 +602,7 @@ export function RecommendationsPanel() {
                 <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      {locale === "fr" ? "Patterns de breach" : "Breach patterns"}
+                      {locale === "fr" ? "Schémas de breach détectés" : "Detected breach patterns"}
                     </p>
                     <ul className="mt-2 space-y-2">
                       {slaStrategies.commonBreachPatterns.slice(0, 4).map((item) => (
@@ -603,7 +614,7 @@ export function RecommendationsPanel() {
                   </div>
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                      {locale === "fr" ? "Ameliorations process" : "Process improvements"}
+                      {locale === "fr" ? "Améliorations suggérées" : "Suggested improvements"}
                     </p>
                     <ul className="mt-2 space-y-2">
                       {slaStrategies.processImprovements.slice(0, 4).map((item) => (
@@ -700,13 +711,17 @@ export function RecommendationsPanel() {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => setSortOrder((prev) => (prev === "newest" ? "oldest" : "newest"))}
+          onClick={() => setSortOrder((prev) =>
+            prev === "newest" ? "confidence" : prev === "confidence" ? "impact" : "newest"
+          )}
           className="h-10 gap-1.5 rounded-xl bg-background/70"
         >
           <ArrowUpDown className="h-3.5 w-3.5" />
-          {sortOrder === "newest"
-            ? (locale === "fr" ? "Plus récents" : "Newest first")
-            : (locale === "fr" ? "Plus anciens" : "Oldest first")}
+          {sortOrder === "confidence"
+            ? (locale === "fr" ? "Par confiance" : "By confidence")
+            : sortOrder === "impact"
+            ? (locale === "fr" ? "Par impact" : "By impact")
+            : (locale === "fr" ? "Plus récents" : "Newest")}
         </Button>
         {activeFilterCount > 0 && (
           <Button
@@ -733,7 +748,7 @@ export function RecommendationsPanel() {
       {/* Result count */}
       {recommendations.length > 0 && (
         <p className="text-xs text-muted-foreground">
-          {filtered.length} {locale === "fr" ? "résultat(s)" : "result(s)"}
+          {filteredRecommendations.length} {locale === "fr" ? "résultat(s)" : "result(s)"}
         </p>
       )}
 
@@ -749,13 +764,13 @@ export function RecommendationsPanel() {
         </div>
       )}
 
-      {filtered.length === 0 && recommendations.length > 0 ? (
+      {filteredRecommendations.length === 0 && recommendations.length > 0 ? (
         <div className="surface-card rounded-xl p-6 text-sm text-muted-foreground">
           {t("recs.noResults")}
         </div>
-      ) : filtered.length > 0 ? (
+      ) : filteredRecommendations.length > 0 ? (
         <div className="space-y-4">
-          {filtered.map((rec) => {
+          {filteredRecommendations.map((rec) => {
             const typeConfig = TYPE_CONFIG[rec.type]
             const impactConfig = IMPACT_CONFIG[rec.impact]
             const TypeIcon = typeConfig.icon
@@ -766,6 +781,14 @@ export function RecommendationsPanel() {
                 : confidencePct >= 60
                   ? "border-l-amber-400"
                   : "border-l-red-400"
+            const typeAccentBorder =
+              rec.type === "pattern"
+                ? "border-l-[4px] border-l-[#534AB7]"
+                : rec.type === "solution"
+                  ? "border-l-[4px] border-l-[#1D9E75]"
+                  : rec.type === "priority"
+                    ? "border-l-[4px] border-l-[#E24B4A]"
+                    : "border-l-[4px] border-l-[#378ADD]"
             const ticketLabel = rec.relatedTickets[0]
               ? `${rec.relatedTickets[0]} | ${rec.title}`
               : rec.title
@@ -786,7 +809,7 @@ export function RecommendationsPanel() {
                 className="block"
               >
                 <Card
-                  className={`surface-card overflow-hidden border-l-2 ${confidenceBorderClass} transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md`}
+                  className={`surface-card overflow-hidden ${typeAccentBorder} transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md`}
                 >
                   <div
                     role="button"
@@ -871,6 +894,10 @@ export function RecommendationsPanel() {
                                 <Badge className="border border-slate-300 bg-slate-100 text-[10px] text-slate-700">
                                   {locale === "fr" ? "Sans match fort" : "No strong match"}
                                 </Badge>
+                              ) : rec.displayMode === "service_request" ? (
+                                <Badge className="border border-sky-300 bg-sky-100 text-[10px] text-sky-800">
+                                  {recommendationStatusLabel(rec.tentative, locale, rec.displayMode)}
+                                </Badge>
                               ) : (
                                 <Badge
                                   className={
@@ -879,7 +906,7 @@ export function RecommendationsPanel() {
                                       : "border border-emerald-300 bg-emerald-100 text-[10px] text-emerald-800"
                                   }
                                 >
-                                  {recommendationStatusLabel(rec.tentative, locale)}
+                                  {recommendationStatusLabel(rec.tentative, locale, rec.displayMode)}
                                 </Badge>
                               )}
                             </div>
@@ -997,6 +1024,14 @@ export function RecommendationsPanel() {
                     <Badge className="border border-slate-300 bg-slate-100 text-[10px] text-slate-700">
                       {locale === "fr" ? "Sans match fort" : "No strong match"}
                     </Badge>
+                  ) : selectedRec.displayMode === "service_request" ? (
+                    <Badge className="border border-sky-300 bg-sky-100 text-[10px] text-sky-800">
+                      {recommendationStatusLabel(selectedRec.tentative, locale, selectedRec.displayMode)}
+                    </Badge>
+                  ) : selectedRec.displayMode === "llm_general_knowledge" ? (
+                    <Badge className="border border-sky-300 bg-sky-100 text-[10px] text-sky-800">
+                      {recommendationStatusLabel(selectedRec.tentative, locale, selectedRec.displayMode)}
+                    </Badge>
                   ) : selectedRec.tentative ? (
                     <Badge className="border border-amber-300 bg-amber-100 text-[10px] text-amber-800">
                       {locale === "fr" ? "Recommandation tentative" : "Tentative recommendation"}
@@ -1040,7 +1075,7 @@ export function RecommendationsPanel() {
                   <p className="mt-1 text-sm font-semibold text-foreground">
                     {selectedRec.displayMode === "no_strong_match"
                       ? (locale === "fr" ? "Sans match fort" : "No strong match")
-                      : recommendationStatusLabel(selectedRec.tentative, locale)}
+                      : recommendationStatusLabel(selectedRec.tentative, locale, selectedRec.displayMode)}
                   </p>
                 </div>
               </div>
@@ -1052,50 +1087,69 @@ export function RecommendationsPanel() {
                 fallback={selectedRec.reasoning || selectedRec.description}
               />
 
-              <RecommendationReasoningBlock
-                locale={locale}
-                reasoning={selectedRec.reasoning || selectedRec.description}
-              />
+              {selectedRec.displayMode === "llm_general_knowledge" ? (
+                <LLMAdvisoryBlock
+                  locale={locale}
+                  advisory={selectedRec.llmGeneralAdvisory || {}}
+                  recommendedAction={selectedRec.recommendedAction}
+                  nextBestActions={selectedRec.nextBestActions}
+                  validationSteps={selectedRec.validationSteps}
+                  currentFeedback={
+                    selectedRec.currentUserFeedback?.feedbackType === "useful" ||
+                    selectedRec.currentUserFeedback?.feedbackType === "not_relevant"
+                      ? selectedRec.currentUserFeedback.feedbackType
+                      : null
+                  }
+                  onFeedback={(feedbackType) => handleRecommendationFeedback(selectedRec, feedbackType)}
+                />
+              ) : (
+                <>
+                  <RecommendationReasoningBlock
+                    locale={locale}
+                    reasoning={selectedRec.reasoning || selectedRec.description}
+                  />
 
-              <RecommendationMatchBlock
-                locale={locale}
-                matchSummary={selectedRec.matchSummary}
-              />
+                  <RecommendationMatchBlock
+                    locale={locale}
+                    matchSummary={selectedRec.matchSummary}
+                  />
 
-              <RecommendationWhyMatchesBlock
-                locale={locale}
-                whyThisMatches={selectedRec.whyThisMatches}
-              />
+                  <RecommendationWhyMatchesBlock
+                    locale={locale}
+                    whyThisMatches={selectedRec.whyThisMatches}
+                  />
 
-              <RecommendationRootCauseBlock
-                locale={locale}
-                probableRootCause={selectedRec.rootCause || selectedRec.probableRootCause}
-              />
+                  <RecommendationRootCauseBlock
+                    locale={locale}
+                    probableRootCause={selectedRec.rootCause || selectedRec.probableRootCause}
+                  />
 
-              <RecommendationSupportingContextBlock
-                locale={locale}
-                supportingContext={selectedRec.supportingContext}
-              />
+                  <RecommendationSupportingContextBlock
+                    locale={locale}
+                    supportingContext={selectedRec.supportingContext}
+                  />
 
-              <RecommendationNextActionsBlock
-                locale={locale}
-                actions={selectedRec.displayMode === "no_strong_match" ? [] : operationalSteps}
-              />
+                  <RecommendationNextActionsBlock
+                    locale={locale}
+                    actions={selectedRec.displayMode === "no_strong_match" ? [] : operationalSteps}
+                  />
 
-              <RecommendationFeedbackControls
-                locale={locale}
-                currentFeedback={selectedRec.currentUserFeedback}
-                feedbackSummary={selectedRec.feedbackSummary}
-                submitting={Boolean(feedbackSubmittingById[selectedRec.id])}
-                successMessage={feedbackMessageById[selectedRec.id] || null}
-                onSubmit={(feedbackType) => handleRecommendationFeedback(selectedRec, feedbackType)}
-              />
+                  <RecommendationFeedbackControls
+                    locale={locale}
+                    currentFeedback={selectedRec.currentUserFeedback}
+                    feedbackSummary={selectedRec.feedbackSummary}
+                    submitting={Boolean(feedbackSubmittingById[selectedRec.id])}
+                    successMessage={feedbackMessageById[selectedRec.id] || null}
+                    onSubmit={(feedbackType) => handleRecommendationFeedback(selectedRec, feedbackType)}
+                  />
 
-              <RecommendationEvidenceAccordion
-                locale={locale}
-                evidenceSources={selectedRec.evidenceSources}
-                countBadge
-              />
+                  <RecommendationEvidenceAccordion
+                    locale={locale}
+                    evidenceSources={selectedRec.evidenceSources}
+                    countBadge
+                  />
+                </>
+              )}
 
               <div className="space-y-2">
                 <p className="text-sm font-semibold text-foreground">{t("recs.relatedTickets")}</p>

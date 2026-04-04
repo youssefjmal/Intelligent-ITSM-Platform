@@ -26,17 +26,36 @@ import { useI18n } from "@/lib/i18n"
 import { ArrowRight } from "lucide-react"
 
 const COLORS_CATEGORY = ["#dc2626", "#2e9461", "#3b82f6", "#8b5cf6", "#f59e0b", "#0ea5e9", "#14b8a6"]
+const COLORS_TICKET_TYPE = ["#ef4444", "#0f766e"]
+
+function normalizeTicketTypeFilter(value: string | undefined): "incident" | "service_request" | null {
+  const normalized = String(value || "")
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+  if (!normalized) return null
+  if (normalized.includes("incident")) return "incident"
+  if (normalized.includes("service") || normalized.includes("request")) return "service_request"
+  return null
+}
 
 export function DashboardCharts({
   weeklyData,
+  ticketTypeData,
   categoryData,
   priorityData,
 }: {
-  weeklyData: Array<{ week: string; opened: number; closed: number; pending: number }>
-  categoryData: Array<{ category: string; count: number }>
-  priorityData: Array<{ priority: string; count: number; fill: string }>
+  weeklyData?: Array<{ week: string; opened: number; closed: number; pending: number }>
+  ticketTypeData?: Array<{ ticket_type: string; count: number }>
+  categoryData?: Array<{ category: string; count: number }>
+  priorityData?: Array<{ priority: string; count: number; fill: string }>
 }) {
   const { t, locale } = useI18n()
+  const safeWeeklyData = Array.isArray(weeklyData) ? weeklyData : []
+  const safeTicketTypeData = Array.isArray(ticketTypeData) ? ticketTypeData : []
+  const safeCategoryData = Array.isArray(categoryData) ? categoryData : []
+  const safePriorityData = Array.isArray(priorityData) ? priorityData : []
   const [weeklyHover, setWeeklyHover] = useState<{
     week: string
     opened: number
@@ -44,6 +63,7 @@ export function DashboardCharts({
     pending: number
   } | null>(null)
   const [priorityHover, setPriorityHover] = useState<{ priority: string; count: number } | null>(null)
+  const [ticketTypeHover, setTicketTypeHover] = useState<{ ticket_type: string; count: number } | null>(null)
   const [categoryHover, setCategoryHover] = useState<{ category: string; count: number } | null>(null)
 
   const weeklyChartConfig = {
@@ -60,22 +80,34 @@ export function DashboardCharts({
     count: { label: "Tickets" },
   }
 
-  const latestWeek = weeklyData[weeklyData.length - 1]
-  const totalPriorities = priorityData.reduce((sum, row) => sum + row.count, 0)
-  const totalCategories = categoryData.reduce((sum, row) => sum + row.count, 0)
-  const topPriority = [...priorityData].sort((a, b) => b.count - a.count)[0]
-  const topCategory = [...categoryData].sort((a, b) => b.count - a.count)[0]
+  const ticketTypeChartConfig = {
+    count: { label: "Tickets" },
+  }
+
+  const latestWeek = safeWeeklyData[safeWeeklyData.length - 1]
+  const totalPriorities = safePriorityData.reduce((sum, row) => sum + row.count, 0)
+  const totalTicketTypes = safeTicketTypeData.reduce((sum, row) => sum + row.count, 0)
+  const totalCategories = safeCategoryData.reduce((sum, row) => sum + row.count, 0)
+  const topPriority = [...safePriorityData].sort((a, b) => b.count - a.count)[0]
+  const topTicketType = [...safeTicketTypeData].sort((a, b) => b.count - a.count)[0]
+  const topCategory = [...safeCategoryData].sort((a, b) => b.count - a.count)[0]
   const categoryRowHeight = 42
-  const categoryChartHeight = Math.max(220, categoryData.length * categoryRowHeight)
+  const categoryChartHeight = Math.max(220, safeCategoryData.length * categoryRowHeight)
   const categoryNeedsScroll = categoryChartHeight > 360
   const weeklyRef = weeklyHover || latestWeek
   const priorityRef = priorityHover || topPriority || null
+  const ticketTypeRef = ticketTypeHover || topTicketType || null
   const categoryRef = categoryHover || topCategory || null
   const priorityPercent = priorityRef && totalPriorities > 0 ? Math.round((priorityRef.count / totalPriorities) * 100) : 0
+  const ticketTypePercent = ticketTypeRef && totalTicketTypes > 0 ? Math.round((ticketTypeRef.count / totalTicketTypes) * 100) : 0
   const categoryPercent = categoryRef && totalCategories > 0 ? Math.round((categoryRef.count / totalCategories) * 100) : 0
+  const ticketTypeHref = (() => {
+    const value = normalizeTicketTypeFilter(ticketTypeRef?.ticket_type)
+    return value ? `/tickets?ticketType=${value}` : "/tickets"
+  })()
 
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-3">
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 xl:grid-cols-4">
       {/* Ticket Trends */}
       <CursorHoverLinkCard
         href="/tickets?view=total"
@@ -108,7 +140,7 @@ export function DashboardCharts({
               <CardContent>
                 <ChartContainer config={weeklyChartConfig} className="h-[280px] w-full">
                   <AreaChart
-                    data={weeklyData}
+                    data={safeWeeklyData}
                     onMouseMove={(state: unknown) => {
                       const payload = (state as { activePayload?: Array<{ payload?: { week?: string; opened?: number; closed?: number; pending?: number } }> } | undefined)?.activePayload
                       const row = payload?.[0]?.payload
@@ -192,7 +224,7 @@ export function DashboardCharts({
                   <PieChart>
                     <ChartTooltip content={<ChartTooltipContent />} />
                     <Pie
-                      data={priorityData}
+                      data={safePriorityData}
                       cx="50%"
                       cy="50%"
                       innerRadius={60}
@@ -201,19 +233,19 @@ export function DashboardCharts({
                       dataKey="count"
                       nameKey="priority"
                       onMouseEnter={(_, index) => {
-                        const row = priorityData[index]
+                        const row = safePriorityData[index]
                         if (row) setPriorityHover({ priority: row.priority, count: row.count })
                       }}
                       onMouseLeave={() => setPriorityHover(null)}
                     >
-                      {priorityData.map((entry) => (
+                      {safePriorityData.map((entry) => (
                         <Cell key={entry.priority} fill={entry.fill} />
                       ))}
                     </Pie>
                   </PieChart>
                 </ChartContainer>
                 <div className="mt-2 flex flex-wrap justify-center gap-3">
-                  {priorityData.map((item) => (
+                  {safePriorityData.map((item) => (
                     <div key={item.priority} className="flex items-center gap-1.5 text-xs">
                       <div
                         className="h-2.5 w-2.5 rounded-full"
@@ -229,14 +261,87 @@ export function DashboardCharts({
             </Card>
       </CursorHoverLinkCard>
 
+      {/* Ticket Type Breakdown */}
+      <CursorHoverLinkCard
+        href={ticketTypeHref}
+        className="group block"
+        title={t("chart.typeBreak")}
+        rows={[
+          { label: locale === "fr" ? "Total tickets" : "Total tickets", value: totalTicketTypes },
+          {
+            label: locale === "fr" ? "Type survole" : "Hovered type",
+            value: ticketTypeRef ? `${ticketTypeRef.ticket_type} (${ticketTypeRef.count})` : "-",
+          },
+          { label: locale === "fr" ? "Part" : "Share", value: `${ticketTypePercent}%` },
+        ]}
+        note={
+          locale === "fr"
+            ? "Survolez un segment pour distinguer incidents et demandes."
+            : "Hover a segment to compare incidents and requests."
+        }
+      >
+        <Card className="surface-card rounded-2xl transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle className="text-sm font-semibold text-foreground">
+                {t("chart.typeBreak")}
+              </CardTitle>
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-primary/80 group-hover:text-primary">
+                {locale === "fr" ? "Ouvrir" : "Open"}
+                <ArrowRight className="h-3.5 w-3.5" />
+              </span>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <ChartContainer config={ticketTypeChartConfig} className="h-[280px] w-full">
+              <PieChart>
+                <ChartTooltip content={<ChartTooltipContent />} />
+                <Pie
+                  data={safeTicketTypeData}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={60}
+                  outerRadius={90}
+                  paddingAngle={4}
+                  dataKey="count"
+                  nameKey="ticket_type"
+                  onMouseEnter={(_, index) => {
+                    const row = safeTicketTypeData[index]
+                    if (row) setTicketTypeHover({ ticket_type: row.ticket_type, count: row.count })
+                  }}
+                  onMouseLeave={() => setTicketTypeHover(null)}
+                >
+                  {safeTicketTypeData.map((entry, index) => (
+                    <Cell key={entry.ticket_type} fill={COLORS_TICKET_TYPE[index % COLORS_TICKET_TYPE.length]} />
+                  ))}
+                </Pie>
+              </PieChart>
+            </ChartContainer>
+            <div className="mt-2 flex flex-wrap justify-center gap-3">
+              {safeTicketTypeData.map((item, index) => (
+                <div key={item.ticket_type} className="flex items-center gap-1.5 text-xs">
+                  <div
+                    className="h-2.5 w-2.5 rounded-full"
+                    style={{ backgroundColor: COLORS_TICKET_TYPE[index % COLORS_TICKET_TYPE.length] }}
+                  />
+                  <span className="text-muted-foreground">
+                    {item.ticket_type} ({item.count})
+                  </span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </CursorHoverLinkCard>
+
       {/* Category Breakdown */}
       <CursorHoverLinkCard
         href="/tickets"
-        className="group block xl:col-span-3"
+        className="group block xl:col-span-4"
         popupSide="left"
         title={t("chart.categoryBreak")}
         rows={[
-          { label: locale === "fr" ? "Categories" : "Categories", value: categoryData.length },
+          { label: locale === "fr" ? "Categories" : "Categories", value: safeCategoryData.length },
           { label: locale === "fr" ? "Total tickets" : "Total tickets", value: totalCategories },
           {
             label: locale === "fr" ? "Categorie survolee" : "Hovered category",
@@ -267,7 +372,7 @@ export function DashboardCharts({
                   <ScrollArea className="h-[360px] w-full pr-2">
                     <ChartContainer config={categoryChartConfig} className="w-full" style={{ height: `${categoryChartHeight}px` }}>
                       <BarChart
-                        data={categoryData}
+                        data={safeCategoryData}
                         layout="vertical"
                         onMouseMove={(state: unknown) => {
                           const payload = (state as { activePayload?: Array<{ payload?: { category?: string; count?: number } }> } | undefined)?.activePayload
@@ -290,7 +395,7 @@ export function DashboardCharts({
                         />
                         <ChartTooltip content={<ChartTooltipContent />} />
                         <Bar dataKey="count" radius={[0, 6, 6, 0]}>
-                          {categoryData.map((_, index) => (
+                          {safeCategoryData.map((_, index) => (
                             <Cell
                               key={`cell-${index}`}
                               fill={COLORS_CATEGORY[index % COLORS_CATEGORY.length]}
@@ -303,7 +408,7 @@ export function DashboardCharts({
                 ) : (
                   <ChartContainer config={categoryChartConfig} className="w-full" style={{ height: `${categoryChartHeight}px` }}>
                     <BarChart
-                      data={categoryData}
+                      data={safeCategoryData}
                       layout="vertical"
                       onMouseMove={(state: unknown) => {
                         const payload = (state as { activePayload?: Array<{ payload?: { category?: string; count?: number } }> } | undefined)?.activePayload
@@ -326,7 +431,7 @@ export function DashboardCharts({
                       />
                       <ChartTooltip content={<ChartTooltipContent />} />
                       <Bar dataKey="count" radius={[0, 6, 6, 0]}>
-                        {categoryData.map((_, index) => (
+                        {safeCategoryData.map((_, index) => (
                           <Cell
                             key={`cell-${index}`}
                             fill={COLORS_CATEGORY[index % COLORS_CATEGORY.length]}

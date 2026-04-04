@@ -10,6 +10,7 @@ export type TicketStatus =
   | "closed"
 export type TicketPriority = "critical" | "high" | "medium" | "low"
 export type SlaStatus = "ok" | "at_risk" | "breached" | "paused" | "completed" | "unknown"
+export type TicketType = "incident" | "service_request"
 export type TicketCategory =
   | "infrastructure"
   | "network"
@@ -34,6 +35,7 @@ export interface Ticket {
   description: string
   status: TicketStatus
   priority: TicketPriority
+  ticketType: TicketType
   category: TicketCategory
   assignee: string
   reporter: string
@@ -42,12 +44,19 @@ export interface Ticket {
   assignmentModelVersion?: string
   priorityModelVersion?: string
   predictedPriority?: TicketPriority
+  predictedTicketType?: TicketType
   predictedCategory?: TicketCategory
   assignmentChangeCount?: number
   firstActionAt?: string
   resolvedAt?: string
+  dueAt?: string | null
   slaStatus?: SlaStatus | null
   slaRemainingMinutes?: number | null
+  slaFirstResponseDueAt?: string | null
+  slaResolutionDueAt?: string | null
+  slaFirstResponseBreached?: boolean
+  slaResolutionBreached?: boolean
+  slaLastSyncedAt?: string | null
   createdAt: string
   updatedAt: string
   resolution?: string
@@ -88,6 +97,11 @@ export const PRIORITY_CONFIG: Record<TicketPriority, { label: string; color: str
   high: { label: "Haute", color: "bg-amber-100 text-amber-800" },
   medium: { label: "Moyenne", color: "bg-emerald-100 text-emerald-800" },
   low: { label: "Basse", color: "bg-slate-100 text-slate-700" },
+}
+
+export const TICKET_TYPE_CONFIG: Record<TicketType, { label: string }> = {
+  incident: { label: "Incident" },
+  service_request: { label: "Service Request" },
 }
 
 export const CATEGORY_CONFIG: Record<TicketCategory, { label: string }> = {

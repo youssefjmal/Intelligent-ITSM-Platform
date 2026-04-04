@@ -3,8 +3,17 @@ from __future__ import annotations
 import datetime as dt
 from types import SimpleNamespace
 
-from app.models.enums import TicketCategory, TicketPriority, TicketStatus, UserRole
-from app.schemas.ai import AIChatGrounding, AIResolutionAdvice, AIResolutionEvidence, ChatMessage, ChatRequest
+from app.models.enums import TicketCategory, TicketPriority, TicketStatus, TicketType, UserRole
+from app.schemas.ai import (
+    AIChatGrounding,
+    AIResolutionAdvice,
+    AIResolutionEvidence,
+    ChatMessage,
+    ChatRequest,
+    ClassificationResponse,
+    GuidanceContract,
+    GuidanceDisplayMode,
+)
 from app.services.ai.chat_payloads import (
     build_cause_analysis_payload,
     build_insufficient_evidence_payload,
@@ -23,6 +32,7 @@ def _ticket(
     status: TicketStatus,
     priority: TicketPriority,
     category: TicketCategory,
+    ticket_type: TicketType | None = None,
     assignee: str,
     reporter: str,
     created_at: dt.datetime,
@@ -36,6 +46,7 @@ def _ticket(
         status=status,
         priority=priority,
         category=category,
+        ticket_type=ticket_type or TicketType.incident,
         assignee=assignee,
         reporter=reporter,
         resolution=None,
@@ -268,6 +279,7 @@ def test_troubleshooting_query_with_explicit_id_prefers_guidance_intent() -> Non
 def test_explicit_ticket_info_queries_stay_on_summary_path() -> None:
     assert intents.detect_intent("Show me details of TW-MOCK-019") == ChatIntent.data_query
     assert intents.detect_intent("Give me the status of this ticket") == ChatIntent.data_query
+    assert intents.detect_intent("Give me its type") == ChatIntent.data_query
 
 
 def test_resolve_ticket_context_prefers_explicit_then_prior_single_ticket() -> None:
@@ -282,11 +294,25 @@ def test_resolve_ticket_context_prefers_explicit_then_prior_single_ticket() -> N
             ChatMessage(role="assistant", content="Ticket TW-MOCK-019 details:"),
         ],
     )
+    contextual_type_ticket_id, contextual_type_source = orchestrator.resolve_ticket_context(
+        "Give me its type",
+        [
+            ChatMessage(role="user", content="Show me details of TW-MOCK-019"),
+            ChatMessage(role="assistant", content="Ticket TW-MOCK-019 details:"),
+        ],
+    )
 
     assert explicit_ticket_id == "TW-MOCK-019"
     assert explicit_source == "explicit"
     assert contextual_ticket_id == "TW-MOCK-019"
     assert contextual_source == "context"
+    assert contextual_type_ticket_id == "TW-MOCK-019"
+    assert contextual_type_source == "context"
+
+
+def test_extract_ticket_id_accepts_spaced_ticket_identifier() -> None:
+    assert intents.extract_ticket_id("details of tw mock 001") == "TW-MOCK-001"
+    assert intents.extract_ticket_id("show me TW_mock_001") == "TW-MOCK-001"
 
 
 def test_why_is_this_happening_query_is_guidance_intent() -> None:
@@ -305,6 +331,13 @@ def test_detect_intent_with_confidence_known_keyword_stays_rule_based() -> None:
 
 def test_detect_intent_with_confidence_info_request_is_high_confidence() -> None:
     intent, confidence = intents.detect_intent_with_confidence("show me details of TW-MOCK-019")
+
+    assert intent == ChatIntent.data_query
+    assert confidence == IntentConfidence.high
+
+
+def test_detect_intent_with_confidence_service_request_listing_is_data_query() -> None:
+    intent, confidence = intents.detect_intent_with_confidence("list the service requests")
 
     assert intent == ChatIntent.data_query
     assert confidence == IntentConfidence.high
@@ -584,6 +617,51 @@ def test_handle_chat_status_question_uses_prior_ticket_context(monkeypatch) -> N
     assert response.response_payload.type == "ticket_status"
 
 
+def test_handle_chat_type_question_uses_prior_ticket_context(monkeypatch) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    tickets = [
+        _ticket(
+            ticket_id="TW-MOCK-019",
+            title="CRM sync job stalls after token rotation",
+            description="The CRM sync worker stops after token rotation.",
+            status=TicketStatus.in_progress,
+            priority=TicketPriority.high,
+            category=TicketCategory.application,
+            ticket_type=TicketType.incident,
+            assignee="Nadia Boucher",
+            reporter="Karim Benali",
+            created_at=now - dt.timedelta(hours=1),
+        ),
+    ]
+
+    monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: tickets)
+    monkeypatch.setattr(orchestrator, "list_assignees", lambda db: [SimpleNamespace(name="Nadia Boucher")])
+    monkeypatch.setattr(orchestrator, "compute_stats", lambda rows: {"total": len(rows)})
+    monkeypatch.setattr(
+        orchestrator,
+        "build_chat_reply",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("LLM reply builder should not run for ticket field queries")),
+    )
+
+    payload = ChatRequest(
+        messages=[
+            ChatMessage(role="user", content="Show me details of TW-MOCK-019"),
+            ChatMessage(role="assistant", content="Ticket TW-MOCK-019 details:"),
+            ChatMessage(role="user", content="Give me its type"),
+        ],
+        locale="en",
+    )
+    current_user = SimpleNamespace(role=UserRole.agent, name="Agent One")
+    response = orchestrator.handle_chat(payload, db=None, current_user=current_user)
+
+    assert response.reply.startswith("Ticket TW-MOCK-019 details:")
+    assert "- Type: incident" in response.reply
+    assert response.response_payload is not None
+    assert response.response_payload.type == "ticket_details"
+    assert response.response_payload.ticket_id == "TW-MOCK-019"
+    assert response.response_payload.ticket_type == TicketType.incident
+
+
 def test_handle_chat_show_me_second_one_uses_last_ticket_list(monkeypatch) -> None:
     now = dt.datetime.now(dt.timezone.utc)
     tickets = [
@@ -813,6 +891,132 @@ def test_handle_chat_followup_guidance_does_not_drift_to_assistant_suggestion_ti
     assert response.response_payload.ticket_id == "TW-MOCK-025"
 
 
+def test_resolve_chat_guidance_reuses_ticket_detail_classification_for_explicit_ticket(monkeypatch) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    ticket = _ticket(
+        ticket_id="TW-MOCK-030",
+        title="Provision access to the payroll export workspace",
+        description="Create the required payroll export workspace permissions for the new analyst.",
+        status=TicketStatus.open,
+        priority=TicketPriority.medium,
+        category=TicketCategory.service_request,
+        ticket_type=TicketType.service_request,
+        assignee="Nadia Boucher",
+        reporter="Finance Lead",
+        created_at=now,
+    )
+    service_request_advice = AIResolutionAdvice(
+        recommended_action="Validate manager approval, then grant the payroll export workspace permission set.",
+        reasoning="This request matches the standard payroll workspace access fulfillment path.",
+        confidence=0.81,
+        confidence_band="high",
+        confidence_label="high",
+        source_label="service_request",
+        recommendation_mode="service_request",
+        action_relevance_score=0.81,
+        display_mode=GuidanceDisplayMode.service_request,
+        mode=GuidanceDisplayMode.service_request,
+        match_summary="Matched on payroll workspace access request signals.",
+        next_best_actions=[
+            "Confirm the analyst identity and start date.",
+            "Notify the requester after permissions are applied.",
+        ],
+        validation_steps=[
+            "Verify the permission set is visible in the workspace.",
+        ],
+        workflow_steps=[
+            "Validate manager approval, then grant the payroll export workspace permission set.",
+        ],
+        response_text="Validate approval, grant the workspace permission set, and confirm access.",
+    )
+    classification = ClassificationResponse(
+        priority=TicketPriority.medium,
+        ticket_type=TicketType.service_request,
+        classifier_ticket_type=TicketType.service_request,
+        category=TicketCategory.service_request,
+        classification_confidence=92,
+        recommendations=["Validate manager approval, then grant the payroll export workspace permission set."],
+        recommendation_mode="service_request",
+        source_label="service_request",
+        resolution_confidence=0.81,
+        resolution_advice=service_request_advice,
+        recommended_action=service_request_advice.recommended_action,
+        reasoning=service_request_advice.reasoning,
+        evidence_sources=[],
+        probable_root_cause=None,
+        root_cause=None,
+        supporting_context=None,
+        why_this_matches=[],
+        tentative=False,
+        confidence_band="high",
+        confidence_label="high",
+        action_relevance_score=0.81,
+        filtered_weak_match=False,
+        mode="service_request",
+        display_mode="service_request",
+        guidance_contract=GuidanceContract(
+            display_mode=GuidanceDisplayMode.service_request,
+            confidence=0.81,
+            advisor_confidence=0.81,
+            retrieval_confidence=0.0,
+            threshold=0.55,
+            source="service_request",
+            downgraded=False,
+            downgrade_reason=None,
+            evidence_allowed=False,
+        ),
+        match_summary="Matched on payroll workspace access request signals.",
+        next_best_actions=list(service_request_advice.next_best_actions),
+        validation_steps=list(service_request_advice.validation_steps),
+        base_recommended_action=service_request_advice.recommended_action,
+        base_next_best_actions=list(service_request_advice.next_best_actions),
+        base_validation_steps=list(service_request_advice.validation_steps),
+        action_refinement_source="none",
+        routing_decision_source="profile_service_request",
+        service_request_profile_detected=True,
+        service_request_profile_confidence=0.88,
+        cross_check_conflict_flag=False,
+        cross_check_summary=None,
+        incident_cluster=None,
+        impact_summary=None,
+    )
+
+    monkeypatch.setattr(orchestrator, "handle_classify", lambda *args, **kwargs: classification)
+
+    def _unexpected_resolver(*args, **kwargs):
+        raise AssertionError("resolve_ticket_advice should not run for explicit ticket chat guidance when classification succeeds")
+
+    monkeypatch.setattr(orchestrator, "resolve_ticket_advice", _unexpected_resolver)
+
+    result = orchestrator.resolve_chat_guidance(
+        question="What should I do for TW-MOCK-030?",
+        lang="en",
+        plan=orchestrator.RoutingPlan(
+            name="general_llm",
+            intent=ChatIntent.general,
+            use_llm=True,
+            use_kb=True,
+            reason="test",
+        ),
+        db=object(),
+        tickets=[ticket],
+        conversation_state=[],
+        current_user=SimpleNamespace(role=UserRole.agent, id="u-1", name="Agent One"),
+        solution_quality="medium",
+        guidance_requested=True,
+        resolved_ticket_id="TW-MOCK-030",
+    )
+
+    assert result.authoritative is True
+    assert result.entity_id == "TW-MOCK-030"
+    assert result.grounding is not None
+    assert result.grounding.mode == "service_request"
+    assert result.grounding.recommended_action == service_request_advice.recommended_action
+    assert result.resolver_output is not None
+    assert result.resolver_output.guidance_contract is not None
+    assert result.resolver_output.guidance_contract.display_mode == GuidanceDisplayMode.service_request
+
+
 def test_handle_chat_similar_tickets_followup_uses_sticky_active_ticket(monkeypatch) -> None:
     now = dt.datetime.now(dt.timezone.utc)
     tickets = [
@@ -1011,6 +1215,344 @@ def test_handle_chat_show_all_tickets_keeps_list_behavior(monkeypatch) -> None:
     assert "TW-MOCK-027" in response.reply
     assert response.response_payload is not None
     assert response.response_payload.type == "ticket_list"
+
+
+def test_handle_chat_spaced_ticket_id_uses_structured_detail_path(monkeypatch) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    tickets = [
+        _ticket(
+            ticket_id="TW-MOCK-001",
+            title="VPN login loops after MFA for finance users",
+            description="Finance users complete MFA but the VPN client returns to the sign-in prompt.",
+            status=TicketStatus.open,
+            priority=TicketPriority.critical,
+            category=TicketCategory.network,
+            ticket_type=TicketType.incident,
+            assignee="Karim Benali",
+            reporter="Maya Haddad",
+            created_at=now - dt.timedelta(hours=1),
+        ),
+    ]
+
+    monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: tickets)
+    monkeypatch.setattr(orchestrator, "list_assignees", lambda db: [SimpleNamespace(name="Karim Benali")])
+    monkeypatch.setattr(orchestrator, "compute_stats", lambda rows: {"total": len(rows)})
+    monkeypatch.setattr(
+        orchestrator,
+        "resolve_ticket_advice",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ticket detail queries should not invoke resolver")),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "build_chat_reply",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ticket detail queries should not invoke LLM formatter")),
+    )
+
+    payload = ChatRequest(messages=[ChatMessage(role="user", content="details of tw mock 001")], locale="en")
+    current_user = SimpleNamespace(role=UserRole.agent, name="Agent One")
+    response = orchestrator.handle_chat(payload, db=None, current_user=current_user)
+
+    assert response.response_payload is not None
+    assert response.response_payload.type == "ticket_details"
+    assert response.response_payload.ticket_id == "TW-MOCK-001"
+    assert "TW-MOCK-001" in response.reply
+
+
+def test_handle_chat_service_request_listing_uses_structured_query_without_llm(monkeypatch) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    tickets = [
+        _ticket(
+            ticket_id="TW-3001",
+            title="Add SharePoint members",
+            description="Approve procurement workspace members",
+            status=TicketStatus.open,
+            priority=TicketPriority.medium,
+            category=TicketCategory.application,
+            ticket_type=TicketType.service_request,
+            assignee="Nadia",
+            reporter="Finance",
+            created_at=now - dt.timedelta(minutes=4),
+        ),
+        _ticket(
+            ticket_id="TW-3002",
+            title="VPN login loop",
+            description="MFA completes but VPN returns to sign-in",
+            status=TicketStatus.open,
+            priority=TicketPriority.high,
+            category=TicketCategory.network,
+            ticket_type=TicketType.incident,
+            assignee="Karim",
+            reporter="Finance",
+            created_at=now - dt.timedelta(minutes=3),
+        ),
+        _ticket(
+            ticket_id="TW-3003",
+            title="Provision finance dashboard workspace",
+            description="Create the analytics workspace and grant approved access",
+            status=TicketStatus.in_progress,
+            priority=TicketPriority.medium,
+            category=TicketCategory.application,
+            ticket_type=TicketType.service_request,
+            assignee="Laila",
+            reporter="HR",
+            created_at=now - dt.timedelta(minutes=2),
+        ),
+    ]
+    llm_calls = {"count": 0}
+
+    monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: tickets)
+    monkeypatch.setattr(orchestrator, "list_assignees", lambda db: [SimpleNamespace(name="Nadia"), SimpleNamespace(name="Laila")])
+    monkeypatch.setattr(orchestrator, "compute_stats", lambda rows: {"total": len(rows)})
+    monkeypatch.setattr(
+        orchestrator,
+        "resolve_ticket_advice",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("structured ticket listings should not invoke resolver")),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "build_chat_reply",
+        lambda *args, **kwargs: llm_calls.__setitem__("count", llm_calls["count"] + 1) or ("llm", None, None),
+    )
+
+    payload = ChatRequest(messages=[ChatMessage(role="user", content="list the service requests")], locale="en")
+    current_user = SimpleNamespace(role=UserRole.agent, name="Agent One")
+    response = orchestrator.handle_chat(payload, db=None, current_user=current_user)
+
+    assert llm_calls["count"] == 0
+    assert response.response_payload is not None
+    assert response.response_payload.type == "ticket_list"
+    assert response.response_payload.list_kind == "service_request"
+    assert response.response_payload.total_count == 2
+    assert [item.ticket_id for item in response.response_payload.tickets] == ["TW-3003", "TW-3001"]
+    assert all(item.ticket_type == TicketType.service_request.value for item in response.response_payload.tickets)
+    assert all(item.category for item in response.response_payload.tickets)
+
+
+def test_handle_chat_incident_listing_uses_ticket_type_filter_without_llm(monkeypatch) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    tickets = [
+        _ticket(
+            ticket_id="TW-3101",
+            title="API pods crash after node pool upgrade",
+            description="Pods enter CrashLoopBackOff after cluster maintenance",
+            status=TicketStatus.open,
+            priority=TicketPriority.critical,
+            category=TicketCategory.infrastructure,
+            ticket_type=TicketType.incident,
+            assignee="Youssef",
+            reporter="DevOps",
+            created_at=now - dt.timedelta(minutes=4),
+        ),
+        _ticket(
+            ticket_id="TW-3102",
+            title="Create finance SharePoint workspace",
+            description="Provision the workspace and validate inherited access",
+            status=TicketStatus.open,
+            priority=TicketPriority.medium,
+            category=TicketCategory.application,
+            ticket_type=TicketType.service_request,
+            assignee="Nadia",
+            reporter="Finance",
+            created_at=now - dt.timedelta(minutes=3),
+        ),
+        _ticket(
+            ticket_id="TW-3103",
+            title="VPN login loops after MFA",
+            description="Users complete MFA but the client returns to sign-in",
+            status=TicketStatus.in_progress,
+            priority=TicketPriority.high,
+            category=TicketCategory.network,
+            ticket_type=TicketType.incident,
+            assignee="Karim",
+            reporter="Finance",
+            created_at=now - dt.timedelta(minutes=2),
+        ),
+    ]
+    llm_calls = {"count": 0}
+
+    monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: tickets)
+    monkeypatch.setattr(orchestrator, "list_assignees", lambda db: [SimpleNamespace(name="Karim"), SimpleNamespace(name="Youssef")])
+    monkeypatch.setattr(orchestrator, "compute_stats", lambda rows: {"total": len(rows)})
+    monkeypatch.setattr(
+        orchestrator,
+        "resolve_ticket_advice",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("structured ticket listings should not invoke resolver")),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "build_chat_reply",
+        lambda *args, **kwargs: llm_calls.__setitem__("count", llm_calls["count"] + 1) or ("llm", None, None),
+    )
+
+    payload = ChatRequest(messages=[ChatMessage(role="user", content="list incident tickets")], locale="en")
+    current_user = SimpleNamespace(role=UserRole.agent, name="Agent One")
+    response = orchestrator.handle_chat(payload, db=None, current_user=current_user)
+
+    assert llm_calls["count"] == 0
+    assert response.response_payload is not None
+    assert response.response_payload.type == "ticket_list"
+    assert response.response_payload.list_kind == "incident"
+    assert response.response_payload.total_count == 2
+    assert [item.ticket_id for item in response.response_payload.tickets] == ["TW-3103", "TW-3101"]
+    assert all(item.ticket_type == TicketType.incident.value for item in response.response_payload.tickets)
+    assert {item.category for item in response.response_payload.tickets} == {
+        TicketCategory.network.value,
+        TicketCategory.infrastructure.value,
+    }
+
+
+def test_handle_chat_structured_listing_returns_empty_payload_instead_of_general_fallback(monkeypatch) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    tickets = [
+        _ticket(
+            ticket_id="TW-3191",
+            title="VPN login loops after MFA",
+            description="Users complete MFA but the client returns to sign-in",
+            status=TicketStatus.in_progress,
+            priority=TicketPriority.high,
+            category=TicketCategory.network,
+            ticket_type=TicketType.incident,
+            assignee="Karim",
+            reporter="Finance",
+            created_at=now - dt.timedelta(minutes=2),
+        ),
+    ]
+    llm_calls = {"count": 0}
+
+    monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: tickets)
+    monkeypatch.setattr(orchestrator, "list_assignees", lambda db: [SimpleNamespace(name="Karim")])
+    monkeypatch.setattr(orchestrator, "compute_stats", lambda rows: {"total": len(rows)})
+    monkeypatch.setattr(
+        orchestrator,
+        "resolve_ticket_advice",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("empty structured listing should not invoke resolver")),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "build_chat_reply",
+        lambda *args, **kwargs: llm_calls.__setitem__("count", llm_calls["count"] + 1) or ("llm", None, None),
+    )
+
+    payload = ChatRequest(messages=[ChatMessage(role="user", content="list hardware tickets")], locale="en")
+    current_user = SimpleNamespace(role=UserRole.agent, name="Agent One")
+    response = orchestrator.handle_chat(payload, db=None, current_user=current_user)
+
+    assert llm_calls["count"] == 0
+    assert response.response_payload is not None
+    assert response.response_payload.type == "ticket_list"
+    assert response.response_payload.total_count == 0
+    assert response.response_payload.returned_count == 0
+    assert response.response_payload.tickets == []
+
+
+def test_handle_chat_compound_critical_incident_listing_preserves_all_filters(monkeypatch) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    tickets = [
+        _ticket(
+            ticket_id="TW-3201",
+            title="Node pool upgrade leaves pods crashlooping",
+            description="CrashLoopBackOff after infrastructure rollout",
+            status=TicketStatus.open,
+            priority=TicketPriority.critical,
+            category=TicketCategory.infrastructure,
+            ticket_type=TicketType.incident,
+            assignee="Youssef",
+            reporter="DevOps",
+            created_at=now - dt.timedelta(minutes=5),
+        ),
+        _ticket(
+            ticket_id="TW-3202",
+            title="Critical procurement workspace request",
+            description="Provision access before board review",
+            status=TicketStatus.open,
+            priority=TicketPriority.critical,
+            category=TicketCategory.application,
+            ticket_type=TicketType.service_request,
+            assignee="Nadia",
+            reporter="Finance",
+            created_at=now - dt.timedelta(minutes=4),
+        ),
+        _ticket(
+            ticket_id="TW-3203",
+            title="Kafka lag blocks payment events",
+            description="Notification pipeline lagging behind",
+            status=TicketStatus.in_progress,
+            priority=TicketPriority.critical,
+            category=TicketCategory.application,
+            ticket_type=TicketType.incident,
+            assignee="Mohamed",
+            reporter="Payments",
+            created_at=now - dt.timedelta(minutes=3),
+        ),
+    ]
+    llm_calls = {"count": 0}
+
+    monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: tickets)
+    monkeypatch.setattr(
+        orchestrator,
+        "list_assignees",
+        lambda db: [SimpleNamespace(name="Youssef"), SimpleNamespace(name="Mohamed"), SimpleNamespace(name="Nadia")],
+    )
+    monkeypatch.setattr(orchestrator, "compute_stats", lambda rows: {"total": len(rows)})
+    monkeypatch.setattr(
+        orchestrator,
+        "resolve_ticket_advice",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("compound filtered listings should not invoke resolver")),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "build_chat_reply",
+        lambda *args, **kwargs: llm_calls.__setitem__("count", llm_calls["count"] + 1) or ("llm", None, None),
+    )
+
+    payload = ChatRequest(messages=[ChatMessage(role="user", content="critical incident tickets")], locale="en")
+    current_user = SimpleNamespace(role=UserRole.agent, name="Agent One")
+    response = orchestrator.handle_chat(payload, db=None, current_user=current_user)
+
+    assert llm_calls["count"] == 0
+    assert response.response_payload is not None
+    assert response.response_payload.type == "ticket_list"
+    assert response.response_payload.list_kind == "incident"
+    assert response.response_payload.total_count == 2
+    assert [item.ticket_id for item in response.response_payload.tickets] == ["TW-3203", "TW-3201"]
+    assert response.response_payload.scope is not None
+    assert "Incident" in response.response_payload.scope
+    assert "Critical" in response.response_payload.scope
+
+
+def test_handle_chat_critical_shortcut_does_not_invoke_resolver(monkeypatch) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    tickets = [
+        _ticket(
+            ticket_id="TW-3301",
+            title="Deadlock detected in SLA updater",
+            description="Concurrent updates block the ticket table",
+            status=TicketStatus.open,
+            priority=TicketPriority.critical,
+            category=TicketCategory.application,
+            ticket_type=TicketType.incident,
+            assignee="Youssef",
+            reporter="Platform",
+            created_at=now - dt.timedelta(minutes=2),
+        ),
+    ]
+
+    monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: tickets)
+    monkeypatch.setattr(orchestrator, "list_assignees", lambda db: [SimpleNamespace(name="Youssef")])
+    monkeypatch.setattr(orchestrator, "compute_stats", lambda rows: {"total": len(rows)})
+    monkeypatch.setattr(
+        orchestrator,
+        "resolve_ticket_advice",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("critical shortcut should not invoke resolver")),
+    )
+
+    payload = ChatRequest(messages=[ChatMessage(role="user", content="critical tickets")], locale="en")
+    current_user = SimpleNamespace(role=UserRole.agent, name="Agent One")
+    response = orchestrator.handle_chat(payload, db=None, current_user=current_user)
+
+    assert response.reply.startswith("Critical tickets:")
+    assert response.ticket_results is not None
+    assert response.ticket_results.total_count == 1
 
 
 def test_handle_chat_guidance_returns_structured_resolution_advice(monkeypatch) -> None:

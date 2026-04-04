@@ -273,6 +273,19 @@ const translations = {
   "recs.filterConfidence": { fr: "Confiance", en: "Confidence" },
   "recs.noResults": { fr: "Aucun résultat pour ces filtres.", en: "No results for these filters." },
 
+  // SLA advisory
+  "sla.advisorTitle": { fr: "Conseil de risque SLA", en: "SLA Risk Advisor" },
+  "sla.modeDeterministic": { fr: "Mode Déterministe", en: "Deterministic Mode" },
+  "sla.modeHybrid": { fr: "Mode Hybride (IA)", en: "Hybrid Mode (AI)" },
+  "sla.considerEscalating": { fr: "Envisagez d'escalader ce ticket", en: "Consider escalating this ticket" },
+  "sla.readOnly": { fr: "Conseil SLA (lecture seule)", en: "SLA Advisory (read-only)" },
+  "sla.riskScore": { fr: "Score de risque", en: "Risk score" },
+  "sla.timeConsumed": { fr: "Temps consommé", en: "Time consumed" },
+
+  // Classification confidence gate
+  "classification.manualTriageRequired": { fr: "Triage manuel requis — confiance insuffisante", en: "Manual triage required — insufficient confidence" },
+  "classification.verifyBeforeApplying": { fr: "Vérifiez avant d'appliquer", en: "Verify before applying" },
+
   // Auth
   "auth.signIn": { fr: "Connexion", en: "Sign In" },
   "auth.signUp": { fr: "Inscription", en: "Sign Up" },

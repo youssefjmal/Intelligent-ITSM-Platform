@@ -6,13 +6,36 @@ import datetime as dt
 from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
-from app.models.enums import TicketCategory, TicketPriority, TicketStatus
+from app.models.enums import TicketCategory, TicketPriority, TicketStatus, TicketType
 from app.core.ticket_limits import MAX_TAG_LEN, MAX_TAGS
 from app.core.sanitize import clean_list, clean_multiline, clean_single_line
 
 MAX_TITLE_LEN = 120
 MAX_DESCRIPTION_LEN = 4000
 MAX_NAME_LEN = 80
+
+
+def _normalize_datetime_value(value: Any) -> dt.datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, dt.datetime):
+        parsed = value
+    elif isinstance(value, dt.date):
+        parsed = dt.datetime.combine(value, dt.time.min)
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        candidate = raw.replace("Z", "+00:00")
+        if len(candidate) == 10 and candidate.count("-") == 2:
+            candidate = f"{candidate}T12:00:00+00:00"
+        parsed = dt.datetime.fromisoformat(candidate)
+    else:
+        raise ValueError("invalid_datetime")
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
 
 
 class TicketCommentOut(BaseModel):
@@ -29,7 +52,9 @@ class TicketBase(BaseModel):
     title: str = Field(min_length=3, max_length=MAX_TITLE_LEN)
     description: str = Field(min_length=5, max_length=MAX_DESCRIPTION_LEN)
     priority: TicketPriority
+    ticket_type: TicketType = TicketType.service_request
     category: TicketCategory
+    due_at: dt.datetime | None = None
     assignee: str | None = Field(default=None, min_length=2, max_length=MAX_NAME_LEN)
     reporter: str = Field(min_length=2, max_length=MAX_NAME_LEN)
     tags: list[str] = Field(default_factory=list, max_length=MAX_TAGS)
@@ -60,12 +85,18 @@ class TicketBase(BaseModel):
     def normalize_tags(cls, value: list[str]) -> list[str]:
         return clean_list(value, max_items=MAX_TAGS, item_max_length=MAX_TAG_LEN)
 
+    @field_validator("due_at", mode="before")
+    @classmethod
+    def normalize_due_at(cls, value: Any) -> dt.datetime | None:
+        return _normalize_datetime_value(value)
+
 
 class TicketCreate(TicketBase):
     auto_priority_applied: bool = False
     assignment_model_version: str | None = Field(default=None, max_length=40)
     priority_model_version: str | None = Field(default=None, max_length=40)
     predicted_priority: TicketPriority | None = None
+    predicted_ticket_type: TicketType | None = None
     predicted_category: TicketCategory | None = None
 
     @field_validator("assignment_model_version", "priority_model_version", mode="before")
@@ -87,10 +118,26 @@ class TicketStatusUpdate(BaseModel):
 
 
 class TicketTriageUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=3, max_length=MAX_TITLE_LEN)
+    description: str | None = Field(default=None, min_length=5, max_length=MAX_DESCRIPTION_LEN)
     assignee: str | None = Field(default=None, min_length=2, max_length=MAX_NAME_LEN)
     priority: TicketPriority | None = None
+    ticket_type: TicketType | None = None
     category: TicketCategory | None = None
+    due_at: dt.datetime | None = None
     comment: str | None = Field(default=None, max_length=MAX_DESCRIPTION_LEN)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def normalize_title(cls, value: str | None) -> str | None:
+        cleaned = clean_single_line(value)
+        return cleaned or None
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_description(cls, value: str | None) -> str | None:
+        cleaned = clean_multiline(value)
+        return cleaned or None
 
     @field_validator("assignee", mode="before")
     @classmethod
@@ -104,6 +151,11 @@ class TicketTriageUpdate(BaseModel):
         cleaned = clean_multiline(value)
         return cleaned or None
 
+    @field_validator("due_at", mode="before")
+    @classmethod
+    def normalize_due_at(cls, value: Any) -> dt.datetime | None:
+        return _normalize_datetime_value(value)
+
 
 class TicketOut(TicketBase):
     id: str
@@ -114,12 +166,19 @@ class TicketOut(TicketBase):
     assignment_model_version: str
     priority_model_version: str
     predicted_priority: TicketPriority | None
+    predicted_ticket_type: TicketType | None
     predicted_category: TicketCategory | None
     assignment_change_count: int
     first_action_at: dt.datetime | None
     resolved_at: dt.datetime | None
+    due_at: dt.datetime | None = None
     sla_status: str | None = None
     sla_remaining_minutes: int | None = None
+    sla_first_response_due_at: dt.datetime | None = None
+    sla_resolution_due_at: dt.datetime | None = None
+    sla_first_response_breached: bool = False
+    sla_resolution_breached: bool = False
+    sla_last_synced_at: dt.datetime | None = None
     created_at: dt.datetime
     updated_at: dt.datetime
     resolution: str | None
@@ -216,6 +275,7 @@ class TicketSimilarOut(BaseModel):
     description: str
     status: TicketStatus
     priority: TicketPriority
+    ticket_type: TicketType
     category: TicketCategory
     assignee: str
     reporter: str

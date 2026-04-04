@@ -14,7 +14,9 @@ from app.core.exceptions import ITSMGatekeeperException
 from app.core.rate_limit import install_global_rate_limit_middleware
 from app.core.security_headers import install_security_headers_middleware
 from app.integrations.jira.auto_reconcile import start_jira_auto_reconcile, stop_jira_auto_reconcile
+from app.core import cache as _cache_module
 from app.routers import ai, assignees, auth, emails, integrations_jira, notifications, problems, recommendations, sla, tickets, translations, users
+from app.routers import search as search_router
 
 
 def create_app() -> FastAPI:
@@ -23,11 +25,29 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        # Increase the default thread pool so long LLM/RAG calls don't starve
+        # other sync endpoints waiting for a thread slot (default is cpu_count+4).
+        import anyio.to_thread
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 60
+        _cache_module._get_client()  # warm up Redis; logs warning if unavailable
         await start_jira_auto_reconcile()
+        # Start proactive SLA monitor background task
+        try:
+            from app.services.sla.sla_monitor import start_sla_monitor, stop_sla_monitor
+            await start_sla_monitor()
+        except Exception as _sla_exc:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("SLA monitor failed to start: %s", _sla_exc)
         try:
             yield
         finally:
+            _cache_module.close()
             await stop_jira_auto_reconcile()
+            try:
+                from app.services.sla.sla_monitor import stop_sla_monitor
+                await stop_sla_monitor()
+            except Exception:  # noqa: BLE001
+                pass
 
     app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
     app.add_middleware(
@@ -57,6 +77,7 @@ def create_app() -> FastAPI:
     # Jira reverse-sync endpoints (webhook + reconcile).
     app.include_router(integrations_jira.router, prefix="/api", tags=["integrations-jira"])
     app.include_router(sla.router, prefix="/api/sla", tags=["sla"])
+    app.include_router(search_router.router, prefix="/api", tags=["search"])
 
     @app.exception_handler(ITSMGatekeeperException)
     async def handle_itsm_exception(_: Request, exc: ITSMGatekeeperException) -> JSONResponse:

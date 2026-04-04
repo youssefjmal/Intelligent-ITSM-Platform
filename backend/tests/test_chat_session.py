@@ -6,6 +6,7 @@ from app.services.ai.chat_session import (
     resolve_comparison_targets,
     resolve_contextual_reference,
     resolve_list_reference,
+    resolve_problem_contextual_reference,
 )
 
 
@@ -103,4 +104,29 @@ def test_build_chat_session_captures_assistant_list_only_after_user_requested_li
     assert session.last_ticket_id is None
     assert session.last_ticket_list == ["TW-MOCK-010", "TW-MOCK-011", "TW-MOCK-012"]
     assert second_ticket == "TW-MOCK-011"
+    assert source == "list_position"
+
+
+def test_build_chat_session_prefers_structured_payload_metadata_for_problem_context() -> None:
+    session = build_chat_session(
+        [
+            ChatMessage(role="user", content="current problems"),
+            ChatMessage(
+                role="assistant",
+                content="3 problems found.",
+                response_payload_type="problem_list",
+                inventory_kind="problems",
+                listed_entity_ids=["PB-MOCK-01", "PB-MOCK-02", "PB-MOCK-03"],
+            ),
+            ChatMessage(
+                role="user",
+                content="tell me about the second one",
+            ),
+        ]
+    )
+
+    problem_id, source = resolve_problem_contextual_reference("show me the second one", session)
+
+    assert session.last_problem_list == ["PB-MOCK-01", "PB-MOCK-02", "PB-MOCK-03"]
+    assert problem_id == "PB-MOCK-02"
     assert source == "list_position"

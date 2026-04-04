@@ -7,6 +7,7 @@ import { AppShell } from "@/components/app-shell"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -198,60 +199,123 @@ export default function ProblemsPage() {
 
           <Card className="surface-card rounded-2xl p-4">
             {filteredProblems.length === 0 ? (
+              problems.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 gap-4 text-center">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" className="text-[#1D9E75] mx-auto">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.5"/>
+                    <path d="M8 12l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                  <p className="page-title">Aucun problème détecté</p>
+                  <p className="page-subtitle">Aucun incident récurrent identifié pour le moment.</p>
+                </div>
+              ) : (
               <div className="rounded-xl border border-dashed border-border/70 bg-muted/20 p-8 text-center">
                 <p className="text-sm font-medium text-foreground">{t("problems.noData")}</p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   {locale === "fr" ? "Ajustez les filtres pour trouver des problemes." : "Adjust filters to find matching problems."}
                 </p>
               </div>
+              )
             ) : (
               <div className="space-y-3">
                 {filteredProblems.map((problem) => (
-                  <article key={problem.id} className="rounded-xl border border-border/70 bg-card/70 p-4 transition-colors hover:bg-muted/30">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1">
-                        <div className="mb-2 flex flex-wrap items-center gap-2">
-                          <Badge variant="outline" className="rounded-full border-border bg-background/70 px-2 py-0.5 font-mono text-[10px]">
-                            {problem.id}
-                          </Badge>
+                  <HoverCard key={problem.id} openDelay={110} closeDelay={90}>
+                    <HoverCardTrigger asChild>
+                      <article className="rounded-xl border border-border/70 bg-card/70 p-4 transition-colors hover:bg-muted/30">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="mb-2 flex flex-wrap items-center gap-2">
+                              <Badge variant="outline" className="rounded-full border-border bg-background/70 px-2 py-0.5 font-mono text-[10px]">
+                                {problem.id}
+                              </Badge>
+                              <Badge className={`${PROBLEM_STATUS_CONFIG[problem.status].color} text-[10px] font-semibold`}>
+                                {statusLabel(problem.status, locale)}
+                              </Badge>
+                            </div>
+                            <Link href={`/problems/${problem.id}`} className="line-clamp-1 text-sm font-semibold text-foreground hover:text-primary flex items-center gap-1.5">
+                              {(() => {
+                                const score = (problem.activeCount ?? 0) * (problem.occurrencesCount ?? 1)
+                                const dotColor = score > 10 ? "bg-[#E24B4A]" : score >= 5 ? "bg-[#EF9F27]" : "bg-[#888780]"
+                                return <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${dotColor}`} title={`Score d'urgence: ${score} (tickets actifs × occurrences)`} />
+                              })()}
+                              {problem.title}
+                            </Link>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {(problem.assignee || (locale === "fr" ? "Non assigne" : "Unassigned"))} | {CATEGORY_CONFIG[problem.category]?.label || problem.category}
+                            </p>
+                          </div>
+                          <Link href={`/problems/${problem.id}`}>
+                            <Button variant="outline" size="sm" className="h-8 gap-1.5 rounded-lg">
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              {locale === "fr" ? "Ouvrir" : "Open"}
+                            </Button>
+                          </Link>
+                        </div>
+
+                        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                          <ProblemMetric
+                            label={locale === "fr" ? "Occurrences" : "Occurrences"}
+                            value={String(problem.occurrencesCount)}
+                          />
+                          <ProblemMetric
+                            label={locale === "fr" ? "Tickets actifs" : "Active tickets"}
+                            value={String(problem.activeCount)}
+                            className={(problem.activeCount ?? 0) > 0 ? "bg-[#FAEEDA] text-[#633806]" : "bg-[#E1F5EE] text-[#085041]"}
+                          />
+                          <ProblemMetric
+                            label={locale === "fr" ? "Derniere occurrence" : "Last seen"}
+                            value={new Date(problem.lastSeenAt || problem.updatedAt).toLocaleDateString(locale === "fr" ? "fr-FR" : "en-US", {
+                              day: "2-digit",
+                              month: "short",
+                              year: "numeric",
+                            })}
+                          />
+                        </div>
+                      </article>
+                    </HoverCardTrigger>
+                    <HoverCardContent align="start" className="w-[440px] rounded-xl border border-border/70 p-3">
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="line-clamp-2 text-sm font-semibold text-foreground">{problem.title}</p>
                           <Badge className={`${PROBLEM_STATUS_CONFIG[problem.status].color} text-[10px] font-semibold`}>
                             {statusLabel(problem.status, locale)}
                           </Badge>
                         </div>
-                        <Link href={`/problems/${problem.id}`} className="line-clamp-1 text-sm font-semibold text-foreground hover:text-primary">
-                          {problem.title}
-                        </Link>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {(problem.assignee || (locale === "fr" ? "Non assigne" : "Unassigned"))} | {CATEGORY_CONFIG[problem.category]?.label || problem.category}
-                        </p>
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <HoverDetailItem
+                            label={locale === "fr" ? "Categorie" : "Category"}
+                            value={CATEGORY_CONFIG[problem.category]?.label || problem.category}
+                          />
+                          <HoverDetailItem
+                            label={locale === "fr" ? "Assigne" : "Assignee"}
+                            value={problem.assignee || (locale === "fr" ? "Non assigne" : "Unassigned")}
+                          />
+                          <HoverDetailItem label={locale === "fr" ? "Occurrences" : "Occurrences"} value={String(problem.occurrencesCount)} />
+                          <HoverDetailItem label={locale === "fr" ? "Tickets actifs" : "Active tickets"} value={String(problem.activeCount)} />
+                        </div>
+                        <div className="grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+                          <HoverDetailItem
+                            label={locale === "fr" ? "Mis a jour" : "Updated"}
+                            value={new Date(problem.updatedAt).toLocaleString(locale === "fr" ? "fr-FR" : "en-US")}
+                          />
+                          <HoverDetailItem
+                            label={locale === "fr" ? "Derniere occurrence" : "Last seen"}
+                            value={new Date(problem.lastSeenAt || problem.updatedAt).toLocaleString(locale === "fr" ? "fr-FR" : "en-US")}
+                          />
+                        </div>
+                        {problem.rootCause ? (
+                          <HoverDetailItem label={locale === "fr" ? "Cause racine" : "Root cause"} value={problem.rootCause} fullWidth />
+                        ) : null}
+                        {problem.workaround ? (
+                          <HoverDetailItem label={locale === "fr" ? "Contournement" : "Workaround"} value={problem.workaround} fullWidth />
+                        ) : null}
+                        {problem.permanentFix ? (
+                          <HoverDetailItem label={locale === "fr" ? "Correctif permanent" : "Permanent fix"} value={problem.permanentFix} fullWidth />
+                        ) : null}
+                        <HoverDetailItem label={locale === "fr" ? "Cle de similarite" : "Similarity key"} value={problem.similarityKey} fullWidth mono />
                       </div>
-                      <Link href={`/problems/${problem.id}`}>
-                        <Button variant="outline" size="sm" className="h-8 gap-1.5 rounded-lg">
-                          <ExternalLink className="h-3.5 w-3.5" />
-                          {locale === "fr" ? "Ouvrir" : "Open"}
-                        </Button>
-                      </Link>
-                    </div>
-
-                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
-                      <ProblemMetric
-                        label={locale === "fr" ? "Occurrences" : "Occurrences"}
-                        value={String(problem.occurrencesCount)}
-                      />
-                      <ProblemMetric
-                        label={locale === "fr" ? "Tickets actifs" : "Active tickets"}
-                        value={String(problem.activeCount)}
-                      />
-                      <ProblemMetric
-                        label={locale === "fr" ? "Derniere occurrence" : "Last seen"}
-                        value={new Date(problem.lastSeenAt || problem.updatedAt).toLocaleDateString(locale === "fr" ? "fr-FR" : "en-US", {
-                          day: "2-digit",
-                          month: "short",
-                          year: "numeric",
-                        })}
-                      />
-                    </div>
-                  </article>
+                    </HoverCardContent>
+                  </HoverCard>
                 ))}
               </div>
             )}
@@ -266,11 +330,30 @@ export default function ProblemsPage() {
   )
 }
 
-function ProblemMetric({ label, value }: { label: string; value: string }) {
+function ProblemMetric({ label, value, className }: { label: string; value: string; className?: string }) {
   return (
-    <div className="rounded-lg border border-border/70 bg-background/70 p-2.5">
+    <div className={`rounded-lg border border-border/70 bg-background/70 p-2.5 ${className ?? ""}`}>
       <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
-      <p className="mt-1 text-sm font-semibold text-foreground">{value}</p>
+      <p className="mt-1 text-sm font-semibold">{value}</p>
+    </div>
+  )
+}
+
+function HoverDetailItem({
+  label,
+  value,
+  fullWidth = false,
+  mono = false,
+}: {
+  label: string
+  value: string
+  fullWidth?: boolean
+  mono?: boolean
+}) {
+  return (
+    <div className={`rounded-md border border-border/70 bg-muted/20 p-2 ${fullWidth ? "col-span-full" : ""}`}>
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className={`mt-1 text-xs font-medium text-foreground ${mono ? "font-mono text-[11px]" : ""}`}>{value}</p>
     </div>
   )
 }

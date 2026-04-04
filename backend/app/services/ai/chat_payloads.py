@@ -14,9 +14,17 @@ from app.schemas.ai import (
     AIChatCauseCandidate,
     AIChatCommentSummary,
     AIChatConfidence,
+    AIChatExtendedActionLink,
     AIChatInsufficientEvidenceResponse,
     AIChatListMetrics,
     AIChatListTicketItem,
+    AIChatProblemDetailResponse,
+    AIChatProblemLinkedTicketItem,
+    AIChatProblemLinkedTicketsResponse,
+    AIChatProblemListItem,
+    AIChatProblemListResponse,
+    AIChatRecommendationListItem,
+    AIChatRecommendationListResponse,
     AIChatRelatedEntity,
     AIChatRelatedTicketRef,
     AIChatResolutionAdviceResponse,
@@ -29,8 +37,11 @@ from app.schemas.ai import (
     AIChatTicketListResponse,
     AIChatTopRecommendation,
 )
+from app.services.ai.calibration import confidence_band
 from app.services.ai.formatters import _priority_label, _status_label
 from app.services.ai.resolver import ResolverOutput
+from app.services.ai.service_requests import build_service_request_guidance
+from app.services.ai.taxonomy import TOPIC_HINTS
 
 _ACTIVE_STATUSES = {
     TicketStatus.open.value,
@@ -38,13 +49,6 @@ _ACTIVE_STATUSES = {
     TicketStatus.waiting_for_customer.value,
     TicketStatus.waiting_for_support_vendor.value,
     TicketStatus.pending.value,
-}
-_TOPIC_STEP_HINTS = {
-    "crm_integration": {"crm", "sync", "worker", "token", "oauth", "credential", "integration"},
-    "payroll_export": {"export", "date", "formatter", "parser", "schema", "import", "csv", "workbook", "serializer"},
-    "notification_distribution": {"distribution", "notification", "recipient", "approval", "manager", "notice"},
-    "mail_transport": {"mail", "email", "relay", "connector", "forwarding", "mailbox", "queue"},
-    "network_access": {"vpn", "route", "routing", "gateway", "dns", "remote", "tunnel", "mfa"},
 }
 
 
@@ -84,6 +88,18 @@ def _open_ticket_action(ticket_id: str, *, lang: str) -> AIChatActionLink:
     )
 
 
+def build_service_request_response(
+    ticket: Any,
+    *,
+    lang: str = "fr",
+) -> dict[str, Any]:
+    """Build a task-oriented response for planned service requests."""
+
+    payload = build_service_request_guidance(ticket, lang=lang, enable_llm_refinement=True)
+    payload.setdefault("cause_analysis", None)
+    return payload
+
+
 def _priority_text(ticket: Any, *, lang: str) -> str:
     raw = getattr(getattr(ticket, "priority", None), "value", getattr(ticket, "priority", None)) or "unknown"
     return _priority_label(str(raw), lang)
@@ -96,6 +112,14 @@ def _status_text(ticket: Any, *, lang: str) -> str:
 
 def _assignee_text(ticket: Any, *, lang: str) -> str:
     return str(getattr(ticket, "assignee", None) or ("Unassigned" if lang == "en" else "Non assigne"))
+
+
+def _ticket_type_text(ticket: Any) -> str | None:
+    return _string_or_none(getattr(getattr(ticket, "ticket_type", None), "value", getattr(ticket, "ticket_type", None)))
+
+
+def _category_text(ticket: Any) -> str | None:
+    return _string_or_none(getattr(getattr(ticket, "category", None), "value", getattr(ticket, "category", None)))
 
 
 def _ticket_sla_state(ticket: Any) -> AIChatSLAState | None:
@@ -176,6 +200,7 @@ def build_ticket_details_payload(ticket: Any, *, lang: str) -> AIChatTicketDetai
         ticket_id=ticket_id,
         title=str(getattr(ticket, "title", "") or ticket_id),
         description=_string_or_none(getattr(ticket, "description", None)) or "",
+        ticket_type=getattr(ticket, "ticket_type", None),
         status=_status_text(ticket, lang=lang),
         priority=_priority_text(ticket, lang=lang),
         assignee=_assignee_text(ticket, lang=lang),
@@ -191,11 +216,7 @@ def build_ticket_details_payload(ticket: Any, *, lang: str) -> AIChatTicketDetai
 
 
 def _confidence_level_from_score(score: float) -> str:
-    if score >= 0.78:
-        return "high"
-    if score >= 0.52:
-        return "medium"
-    return "low"
+    return confidence_band(score)
 
 
 def _confidence_from_resolver(resolver_output: ResolverOutput | None, *, lang: str) -> AIChatConfidence:
@@ -305,6 +326,23 @@ def _selected_cluster_topic(resolver_output: ResolverOutput | None) -> str | Non
     return None
 
 
+def _topic_match_score(text: str, topic: str) -> int:
+    lowered = text.casefold()
+    hints = TOPIC_HINTS.get(str(topic or "").strip().lower()) or set()
+    return sum(1 for hint in hints if hint in lowered)
+
+
+def _best_matching_topic(text: str) -> tuple[str | None, int]:
+    best_topic: str | None = None
+    best_score = 0
+    for topic in TOPIC_HINTS:
+        score = _topic_match_score(text, topic)
+        if score > best_score:
+            best_topic = topic
+            best_score = score
+    return best_topic, best_score
+
+
 def _lines_in_selected_family(
     rows: list[str],
     *,
@@ -313,14 +351,17 @@ def _lines_in_selected_family(
 ) -> list[str]:
     scoped_rows = _dedupe_lines(rows, limit=max(6, limit * 2))
     preferred_topic = _selected_cluster_topic(resolver_output)
-    hints = set(_TOPIC_STEP_HINTS.get(str(preferred_topic or "").strip().lower()) or [])
+    hints = set(TOPIC_HINTS.get(str(preferred_topic or "").strip().lower()) or [])
     if not hints:
         return scoped_rows[:limit]
-    scoped = [
-        row
-        for row in scoped_rows
-        if any(hint in row.casefold() for hint in hints)
-    ]
+    scoped: list[str] = []
+    for row in scoped_rows:
+        preferred_score = _topic_match_score(row, str(preferred_topic or ""))
+        if preferred_score == 0:
+            continue
+        best_topic, best_score = _best_matching_topic(row)
+        if best_score == 0 or best_topic == str(preferred_topic or "").strip().lower():
+            scoped.append(row)
     return (scoped or scoped_rows)[:limit]
 
 
@@ -538,11 +579,7 @@ def build_resolution_advice_payload(
 
 
 def _likelihood_from_score(score: float) -> str:
-    if score >= 0.78:
-        return "high"
-    if score >= 0.52:
-        return "medium"
-    return "low"
+    return confidence_band(score)
 
 
 def _supported_cause_hypothesis(
@@ -880,6 +917,7 @@ def build_ticket_list_payload(
     list_kind: str,
     title: str,
     scope: str | None = None,
+    total_count: int | None = None,
 ) -> AIChatTicketListResponse:
     items = [
         AIChatListTicketItem(
@@ -888,6 +926,8 @@ def build_ticket_list_payload(
             status=_status_text(ticket, lang=lang),
             priority=_priority_text(ticket, lang=lang),
             assignee=_assignee_text(ticket, lang=lang),
+            ticket_type=_ticket_type_text(ticket),
+            category=_category_text(ticket),
             sla_risk=_string_or_none(getattr(ticket, "sla_status", None)),
             route=_ticket_route(str(getattr(ticket, "id", "") or "")),
         )
@@ -909,10 +949,13 @@ def build_ticket_list_payload(
         list_kind=list_kind,
         title=title,
         scope=scope,
-        total_count=len(items),
+        total_count=int(total_count if total_count is not None else len(items)),
+        returned_count=len(items),
+        has_more=(int(total_count if total_count is not None else len(items)) > len(items)),
         summary_metrics=AIChatListMetrics(open_count=open_count, critical_count=critical_count),
         tickets=items,
         top_recommendation=_sla_top_recommendation(tickets, lang=lang) if list_kind == "high_sla_risk" else None,
+        action_links=[],
     )
 
 
@@ -935,4 +978,154 @@ def is_assignment_query(question: str) -> bool:
             "responsable",
             "reaffect",
         ]
+    )
+
+
+def build_problem_detail_payload(
+    problem: dict,
+    linked_ticket_count: int,
+    ai_probable_cause: str | None,
+    language: str = "fr",
+) -> AIChatProblemDetailResponse:
+    """Build a structured chat payload for a problem detail response.
+
+    Formats problem fields into a chat-renderable card consistent with how
+    ticket detail payloads are built. Includes status badge, three resolution
+    fields (shown only when non-null), and action links.
+
+    Args:
+        problem: Problem dict from the database (all fields).
+        linked_ticket_count: Count of tickets linked to this problem.
+        ai_probable_cause: Probable cause from resolver if root_cause is
+            not yet confirmed. None if both are absent.
+        language: "fr" or "en" for label localization.
+    Returns:
+        Structured problem detail payload for chat rendering.
+    """
+    problem_id = str(problem.get("id") or "")
+    return AIChatProblemDetailResponse(
+        problem_id=problem_id,
+        title=str(problem.get("title") or ""),
+        status=str(problem.get("status") or ""),
+        category=str(problem.get("category") or ""),
+        occurrences_count=int(problem.get("occurrences_count") or 0),
+        active_count=int(problem.get("active_count") or 0),
+        root_cause=str(problem.get("root_cause") or "") or None,
+        workaround=str(problem.get("workaround") or "") or None,
+        permanent_fix=str(problem.get("permanent_fix") or "") or None,
+        ai_probable_cause=str(ai_probable_cause).strip() if ai_probable_cause else None,
+        linked_ticket_count=linked_ticket_count,
+        last_seen_at=str(problem.get("last_seen_at") or "") or None,
+        action_links=[
+            AIChatExtendedActionLink(
+                label="Voir le problème" if language == "fr" else "View Problem",
+                route=f"/problems/{problem_id}",
+            ),
+            AIChatExtendedActionLink(
+                label="Tickets liés" if language == "fr" else "Show Linked Tickets",
+                intent="problem_linked_tickets",
+            ),
+        ],
+    )
+
+
+def build_problem_list_payload(
+    problems: list[dict],
+    status_filter: str | None,
+    language: str = "fr",
+) -> AIChatProblemListResponse:
+    """Build a structured chat payload for a problem list response.
+
+    Args:
+        problems: List of problem dicts from the database.
+        status_filter: Status that was applied, or None for all.
+        language: "fr" or "en".
+    Returns:
+        Structured problem list payload for chat rendering.
+    """
+    _ = language
+    return AIChatProblemListResponse(
+        title="Problems" if language == "en" else "Problemes",
+        scope=(f"status={status_filter}" if status_filter else None),
+        problems=[
+            AIChatProblemListItem(
+                id=str(p.get("id") or ""),
+                title=str(p.get("title") or ""),
+                status=str(p.get("status") or ""),
+                category=str(p.get("category") or ""),
+                occurrences_count=int(p.get("occurrences_count") or 0),
+                active_count=int(p.get("active_count") or 0),
+                last_seen_at=str(p.get("last_seen_at") or "") or None,
+                workaround=str(p.get("workaround") or "") or None,
+            )
+            for p in problems
+        ],
+        status_filter=status_filter,
+        total_count=len(problems),
+        returned_count=len(problems),
+        has_more=False,
+        action_links=[],
+    )
+
+
+def build_problem_linked_tickets_payload(
+    *,
+    problem_id: str,
+    tickets: list[dict[str, Any]],
+    language: str = "fr",
+) -> AIChatProblemLinkedTicketsResponse:
+    rows = [
+        AIChatProblemLinkedTicketItem(
+            id=str(ticket.get("id") or ""),
+            title=str(ticket.get("title") or ""),
+            status=str(ticket.get("status") or ""),
+            priority=str(ticket.get("priority") or ""),
+            assignee=str(ticket.get("assignee") or ""),
+            created_at=str(ticket.get("created_at") or "") or None,
+            route=str(ticket.get("route") or ""),
+        )
+        for ticket in tickets
+        if str(ticket.get("id") or "").strip()
+    ]
+    return AIChatProblemLinkedTicketsResponse(
+        problem_id=str(problem_id or ""),
+        title="Problem linked tickets" if language == "en" else "Tickets lies au probleme",
+        tickets=rows,
+        total_count=len(rows),
+        returned_count=len(rows),
+        has_more=False,
+        action_links=[],
+    )
+
+
+def build_recommendation_list_payload(
+    *,
+    recommendations: list[dict[str, Any]],
+    language: str = "fr",
+) -> AIChatRecommendationListResponse:
+    rows = [
+        AIChatRecommendationListItem(
+            id=str(rec.get("id") or ""),
+            title=str(rec.get("title") or ""),
+            type=str(rec.get("type") or ""),
+            confidence=float(rec.get("confidence") or 0.0),
+            impact=str(rec.get("impact") or ""),
+            description=str(rec.get("description") or ""),
+        )
+        for rec in recommendations
+        if str(rec.get("id") or "").strip()
+    ]
+    return AIChatRecommendationListResponse(
+        title="Recommendations" if language == "en" else "Recommandations",
+        scope=None,
+        recommendations=rows,
+        total_count=len(rows),
+        returned_count=len(rows),
+        has_more=False,
+        action_links=[
+            AIChatExtendedActionLink(
+                label="Voir toutes les recommandations" if language == "fr" else "View All",
+                route="/recommendations",
+            )
+        ],
     )

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import csv
 import datetime as dt
+import io
 import logging
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Path, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -24,17 +27,27 @@ from app.models.notification import Notification
 from app.models.enums import TicketStatus, UserRole
 from app.models.ticket import Ticket
 from app.models.user import User
-from app.services.ai.ai_sla_risk import evaluate_sla_risk
-from app.services.notifications_service import create_notifications_for_users, resolve_ticket_recipients
+from app.services.ai.ai_sla_risk import build_sla_advisory, evaluate_sla_risk
+from app.services.ai.orchestrator import get_sla_advice
+from app.services.notifications_service import (
+    EVENT_AI_SLA_RISK_HIGH,
+    EVENT_SLA_AT_RISK,
+    EVENT_SLA_BREACHED,
+    create_notifications_for_users,
+    resolve_ticket_recipients,
+)
 from app.services.sla.auto_escalation import apply_escalation, compute_escalation
-from app.services.tickets import get_ticket_for_user
+from app.services.tickets import get_ticket_for_user, select_best_assignee
 
 router = APIRouter(dependencies=[Depends(rate_limit()), Depends(get_current_user)])
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BATCH_LIMIT = 200
 _DEFAULT_MAX_AGE_MINUTES = 10
-_DEFAULT_STALE_STATUS_MINUTES = 120
+_DEFAULT_STALE_STATUS_MINUTES = max(1, int(settings.SLA_STALE_STATUS_MINUTES))
+_DEFAULT_DEADLINE_ALERT_MINUTES = max(1, int(settings.SLA_DEADLINE_ALERT_MINUTES))
+_DEFAULT_AT_RISK_MINUTES = max(1, int(settings.SLA_AT_RISK_MINUTES))
+_DEFAULT_AI_HIGH_RISK_THRESHOLD = max(0.0, min(float(settings.SLA_AI_HIGH_RISK_SCORE_THRESHOLD), 1.0))
 _MAX_FAILURES = 20
 _MAX_ESCALATIONS = 50
 _ALLOWED_SLA_STATUSES = {"ok", "at_risk", "breached", "paused", "completed", "unknown"}
@@ -67,6 +80,32 @@ class SLABatchRunRequest(BaseModel):
     dry_run: bool = False
 
 
+class TicketSlaAdvisoryOut(BaseModel):
+    ticket_id: str
+    remaining_seconds: int
+    is_breached: bool
+    ai_risk_score: float
+    rag_advice_text: str
+
+
+class TicketAiSlaAdvisoryOut(BaseModel):
+    ticket_id: str
+    risk_score: float = Field(ge=0.0, le=1.0)
+    band: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    reasoning: list[str] = Field(default_factory=list)
+    recommended_actions: list[str] = Field(default_factory=list)
+    advisory_mode: str
+    evaluated_at: str
+    remaining_seconds: int = 0
+    suggested_priority: str | None = None
+    sla_elapsed_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    time_consumed_percent: int = Field(default=0, ge=0, le=100)
+    model_version: str = "deterministic-sla-v1"
+    decision_source: str = "deterministic"
+    created_at: str
+
+
 def _as_utc(value: dt.datetime | None) -> dt.datetime | None:
     if value is None:
         return None
@@ -90,6 +129,16 @@ def _status_value(status: Any) -> str:
 def _priority_value(priority: Any) -> str:
     value = priority.value if hasattr(priority, "value") else priority
     return str(value or "").strip().lower()
+
+
+def _risk_score_as_unit(value: Any) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if score <= 1.0:
+        return max(0.0, min(score, 1.0))
+    return max(0.0, min(score / 100.0, 1.0))
 
 
 def _normalize_status_token(raw: str) -> str:
@@ -190,6 +239,21 @@ def _snapshot(ticket: Ticket) -> dict[str, Any]:
     }
 
 
+def _is_breached_ticket(ticket: Ticket) -> bool:
+    return bool(ticket.sla_first_response_breached or ticket.sla_resolution_breached)
+
+
+def _remaining_seconds(ticket: Ticket) -> int:
+    value = getattr(ticket, "sla_remaining_minutes", None)
+    if value is None:
+        return 0
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, minutes * 60)
+
+
 def _status_change_stale(ticket: Ticket, *, stale_before: dt.datetime) -> bool:
     updated_at = _as_utc(ticket.updated_at)
     stale_cutoff = _as_utc(stale_before)
@@ -283,6 +347,135 @@ def _create_escalation_notifications(db: Session, *, ticket: Ticket) -> int:
         link=f"/tickets/{ticket.id}",
         source="sla",
         cooldown_minutes=30,
+        metadata_json={
+            "ticket_id": ticket.id,
+            "ticket_title": ticket.title,
+            "reason": ticket.priority_escalation_reason or "sla_policy",
+            "band": str(getattr(ticket, "sla_status", None) or "at_risk"),
+        },
+        action_type="escalate",
+        action_payload={"ticket_id": ticket.id},
+        event_type=EVENT_SLA_AT_RISK,
+    )
+    return len(created)
+
+
+def _deadline_alert_state(ticket: Ticket, *, threshold_minutes: int) -> tuple[bool, str, int | None]:
+    sla_status = str(getattr(ticket, "sla_status", None) or "unknown").strip().lower()
+    remaining = getattr(ticket, "sla_remaining_minutes", None)
+    if sla_status == "breached":
+        return True, "breached", remaining
+    if sla_status != "at_risk":
+        return False, sla_status, remaining
+    if remaining is None:
+        return True, "at_risk", remaining
+    try:
+        remaining_value = int(remaining)
+    except (TypeError, ValueError):
+        return True, "at_risk", None
+    return remaining_value <= max(1, threshold_minutes), "at_risk", remaining_value
+
+
+def _create_deadline_alert_notifications(
+    db: Session,
+    *,
+    ticket: Ticket,
+    threshold_minutes: int = _DEFAULT_DEADLINE_ALERT_MINUTES,
+    cooldown_minutes: int = 30,
+) -> int:
+    should_alert, status, remaining = _deadline_alert_state(ticket, threshold_minutes=threshold_minutes)
+    if not should_alert:
+        return 0
+
+    recipients = resolve_ticket_recipients(db, ticket=ticket, include_admins=True)
+    if not recipients:
+        return 0
+
+    is_breached = status == "breached"
+    severity = "critical" if is_breached else "warning"
+    title = f"SLA breached: {ticket.id}" if is_breached else f"SLA deadline approaching: {ticket.id}"
+    remaining_text = (
+        "Remaining time unavailable"
+        if remaining is None
+        else ("Deadline already passed" if remaining <= 0 else f"{remaining} minute(s) remaining")
+    )
+    body = (
+        f"Ticket '{ticket.title}' is currently {status}. {remaining_text}. "
+        f"Current priority: {_priority_value(ticket.priority) or 'unknown'}."
+    )
+    created = create_notifications_for_users(
+        db,
+        users=recipients,
+        title=title,
+        body=body,
+        severity=severity,
+        link=f"/tickets/{ticket.id}",
+        source="sla",
+        cooldown_minutes=cooldown_minutes,
+        metadata_json={
+            "ticket_id": ticket.id,
+            "ticket_title": ticket.title,
+            "band": status,
+            "remaining_minutes": remaining,
+            "is_breached": is_breached,
+        },
+        action_type="view",
+        action_payload={"ticket_id": ticket.id},
+        event_type=EVENT_SLA_BREACHED if is_breached else EVENT_SLA_AT_RISK,
+    )
+    return len(created)
+
+
+def _create_high_risk_sla_notifications(
+    db: Session,
+    *,
+    ticket: Ticket,
+    unit_risk_score: float,
+    suggested_priority: str | None,
+    threshold: float,
+    cooldown_minutes: int = 30,
+) -> int:
+    if unit_risk_score <= threshold:
+        return 0
+    if str(getattr(ticket, "sla_status", None) or "").strip().lower() != "at_risk":
+        return 0
+
+    recipients = resolve_ticket_recipients(db, ticket=ticket, include_admins=True)
+    if not recipients:
+        return 0
+
+    suggested_assignee = select_best_assignee(db, category=ticket.category, priority=ticket.priority)
+    title = f"High-risk SLA ticket: {ticket.id}"
+    body = (
+        f"AI advisory risk score is {round(unit_risk_score, 2)} (threshold {round(threshold, 2)}). "
+        f"Status is at_risk with {ticket.sla_remaining_minutes if ticket.sla_remaining_minutes is not None else 'unknown'} minute(s) remaining. "
+        f"Suggested priority: {suggested_priority or _priority_value(ticket.priority)}."
+    )
+    created = create_notifications_for_users(
+        db,
+        users=recipients,
+        title=title,
+        body=body,
+        severity="high",
+        link=f"/tickets/{ticket.id}",
+        source="sla",
+        cooldown_minutes=cooldown_minutes,
+        metadata_json={
+            "ticket_id": ticket.id,
+            "ticket_title": ticket.title,
+            "risk_score": round(unit_risk_score, 3),
+            "suggested_priority": suggested_priority or _priority_value(ticket.priority),
+            "band": "high",
+            "remaining_minutes": ticket.sla_remaining_minutes,
+        },
+        action_type="reassign",
+        action_payload={
+            "ticket_id": ticket.id,
+            "assignee": suggested_assignee,
+            "reason": "ai_sla_high_risk",
+            "risk_score": round(unit_risk_score, 3),
+        },
+        event_type=EVENT_AI_SLA_RISK_HIGH,
     )
     return len(created)
 
@@ -326,6 +519,78 @@ def _count_similar_incidents(db: Session, ticket: Ticket) -> int | None:
         ).scalar()
         or 0
     )
+
+
+def _count_assignee_active_tickets(db: Session, ticket: Ticket) -> int | None:
+    assignee_value = str(ticket.assignee or "").strip()
+    if not assignee_value:
+        return None
+    return int(
+        db.execute(
+            select(func.count(Ticket.id)).where(
+                Ticket.id != ticket.id,
+                Ticket.assignee.ilike(assignee_value),
+                Ticket.status.in_(
+                    [
+                        TicketStatus.open,
+                        TicketStatus.in_progress,
+                        TicketStatus.pending,
+                        TicketStatus.waiting_for_customer,
+                        TicketStatus.waiting_for_support_vendor,
+                    ]
+                ),
+            )
+        ).scalar()
+        or 0
+    )
+
+
+def _latest_ai_evaluation_payload(latest: AiSlaRiskEvaluation | None) -> dict[str, Any] | None:
+    if latest is None:
+        return None
+    return {
+        "risk_score": latest.risk_score,
+        "confidence": latest.confidence,
+        "suggested_priority": latest.suggested_priority,
+        "reasoning_summary": latest.reasoning_summary,
+        "model_version": latest.model_version,
+        "decision_source": latest.decision_source,
+        "created_at": _iso(latest.created_at),
+    }
+
+
+def _build_ticket_sla_operational_advisory(
+    db: Session,
+    *,
+    ticket: Ticket,
+    latest: AiSlaRiskEvaluation | None = None,
+) -> dict[str, Any]:
+    similar_incidents = _count_similar_incidents(db, ticket)
+    assignee_load = _count_assignee_active_tickets(db, ticket)
+    advisory = build_sla_advisory(
+        ticket,
+        similar_incidents=similar_incidents,
+        assignee_load=assignee_load,
+        ai_evaluation=_latest_ai_evaluation_payload(latest),
+    )
+    evaluated_at = str(advisory.get("evaluated_at") or _iso(getattr(latest, "created_at", None)) or dt.datetime.now(dt.timezone.utc).isoformat())
+    return {
+        "ticket_id": ticket.id,
+        "risk_score": float(advisory.get("risk_score") or 0.0),
+        "band": str(advisory.get("band") or "low"),
+        "confidence": float(advisory.get("confidence") or 0.0),
+        "reasoning": [str(item).strip() for item in list(advisory.get("reasoning") or []) if str(item).strip()],
+        "recommended_actions": [str(item).strip() for item in list(advisory.get("recommended_actions") or []) if str(item).strip()],
+        "advisory_mode": str(advisory.get("advisory_mode") or "deterministic"),
+        "evaluated_at": evaluated_at,
+        "remaining_seconds": _remaining_seconds(ticket),
+        "suggested_priority": advisory.get("suggested_priority"),
+        "sla_elapsed_ratio": float(advisory.get("sla_elapsed_ratio") or 0.0),
+        "time_consumed_percent": int(advisory.get("time_consumed_percent") or 0),
+        "model_version": str(getattr(latest, "model_version", None) or "deterministic-sla-v1"),
+        "decision_source": str(getattr(latest, "decision_source", None) or advisory.get("advisory_mode") or "deterministic"),
+        "created_at": evaluated_at,
+    }
 
 
 def _persist_ai_risk_evaluation(
@@ -433,6 +698,21 @@ def sync_ticket_sla_snapshot(
                     "notified": notified,
                 },
             )
+        deadline_alerted = _create_deadline_alert_notifications(db, ticket=ticket)
+        if deadline_alerted > 0:
+            _record_automation_event(
+                db,
+                ticket_id=ticket.id,
+                event_type="SLA_DEADLINE_ALERT",
+                actor=f"user:{current_user.id}",
+                before_snapshot=before_snapshot,
+                after_snapshot=_snapshot(ticket),
+                meta={
+                    "created": deadline_alerted,
+                    "sla_status": str(ticket.sla_status or "unknown"),
+                    "remaining_minutes": ticket.sla_remaining_minutes,
+                },
+            )
         db.commit()
     except Exception as exc:  # noqa: BLE001
         db.rollback()
@@ -440,6 +720,34 @@ def sync_ticket_sla_snapshot(
 
     db.refresh(ticket)
     return _snapshot(ticket)
+
+
+@router.get("/ticket/{ticket_id}/advisory", response_model=TicketSlaAdvisoryOut)
+def get_ticket_sla_advisory(
+    ticket_id: str = Path(..., min_length=3, max_length=32),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> TicketSlaAdvisoryOut:
+    ticket = get_ticket_for_user(db, ticket_id, current_user)
+    if not ticket:
+        raise NotFoundError("ticket_not_found", details={"ticket_id": ticket_id})
+
+    latest = db.execute(
+        select(AiSlaRiskEvaluation)
+        .where(AiSlaRiskEvaluation.ticket_id == ticket_id)
+        .order_by(AiSlaRiskEvaluation.created_at.desc())
+        .limit(1)
+    ).scalars().first()
+    advisory_payload = _build_ticket_sla_operational_advisory(db, ticket=ticket, latest=latest)
+
+    advisory = get_sla_advice(db, ticket=ticket)
+    return TicketSlaAdvisoryOut(
+        ticket_id=ticket.id,
+        remaining_seconds=_remaining_seconds(ticket),
+        is_breached=_is_breached_ticket(ticket),
+        ai_risk_score=round(float(advisory_payload.get("risk_score") or 0.0), 3),
+        rag_advice_text=str(advisory.get("advice_text") or "").strip() or "No advisory available.",
+    )
 
 
 @router.get("/metrics")
@@ -501,7 +809,62 @@ def get_sla_metrics(
     }
 
 
-@router.get("/ticket/{ticket_id}/ai-risk/latest")
+_CSV_COLUMNS = [
+    "ticket_id", "jira_key", "title", "status", "priority", "category", "assignee",
+    "sla_status", "sla_remaining_minutes", "sla_elapsed_minutes",
+    "sla_first_response_due_at", "sla_resolution_due_at",
+    "sla_first_response_breached", "sla_resolution_breached",
+]
+
+
+@router.get("/export")
+def export_sla_csv(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    if current_user.role not in {UserRole.admin, UserRole.agent}:
+        raise InsufficientPermissionsError("forbidden")
+
+    tickets = db.execute(select(Ticket)).scalars().all()
+
+    def _fmt(v: Any) -> str:
+        if v is None:
+            return ""
+        if isinstance(v, dt.datetime):
+            return v.isoformat()
+        return str(v)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(_CSV_COLUMNS)
+    for t in tickets:
+        writer.writerow([
+            _fmt(t.id),
+            _fmt(t.jira_key),
+            _fmt(t.title),
+            _fmt(t.status.value if hasattr(t.status, "value") else t.status),
+            _fmt(t.priority.value if hasattr(t.priority, "value") else t.priority),
+            _fmt(t.category),
+            _fmt(t.assignee),
+            _fmt(t.sla_status),
+            _fmt(t.sla_remaining_minutes),
+            _fmt(t.sla_elapsed_minutes),
+            _fmt(t.sla_first_response_due_at),
+            _fmt(t.sla_resolution_due_at),
+            _fmt(t.sla_first_response_breached),
+            _fmt(t.sla_resolution_breached),
+        ])
+
+    filename = f"sla_export_{dt.date.today().isoformat()}.csv"
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/ticket/{ticket_id}/ai-risk/latest", response_model=TicketAiSlaAdvisoryOut)
 def get_ticket_ai_risk_latest(
     ticket_id: str = Path(..., min_length=3, max_length=32),
     db: Session = Depends(get_db),
@@ -517,19 +880,7 @@ def get_ticket_ai_risk_latest(
         .order_by(AiSlaRiskEvaluation.created_at.desc())
         .limit(1)
     ).scalars().first()
-    if latest is None:
-        return {"ticket_id": ticket_id, "latest": None}
-
-    return {
-        "ticket_id": ticket_id,
-        "risk_score": latest.risk_score,
-        "confidence": latest.confidence,
-        "suggested_priority": latest.suggested_priority,
-        "reasoning_summary": latest.reasoning_summary,
-        "model_version": latest.model_version,
-        "decision_source": latest.decision_source,
-        "created_at": _iso(latest.created_at),
-    }
+    return _build_ticket_sla_operational_advisory(db, ticket=ticket, latest=latest)
 
 
 @router.post("/run")
@@ -565,6 +916,7 @@ def run_sla_batch(
         "synced": 0,
         "escalated": 0,
         "stale_notified": 0,
+        "deadline_alerted": 0,
         "skipped": 0,
         "failed": 0,
         "failures": [],
@@ -604,7 +956,9 @@ def run_sla_batch(
         escalated_now = False
         would_escalate = False
         would_stale_notify = False
+        would_deadline_alert = False
         stale_notified = 0
+        deadline_alerted = 0
         stale_recipients_count = 0
         escalation_data: dict[str, str] | None = None
         processing_error: str | None = None
@@ -665,6 +1019,26 @@ def run_sla_batch(
                                 },
                             }
                         )
+                should_deadline_alert, deadline_status, deadline_remaining = _deadline_alert_state(
+                    ticket,
+                    threshold_minutes=_DEFAULT_DEADLINE_ALERT_MINUTES,
+                )
+                if should_deadline_alert:
+                    deadline_recipients_count = len(resolve_ticket_recipients(db, ticket=ticket, include_admins=True))
+                    if deadline_recipients_count > 0:
+                        would_deadline_alert = True
+                        result["proposed_actions"].append(
+                            {
+                                "ticket_id": ticket.id,
+                                "jira_key": jira_key,
+                                "action_type": "SLA_DEADLINE_ALERT",
+                                "details": {
+                                    "sla_status": deadline_status,
+                                    "remaining_minutes": deadline_remaining,
+                                    "recipients_count": deadline_recipients_count,
+                                },
+                            }
+                        )
                 result["dry_run_tickets"].append(
                     {
                         "ticket_id": ticket.id,
@@ -672,6 +1046,7 @@ def run_sla_batch(
                         "would_sync": bool(sync_ok),
                         "would_escalate": bool(would_escalate),
                         "would_stale_notify": bool(would_stale_notify),
+                        "would_deadline_alert": bool(would_deadline_alert),
                     }
                 )
                 savepoint.rollback()
@@ -727,6 +1102,21 @@ def run_sla_batch(
                             after_snapshot=_snapshot(ticket),
                             meta={"created": stale_notified},
                         )
+                deadline_alerted = _create_deadline_alert_notifications(db, ticket=ticket)
+                if deadline_alerted > 0:
+                    _record_automation_event(
+                        db,
+                        ticket_id=ticket.id,
+                        event_type="SLA_DEADLINE_ALERT",
+                        actor="system:n8n",
+                        before_snapshot=before_snapshot,
+                        after_snapshot=_snapshot(ticket),
+                        meta={
+                            "created": deadline_alerted,
+                            "sla_status": str(ticket.sla_status or "unknown"),
+                            "remaining_minutes": ticket.sla_remaining_minutes,
+                        },
+                    )
                 db.commit()
             except Exception as exc:  # noqa: BLE001
                 db.rollback()
@@ -764,6 +1154,8 @@ def run_sla_batch(
                 result["escalations"].append(escalation_data)
         if stale_notified or would_stale_notify:
             result["stale_notified"] += stale_notified
+        if deadline_alerted or would_deadline_alert:
+            result["deadline_alerted"] += deadline_alerted
 
         if ai_enabled and not params.dry_run:
             try:
@@ -794,13 +1186,38 @@ def run_sla_batch(
                         "decision_source": ai_mode,
                     },
                 )
+                unit_score = _risk_score_as_unit(evaluation.get("risk_score"))
+                current_sla_status = str(getattr(ticket, "sla_status", None) or "").strip().lower()
+                if unit_score > _DEFAULT_AI_HIGH_RISK_THRESHOLD and current_sla_status == "at_risk":
+                    high_risk_notified = _create_high_risk_sla_notifications(
+                        db,
+                        ticket=ticket,
+                        unit_risk_score=unit_score,
+                        suggested_priority=str(evaluation.get("suggested_priority") or "").strip() or None,
+                        threshold=_DEFAULT_AI_HIGH_RISK_THRESHOLD,
+                    )
+                    _record_automation_event(
+                        db,
+                        ticket_id=ticket.id,
+                        event_type="AUTO_ESCALATION",
+                        actor="system:ai_sla_advisor",
+                        before_snapshot=_snapshot(ticket),
+                        after_snapshot=_snapshot(ticket),
+                        meta={
+                            "trigger": "ai_risk_threshold",
+                            "unit_risk_score": round(unit_score, 3),
+                            "threshold": _DEFAULT_AI_HIGH_RISK_THRESHOLD,
+                            "sla_status": current_sla_status or "unknown",
+                            "notified": high_risk_notified,
+                        },
+                    )
                 db.commit()
                 risk_score = evaluation.get("risk_score")
                 if risk_score is not None:
-                    score_value = float(risk_score)
+                    score_value = _risk_score_as_unit(risk_score)
                     ai_evaluated += 1
                     ai_risk_total += score_value
-                    if score_value >= 80:
+                    if score_value >= _DEFAULT_AI_HIGH_RISK_THRESHOLD:
                         ai_high_risk_detected += 1
             except Exception as exc:  # noqa: BLE001
                 db.rollback()

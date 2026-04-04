@@ -1,8 +1,24 @@
 import { apiFetch } from "@/lib/api"
 
 export type NotificationSeverity = "info" | "warning" | "high" | "critical"
-export type NotificationSource = "n8n" | "system" | "user" | "sla"
-export type NotificationActionType = "view" | "approve" | "escalate" | "dismiss"
+export type NotificationSource = "n8n" | "system" | "user" | "sla" | "ticket" | "problem" | "ai"
+export type NotificationActionType = "view" | "approve" | "escalate" | "dismiss" | "reassign"
+export type NotificationEventType =
+  | "ticket_created"
+  | "ticket_assigned"
+  | "ticket_reassigned"
+  | "ticket_commented"
+  | "ticket_status_changed"
+  | "ticket_resolved"
+  | "sla_at_risk"
+  | "sla_breached"
+  | "sla_recovered"
+  | "problem_created"
+  | "problem_linked"
+  | "ai_recommendation_ready"
+  | "ai_sla_risk_high"
+  | "mention"
+  | "system_alert"
 
 export interface NotificationItem {
   id: string
@@ -10,21 +26,33 @@ export interface NotificationItem {
   title: string
   body?: string | null
   severity: NotificationSeverity
+  event_type: NotificationEventType
   link?: string | null
   source?: string | null
+  dedupe_key?: string | null
   metadata_json?: Record<string, unknown> | null
   action_type?: NotificationActionType | null
   action_payload?: Record<string, unknown> | null
   created_at: string
   read_at?: string | null
+  pinned_until_read?: boolean
 }
 
 export interface NotificationPreferences {
   email_enabled: boolean
   email_min_severity: NotificationSeverity
+  immediate_email_min_severity: NotificationSeverity
+  digest_enabled: boolean
   digest_frequency: "none" | "hourly"
+  quiet_hours_enabled: boolean
   quiet_hours_start?: string | null
   quiet_hours_end?: string | null
+  critical_bypass_quiet_hours: boolean
+  ticket_assignment_enabled: boolean
+  ticket_comment_enabled: boolean
+  sla_notifications_enabled: boolean
+  problem_notifications_enabled: boolean
+  ai_notifications_enabled: boolean
 }
 
 export interface NotificationDebugItem {
@@ -32,6 +60,7 @@ export interface NotificationDebugItem {
   user_id: string
   title: string
   severity: NotificationSeverity
+  event_type?: NotificationEventType | null
   source?: string | null
   workflow_name?: string | null
   trace_id?: string | null

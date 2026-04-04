@@ -18,7 +18,6 @@ const PUBLIC_PATHS = [
 
 const ROUTE_PERMISSIONS: Array<{ prefix: string; permission: Permission }> = [
   { prefix: "/admin", permission: "view_admin" },
-  { prefix: "/tickets/new", permission: "create_ticket" },
   { prefix: "/tickets", permission: "view_tickets" },
   { prefix: "/notifications", permission: "view_tickets" },
   { prefix: "/problems", permission: "view_tickets" },

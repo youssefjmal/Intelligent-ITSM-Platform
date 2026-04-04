@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.services.ai.prompts import EASY_FIXES, HIGH_RISK_KEYWORDS, TICKET_REQUEST_KEYWORDS
+from app.services.ai.prompt_policy import EASY_FIXES, HIGH_RISK_KEYWORDS, TICKET_REQUEST_KEYWORDS
 
 
 def contains_any(text: str, keywords: list[str]) -> bool:

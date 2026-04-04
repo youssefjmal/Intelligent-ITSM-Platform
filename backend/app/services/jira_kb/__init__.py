@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from app.core.config import settings
+from app.services.embeddings import kb_has_data
 from app.services.jira_kb.constants import MIN_SEMANTIC_SCORE
 from app.services.jira_kb.formatting import _format_knowledge_block
 from app.services.jira_kb.scoring import _rank_comments
 from app.services.jira_kb.semantic import _merge_rows, _rank_comments_semantic, _rank_comments_semantic_inmemory
-from app.services.jira_kb.snapshot import _get_snapshot
+from app.services.jira_kb.snapshot import _get_snapshot, refresh_jira_kb_index
 
 
 def build_jira_knowledge_block(
@@ -32,6 +33,8 @@ def build_jira_knowledge_block(
     else:
         semantic_threshold = max(0.0, min(1.0, float(semantic_min_score)))
     rows = _get_snapshot()
+    if not rows:
+        return ""
     semantic_matches = _rank_comments_semantic(
         query,
         limit=top_n,
@@ -59,4 +62,4 @@ def build_jira_knowledge_block(
     return _format_knowledge_block(lang=lang, matches=matches)
 
 
-__all__ = ["build_jira_knowledge_block"]
+__all__ = ["build_jira_knowledge_block", "refresh_jira_kb_index", "kb_has_data"]

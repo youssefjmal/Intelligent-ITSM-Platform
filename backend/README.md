@@ -47,12 +47,12 @@ python -m venv .venv
 pip install -r requirements.txt
 python -m alembic -c alembic.ini upgrade head
 python scripts\seed.py
-python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8052
 ```
 
 API docs after startup:
-- Swagger: `http://127.0.0.1:8000/docs`
-- OpenAPI: `http://127.0.0.1:8000/openapi.json`
+- Swagger: `http://127.0.0.1:8052/docs`
+- OpenAPI: `http://127.0.0.1:8052/openapi.json`
 
 ## 5. Environment Configuration
 Source file: `backend/.env` (template: `backend/.env.example`)
@@ -82,6 +82,9 @@ Source file: `backend/.env` (template: `backend/.env.example`)
 ### AI runtime
 - `OLLAMA_BASE_URL`
 - `OLLAMA_MODEL`
+- `OLLAMA_EMBED_MODEL`
+- `OLLAMA_EMBED_TIMEOUT_SECONDS`
+- `OLLAMA_EMBED_NUM_GPU`
 - `AI_SLA_RISK_ENABLED`
 - `AI_SLA_RISK_MODE`
 
@@ -172,6 +175,24 @@ python -m alembic -c alembic.ini upgrade head
 ```powershell
 python scripts\seed.py
 ```
+
+### 12.1 Mock Dataset Scripts
+
+For deterministic mock-data workflows:
+
+- Reset local DB mock dataset only:
+```powershell
+python scripts\reset_local_mock_dataset.py
+```
+
+- Sync the current local mock dataset to Jira/JSM:
+```powershell
+python scripts\sync_local_mock_dataset_to_jira.py
+```
+
+Notes:
+- `reset_local_mock_dataset.py` is local-only and avoids Jira push/reconcile.
+- `sync_local_mock_dataset_to_jira.py` deletes current issues in the configured Jira project before recreating the local dataset, so use it carefully.
 
 ## 13. Testing and Validation
 ```powershell

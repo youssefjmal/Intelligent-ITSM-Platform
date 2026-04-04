@@ -32,10 +32,12 @@ Important backend areas:
 - `backend/app/routers/` HTTP endpoints
 - `backend/app/services/` business logic
 - `backend/app/services/ai/` recommendation, retrieval, orchestration, SLA advisory
+- `backend/app/services/ai/summarization.py` — AI ticket summarization (TTL cache + RAG)
+- `backend/app/services/ai/orchestrator.py` — chat handler; problems are now first-class Tier 1 shortcuts
 - `backend/app/services/notifications_service.py`
 - `backend/app/integrations/jira/` Jira client, mapper, outbound sync, reverse sync
 - `backend/app/models/` SQLAlchemy models
-- `backend/alembic/versions/` migrations
+- `backend/alembic/versions/` migrations (chain ends at 0033_add_ticket_summary)
 
 Important frontend areas:
 - `frontend/app/` routes
@@ -43,9 +45,23 @@ Important frontend areas:
 - `frontend/components/recommendations.tsx`
 - `frontend/components/app-shell.tsx`
 - `frontend/app/notifications/page.tsx`
-- `frontend/lib/tickets-api.ts`
+- `frontend/lib/tickets-api.ts` — includes `fetchTicketSummary()`
 - `frontend/lib/recommendations-api.ts`
 - `frontend/lib/notifications-api.ts`
+- `frontend/lib/badge-utils.ts` — centralized `getBadgeStyle()` for all status/priority badges
+- `frontend/components/ui/confidence-bar.tsx` — ConfidenceBar component (4 bands)
+- `frontend/components/ui/insight-popup.tsx` — InsightPopup (desktop modal + mobile bottom sheet)
+
+Problem chat — first-class entities (as of 2026-03-26):
+- Problems are routed via Tier 1 shortcuts, not the LLM/retrieval pipeline
+- ChatIntent now includes `problem_listing`, `problem_detail`, `problem_drill_down`, `recommendation_listing`
+- Session state tracks `last_problem_id` and `last_problem_list` for contextual follow-ups
+- STATUS_KEYWORD_MAP in conversation_policy.py drives status-filtered problem queries
+
+LLM general-knowledge advisory trust hierarchy (display_mode):
+  `evidence_action` > `tentative_diagnostic` > `llm_general_knowledge` > `no_strong_match`
+  The `llm_general_knowledge` mode fires when retrieval returns no dominant cluster and LLM succeeds.
+  Confidence is always fixed at 0.25 (LLM_GENERAL_ADVISORY_CONFIDENCE). Never show Apply button on this type.
 
 ## 3. Current AI Recommendation Architecture
 
@@ -57,7 +73,7 @@ Current flow:
 ticket/problem context
 -> unified_retrieve(...)
 -> build_resolution_advice(...)
--> classifier only for metadata like priority/category/assignee
+-> classifier metadata derived from the same grounded retrieval families
 -> frontend renders action/reasoning/evidence/confidence
 ```
 
@@ -96,20 +112,43 @@ Key current output fields:
 - `action_relevance_score`
 - `filtered_weak_match`
 - `display_mode`
+- `llm_general_advisory` (set when `display_mode === "llm_general_knowledge"`)
+- `knowledge_source` (set to `"llm_general_knowledge"` when LLM advisory is active)
 
-Current display modes:
+Current display modes (trust hierarchy — highest to lowest):
 1. `evidence_action`
    - a relevant fix is supported by evidence
 2. `tentative_diagnostic`
    - evidence is weak but aligned enough for a safe diagnostic next step
-3. `no_strong_match`
+3. `service_request`
+   - planned fulfillment workflow; render runbook-style guidance instead of incident diagnosis
+   - no root-cause section, no incident evidence cluster, no Apply-style remediation framing
+4. `llm_general_knowledge`
+   - no local evidence; LLM general IT knowledge advisory provided as fallback
+   - rendered with blue/info styling; confidence fixed at 0.25; no Apply button
+   - fields: `llm_general_advisory.probable_causes`, `suggested_checks`, `escalation_hint`
+   - promoted from `no_strong_match` when `build_llm_general_advisory()` succeeds
+5. `no_strong_match`
    - no safe evidence-backed solution should be shown yet
+   - shown when `llm_general_knowledge` advisory also fails or is disabled
 
 Important current guardrails:
 - retrieval uses query-aware scoring
+- retrieval now tracks contrasted / false-positive domains and topics via `negative_domains` / `negative_topics`
 - lexical/domain overlap is checked
+- retrieval confidence is now consensus-aware, not top-hit-only
+- mixed-family evidence lowers confidence and can force manual-triage / no-strong-match behavior
+- classifier strong matches are filtered through the same grounded issue-matching logic as retrieval
 - low-confidence mismatched actions are filtered before reaching the UI
 - if no strong match exists, the system should show a safe deterministic diagnostic step or no-strong-match state
+- service requests now use a dedicated fulfillment-family registry instead of reusing incident families directly
+  - profile facets: `operation`, `resource`, `governance`, `target_terms`
+  - family examples: `account_provisioning`, `access_provisioning`, `credential_rotation`, `scheduled_maintenance`, `notification_distribution_change`, `integration_configuration`, `device_provisioning`, `reporting_workspace_setup`
+  - the same profile now drives service-request guidance, candidate ranking, and similar-ticket filtering
+  - guidance gating is now profile-first for unknown/ambiguous planned workflows: a strong fulfillment profile can activate `service_request` mode even if the coarse classifier only inferred a domain such as `application` or `hardware`
+  - for tickets already marked as service requests, the gate now also accepts broader fulfillment shapes such as `operation + governance` or `resource + governance` so low-similarity planned tasks still receive a runbook recommendation instead of falling into `no_strong_match`
+  - ticket-detail recommendation requests now fall back to the stored ticket metadata (`ticket_type`) when the classifier returns `None`, so existing service-request tickets are less likely to be misrouted into the incident resolver
+  - explicit `incident` classification still wins, so genuine failures like dashboard/export errors remain on the incident resolver path
 
 ## 4. Current SLA Advisory Architecture
 
@@ -189,17 +228,21 @@ Useful validation tickets:
 3. `TW-DEMO-NOTIFY-01`
    - good notifications demo target
 
-## 7. Known Current Gap
+## 7. Current Grounding Notes
 
-Known remaining recommendation precision issue:
-- `TW-MOCK-019` (`CRM sync job stalls after token rotation`) can still produce an unrelated mail/relay KB-style recommendation
+Recent core fix:
+- classification no longer trusts raw semantic Jira hits by default; strong matches are now passed through grounded issue filtering and cluster-consensus checks first
+- retrieval confidence now blends raw hit strength with cluster coherence/support instead of trusting the strongest single row
+- comment evidence is now attached only to already-grounded Jira issue families, which reduces false "rich evidence" amplification
 
-Why this matters:
-- retrieval and relevance gating are much better than before, but some KB/local weak matches can still survive on generic overlap instead of domain/entity overlap
+Residual risk:
+- retrieval quality still depends on the taxonomy/coherence model, so broad cross-cutting language can still degrade precision when the query itself is highly mixed or underspecified
+- when evidence splits cleanly across families, the system should now prefer low-confidence/manual-triage behavior rather than forcing an incorrect operational diagnosis
 
 If you are debugging this next, start here:
 - `backend/app/services/ai/retrieval.py`
 - `backend/app/services/ai/resolution_advisor.py`
+- `backend/app/services/ai/classifier.py`
 
 ## 8. Fast Reading Order for Another AI
 
@@ -245,6 +288,15 @@ Current working constraints:
 - Do not use destructive git commands
 - Do not assume access to secrets or `.env` files when asking another AI
 
+Security constraints identified in 2026-03-26 autonomous review:
+- NEVER re-introduce `ast.literal_eval` in the LLM output parsing path. Only `json.loads` is permitted. The test `backend/tests/test_llm_json_extraction.py` regresses against this.
+- NEVER add `asyncio.run()` inside a synchronous FastAPI endpoint handler. All endpoints that call async LLM functions must themselves be `async def`. The existing `GET /api/tickets/{ticket_id}/summary` handler is a known violation (tracking: priority 1 in AUTONOMOUS_REVIEW_REPORT.md).
+- NEVER remove `rate_limit()` from a public-facing endpoint's dependencies without explicit justification. The `POST /api/notifications/system` endpoint currently has no rate limiting (tracking: priority 2 in AUTONOMOUS_REVIEW_REPORT.md).
+- ALWAYS strip or sanitize user-supplied `title`, `description`, and chat `question` fields before interpolating them into LLM prompt strings. The `core/sanitize.py` helpers clean control characters but do NOT strip prompt-injection markers. A separate stripping step is needed in `prompts.py` before `ollama_generate()` calls.
+- NEVER log `user.email` at INFO level in auth or user-management services. Use `user.id` (UUID) for auditability without PII exposure. Applies to all log lines in `backend/app/services/auth.py` and `backend/app/services/users.py`.
+- NEVER make `allow_methods=["*"]` and `allow_headers=["*"]` permanent in production CORS config. These should be restricted to the specific methods and headers used by the frontend before production deployment.
+- NEVER add new endpoints to the `ai` or `recommendations` routers without verifying authentication and role guards. Two analytics endpoints (`GET /api/ai/feedback/analytics`, `GET /api/recommendations/feedback-analytics`) currently rely solely on router-level guards with no per-endpoint role check and no explicit `current_user` parameter.
+
 ## 10. Copy-Paste Prompt for Another AI
 
 You can paste this into ChatGPT or Claude and then attach only the files relevant to your question:
@@ -273,13 +325,15 @@ Current architecture to understand first:
 - The recommendation system is deterministic-first and includes relevance gating, mismatch filtering, confidence bands, and UI display modes:
   - evidence_action
   - tentative_diagnostic
+  - service_request
   - no_strong_match
 - Ticket detail also includes a deterministic/hybrid SLA advisory panel.
 - Notifications are backend-driven, preference-aware, and the bell unread count is synced from backend state.
 
-Known current issue:
-- `TW-MOCK-019` (`CRM sync job stalls after token rotation`) can still produce an unrelated mail/relay KB-style recommendation.
-- If helping with recommendation precision, inspect retrieval and resolver relevance filtering first.
+Residual AI quality risks:
+- `TW-MOCK-019` (`CRM sync job stalls after token rotation`) is still the best replay case for cross-domain contamination checks, but the current expected behavior is now downgrade/manual-triage or same-family application guidance — not a confident mail/relay answer.
+- Service requests are now first-class in ticket detail and recommendations, but the newest remaining quality gap is family specificity: broad or underspecified requests can still fall back to generic runbook guidance if the extracted fulfillment profile is weak.
+- Confidence calibration is still policy-tuned; if recommendation quality regresses, inspect retrieval conflict scoring and guidance downgrade thresholds first.
 
 Helpful files:
 - `backend/app/services/ai/retrieval.py`

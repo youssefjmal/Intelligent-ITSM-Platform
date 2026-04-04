@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.integrations.jira.client import JiraClient
 from app.models.ticket import Ticket
 
@@ -184,7 +185,8 @@ def _compute_sla_status(
     if normalized in {"paused", "completed"}:
         return normalized
 
-    if sla_remaining_minutes is not None and 0 <= sla_remaining_minutes <= 30:
+    at_risk_minutes = max(1, int(settings.SLA_AT_RISK_MINUTES))
+    if sla_remaining_minutes is not None and 0 <= sla_remaining_minutes <= at_risk_minutes:
         return "at_risk"
 
     if normalized in {"ok", "unknown"}:
@@ -336,6 +338,10 @@ def sync_ticket_sla(
     changed |= _set_if_changed(ticket, "sla_resolution_completed_at", parsed["sla_resolution_completed_at"])
     changed |= _set_if_changed(ticket, "sla_remaining_minutes", parsed["sla_remaining_minutes"])
     changed |= _set_if_changed(ticket, "sla_elapsed_minutes", parsed["sla_elapsed_minutes"])
+    if getattr(ticket, "due_at", None) is None:
+        inferred_due = parsed["sla_resolution_due_at"] or parsed["sla_first_response_due_at"]
+        if inferred_due is not None:
+            changed |= _set_if_changed(ticket, "due_at", inferred_due)
     ticket.sla_last_synced_at = _utcnow()
 
     db.add(ticket)

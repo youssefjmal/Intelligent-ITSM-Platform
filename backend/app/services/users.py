@@ -7,6 +7,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
+from app.integrations.jira.roles import sync_jira_project_roles_for_user
 from app.models.user import User
 from app.models.enums import SeniorityLevel, UserRole
 
@@ -28,6 +29,13 @@ def update_role(db: Session, user_id: str, role: UserRole) -> User | None:
         return None
     user.role = role
     db.add(user)
+    db.flush()
+    try:
+        sync_jira_project_roles_for_user(user)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.warning("User role update failed during Jira sync for %s: %s", user.email, exc)
+        raise
     db.commit()
     db.refresh(user)
     logger.info("User role updated: %s -> %s", user.email, role.value)

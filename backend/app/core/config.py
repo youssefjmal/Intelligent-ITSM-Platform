@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -45,11 +46,21 @@ class Settings(BaseSettings):
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/auth/google/callback"
     #ollama credentials
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "llama3.1"
+    OLLAMA_MODEL: str = "qwen3:4b"
     OLLAMA_EMBED_MODEL: str = "nomic-embed-text"
     OLLAMA_EMBEDDING_DIM: int = 768
+    OLLAMA_EMBED_TIMEOUT_SECONDS: int = 60
+    # -1 means "use Ollama default placement" (typically GPU when available).
+    OLLAMA_EMBED_NUM_GPU: int = -1
     AI_SLA_RISK_ENABLED: bool = True
     AI_SLA_RISK_MODE: str = "shadow"
+    SLA_AT_RISK_MINUTES: int = 30
+    SLA_ESCALATE_HIGH_MINUTES: int = 10
+    SLA_ESCALATE_STEP_MINUTES: int = 30
+    SLA_STALE_STATUS_MINUTES: int = 120
+    SLA_DEADLINE_ALERT_MINUTES: int = 30
+    SLA_AI_HIGH_RISK_SCORE_THRESHOLD: float = 0.8
+    SLA_ADVISOR_RAG_TOP_K: int = 4
     AI_CLASSIFY_SEMANTIC_TOP_K: int = 5
     AI_CLASSIFY_STRONG_SIMILARITY_THRESHOLD: float = 0.72
     AI_CLASSIFY_MAX_RECOMMENDATIONS: int = 4
@@ -59,11 +70,26 @@ class Settings(BaseSettings):
     JIRA_API_TOKEN: str = ""
     JIRA_PROJECT_KEY: str = ""
     JIRA_SERVICE_DESK_ID: str = ""
+    JIRA_DEFAULT_REQUEST_TYPE_ID: str = ""
+    JIRA_DEFAULT_REQUEST_TYPE_NAME: str = "Emailed request"
+    JIRA_REQUEST_TYPE_FIELD: str = "customfield_10010"
     JIRA_KB_ENABLED: bool = True
     JIRA_KB_MAX_ISSUES: int = 60
     JIRA_KB_MAX_COMMENTS_PER_ISSUE: int = 5
     JIRA_KB_TOP_MATCHES: int = 5
     JIRA_KB_CACHE_SECONDS: int = 300
+
+    # Redis cache
+    REDIS_URL: str = "redis://localhost:6379/0"
+    CACHE_ENABLED: bool = True
+    CACHE_TTL_STATS: int = 300         # 5 min  — GET /tickets/stats
+    CACHE_TTL_INSIGHTS: int = 300      # 5 min  — GET /tickets/insights
+    CACHE_TTL_PERFORMANCE: int = 900   # 15 min — GET /tickets/performance
+    CACHE_TTL_AGENT_PERF: int = 1200   # 20 min — GET /tickets/agent-performance
+    CACHE_TTL_SIMILAR: int = 600       # 10 min — GET /tickets/{id}/similar
+    CACHE_TTL_RECOMMENDATIONS: int = 900   # 15 min — GET /recommendations/
+    CACHE_TTL_SLA_STRATEGIES: int = 1200   # 20 min — GET /recommendations/sla-strategies
+    CACHE_TTL_EMBEDDING: int = 86400   # 24 h   — embedding vectors
     JIRA_SYNC_PAGE_SIZE: int = 50
     JIRA_WEBHOOK_SECRET: str = ""
     JIRA_AUTO_RECONCILE_ENABLED: bool = True
@@ -89,13 +115,25 @@ class Settings(BaseSettings):
         return hosts or ["localhost", "127.0.0.1"]
 
     @property
+    def jira_config_error(self) -> str | None:
+        base_url = self.JIRA_BASE_URL.strip()
+        if not base_url:
+            return "missing_jira_base_url"
+        if not base_url.lower().startswith(("http://", "https://")):
+            return "invalid_jira_base_url"
+        if not self.JIRA_EMAIL.strip():
+            return "missing_jira_email"
+        if not self.JIRA_API_TOKEN.strip():
+            return "missing_jira_api_token"
+        return None
+
+    @property
+    def jira_ready(self) -> bool:
+        return self.jira_config_error is None
+
+    @property
     def jira_kb_ready(self) -> bool:
-        return bool(
-            self.JIRA_KB_ENABLED
-            and self.JIRA_BASE_URL.strip()
-            and self.JIRA_EMAIL.strip()
-            and self.JIRA_API_TOKEN.strip()
-        )
+        return bool(self.JIRA_KB_ENABLED and self.jira_ready)
 
     @property
     def is_production(self) -> bool:
@@ -116,6 +154,13 @@ class Settings(BaseSettings):
         if weak_secret and not self.is_production:
             logging.getLogger(__name__).warning(
                 "Weak JWT_SECRET detected for non-production environment. Use a strong secret before deployment."
+            )
+
+        if not self.AUTOMATION_SECRET.strip() and self.is_production:
+            warnings.warn(
+                "AUTOMATION_SECRET is not set. "
+                "POST /api/notifications/system is disabled.",
+                stacklevel=2,
             )
 
 

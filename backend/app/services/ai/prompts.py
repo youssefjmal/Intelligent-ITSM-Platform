@@ -4,74 +4,16 @@ from __future__ import annotations
 
 import json
 
-HIGH_RISK_KEYWORDS = [
-    "outage",
-    "panne",
-    "indisponible",
-    "incident",
-    "critical",
-    "critique",
-    "secur",
-    "vulnerab",
-    "breach",
-    "data leak",
-    "perte de donnees",
-    "production",
-    "p0",
-    "p1",
-]
-
-TICKET_REQUEST_KEYWORDS = [
-    "create a ticket",
-    "open a ticket",
-    "raise a ticket",
-    "log a ticket",
-    "submit a ticket",
-    "new ticket",
-    "open an incident",
-    "ouvrir un ticket",
-    "cree un ticket",
-    "creer un ticket",
-    "ouvrir un incident",
-    "declarer un incident",
-    "signaler un incident",
-]
-
-EASY_FIXES = [
-    {
-        "patterns": ["mot de passe", "password", "login", "connexion", "sign in", "authent"],
-        "fr": "Verifiez la saisie (majuscule/Clavier), tentez une reconnexion, puis utilisez la reinitialisation du mot de passe si besoin. Essayez aussi en navigation privee.",
-        "en": "Check credentials (caps/keyboard), try logging in again, then use password reset if needed. Also try an incognito window.",
-    },
-    {
-        "patterns": [
-            "cache",
-            "cookies",
-            "navigateur",
-            "browser",
-            "chrome",
-            "safari",
-            "edge",
-            "page blanche",
-            "not loading",
-            "ne s'affiche",
-            "ui",
-            "interface",
-        ],
-        "fr": "Faites un hard refresh (Ctrl+F5), videz cache/cookies, ou testez avec un autre navigateur.",
-        "en": "Do a hard refresh (Ctrl+F5), clear cache/cookies, or try a different browser.",
-    },
-    {
-        "patterns": ["verification", "email de verification", "verification email", "verification mail", "code de verification"],
-        "fr": "Verifiez le dossier spam, attendez quelques minutes, puis utilisez le bouton de renvoi si disponible.",
-        "en": "Check your spam folder, wait a few minutes, then use the resend button if available.",
-    },
-    {
-        "patterns": ["acces refuse", "access denied", "permission", "autorisation", "role"],
-        "fr": "Verifiez votre role/profil, puis deconnectez-vous et reconnectez-vous. Si le probleme persiste, demandez l'ajout des droits requis.",
-        "en": "Verify your role/profile, then log out and back in. If it persists, request the required permissions.",
-    },
-]
+from app.services.ai.prompt_policy import (
+    CHAT_KNOWLEDGE_FIRST_POLICY,
+    CHAT_SIGNAL_POLICY,
+    CLASSIFICATION_SIGNAL_POLICY,
+    EASY_FIXES,
+    GROUNDED_FORMATTER_POLICY,
+    HIGH_RISK_KEYWORDS,
+    KNOWLEDGE_FIRST_CLASSIFICATION_POLICY,
+    TICKET_REQUEST_KEYWORDS,
+)
 
 
 def build_classification_prompt(
@@ -88,15 +30,8 @@ def build_classification_prompt(
 
     return (
         "Tu es un assistant ITSM. Reponds avec JSON valide uniquement, sans texte hors JSON.\n"
-        "Analyse d'abord le ticket avant de recommander:\n"
-        "- Extrais les signaux techniques cles: erreurs, metriques, changements de configuration, symptomes.\n"
-        "- Base chaque recommandation uniquement sur ces signaux.\n"
-        "- Evite les conseils generiques.\n"
-        "Knowledge-first strict:\n"
-        "- Si Knowledge Section a des matchs Jira, base d'abord priority/ticket_type/category/recommendations sur commentaires + champs Jira.\n"
-        "- Si Knowledge Section est vide ou insuffisante, utilise la connaissance IT generale.\n"
-        "- Si matchs Jira presents mais support insuffisant pour 2-4 actions concretes, retourne recommendations=[].\n"
-        "- N'invente jamais de Jira key, incident, correctif, action historique.\n"
+        f"{CLASSIFICATION_SIGNAL_POLICY}"
+        f"{KNOWLEDGE_FIRST_CLASSIFICATION_POLICY}"
         f"- Contexte: {mode_hint}\n"
         "Schema JSON strict:\n"
         "{\n"
@@ -129,22 +64,8 @@ def build_chat_prompt(
 ) -> str:
     return (
         "You are an ITSM assistant. Return ONLY valid JSON.\n"
-        "Before answering, analyze the ticket context:\n"
-        "- Extract key technical signals (errors, metrics, config changes, symptoms).\n"
-        "- Base recommendations strictly on those signals.\n"
-        "- Avoid generic advice.\n"
-        "Knowledge-first strict policy:\n"
-        "- If Knowledge Section has Jira matches, base classification/recommendations/solution primarily on those Jira matches.\n"
-        "- If Knowledge Section is empty or insufficient, use general IT knowledge.\n"
-        "- Never invent Jira keys, incidents, fixes, or historical actions.\n"
-        "- If Knowledge Section has matches, every recommendation must be explicitly supported by Jira comments or Jira fields.\n"
-        "- If Jira support is insufficient for 2-4 concrete actions, return recommendations=[].\n"
-        "- If Knowledge Section is empty, set confidence=\"low\" and sources=[].\n"
-        "- When Knowledge Section is used, sources must contain Jira keys referenced from [KEY] patterns.\n"
-        "- If a specific ticket ID is present in the user request, anchor the answer to that single ticket and do not switch to a multi-ticket summary.\n"
-        "- If the question contains a compact conversation context block, treat it as authoritative session memory and keep follow-up answers tied to that context.\n"
-        "- Distinguish retrieved facts from inference. Do not present inference as confirmed fact.\n"
-        "- If evidence is weak, say so explicitly and prefer concrete next checks over generic filler.\n"
+        f"{CHAT_SIGNAL_POLICY}"
+        f"{CHAT_KNOWLEDGE_FIRST_POLICY}"
         "JSON schema:\n"
         "{\n"
         '  "reply": "string",\n'
@@ -198,33 +119,7 @@ def build_chat_grounded_prompt(
     return (
         "You are an ITSM assistant formatting a resolver-approved answer.\n"
         "Return ONLY valid JSON.\n"
-        "The resolver has already decided the recommendation content.\n"
-        "You must preserve the resolver's truth exactly.\n"
-        "The final answer will be rendered into fixed sections by the application.\n"
-        "Your job is only to provide short supporting phrasing for those sections.\n"
-        "Do NOT:\n"
-        "- replace the recommended action\n"
-        "- upgrade tentative advice into a confident fix\n"
-        "- invent evidence, root causes, or validation steps\n"
-        "- override confidence, mode, or degraded status\n"
-        "- turn a single-ticket grounded answer into a list or broad generic guidance\n"
-        "- repeat the recommended action in summary or why-this-matches text\n"
-        "- repeat validation or next-step content\n"
-        "- add generic troubleshooting filler like 'check logs' or 'verify configuration' unless the grounding already names the exact subsystem and reason\n"
-        "You may:\n"
-        "- simplify language\n"
-        "- summarize the root issue in 1-2 short bullets\n"
-        "- summarize why the evidence matches in 1-2 short bullets\n"
-        "- acknowledge limited evidence honestly in one short confidence note\n"
-        "- reuse the ticket or topic already established by the conversation context in the user question\n"
-        "If mode is tentative_diagnostic or no_strong_match, preserve uncertainty clearly.\n"
-        "If mode is tentative_diagnostic, do not phrase anything as a confirmed fix.\n"
-        "If retrieval_mode is lexical_only or fallback_rules, explicitly mention that evidence quality is limited.\n"
-        "Keep each bullet concise and engineer-friendly.\n"
-        "Maximum lengths:\n"
-        "- summary: 2 bullets\n"
-        "- why_this_matches: 2 bullets\n"
-        "- confidence_note: 1 short sentence\n"
+        f"{GROUNDED_FORMATTER_POLICY}"
         "JSON schema:\n"
         "{\n"
         '  "summary": ["short bullet", "short bullet"] | [],\n'
@@ -236,3 +131,232 @@ def build_chat_grounded_prompt(
         f"- User question: {question}\n"
         f"- Resolver grounding JSON:\n{json.dumps(grounding, ensure_ascii=True)}\n"
     )
+
+
+def build_general_advisory_prompt(
+    ticket_title: str,
+    ticket_description: str,
+    ticket_category: str,
+    ticket_priority: str,
+    attempted_steps: list[str],
+    concurrent_families: list[str],
+    language: str = "fr",
+) -> tuple[str, str]:
+    """Build a system + user prompt pair for general-knowledge IT advisory.
+
+    Called only when local evidence retrieval returns no_strong_match.
+    The LLM is instructed to reason from general IT knowledge about the
+    ticket's category and symptoms — NOT from any local database.
+
+    The prompt enforces:
+    - Cautious language: "typically", "may indicate", "commonly" — never "is"
+    - No fabricated ticket IDs, system names, user names, or tool names
+    - No repeating steps already listed in attempted_steps
+    - Structured JSON output matching LLMGeneralAdvisory field names
+    - Explicit acknowledgment that no local data is available
+
+    Args:
+        ticket_title: Ticket title for symptom context.
+        ticket_description: Full description for symptom extraction.
+        ticket_category: IT category (network, email, application, etc.)
+            Used to guide which domain knowledge the LLM applies.
+        ticket_priority: Priority level.  If critical or high, the prompt
+            requests an escalation_hint in the output.
+        attempted_steps: Steps already tried.  LLM must not repeat these
+            in suggested_checks.
+        concurrent_families: Topic families detected by retrieval but with
+            no dominant cluster (e.g. ["vpn", "login", "mfa"]).
+            Included so the LLM can acknowledge the ambiguity.
+        language: "fr" or "en".  Controls the language of the response.
+
+    Returns:
+        Tuple of (system_prompt, user_prompt) ready to be combined and
+        passed to ollama_generate().
+    """
+    system_prompt = (
+        "You are an experienced IT support engineer providing general "
+        "diagnostic guidance. "
+        "You do NOT have access to this organisation's ticket history, "
+        "infrastructure, configuration, or user data. "
+        "You are reasoning from general IT knowledge only. "
+        "Frame every statement as a possibility, never as a confirmed fact. "
+        "Use words like 'typically', 'commonly', 'may indicate', 'often caused by'. "
+        "Never fabricate ticket IDs, system names, server names, or user names. "
+        "If you are uncertain, say so explicitly rather than inventing "
+        "a plausible-sounding answer. "
+        "Return ONLY a valid JSON object. No prose before or after the JSON. "
+        "No markdown code fences."
+    )
+
+    priority_instruction = ""
+    if ticket_priority.lower() in ("critical", "high", "critique", "haute"):
+        priority_instruction = (
+            "Because this ticket is high priority, include an 'escalation_hint' "
+            "field suggesting when the agent should escalate rather than "
+            "continue diagnosing independently. "
+        )
+
+    attempted_instruction = ""
+    if attempted_steps:
+        attempted_instruction = (
+            f"The following steps have already been attempted and must NOT "
+            f"appear in suggested_checks: {', '.join(attempted_steps)}. "
+        )
+
+    families_instruction = ""
+    if concurrent_families:
+        families_instruction = (
+            f"The system detected signals from multiple incident families "
+            f"({', '.join(concurrent_families)}) with no dominant cluster. "
+            f"Acknowledge this ambiguity in your probable_causes if relevant. "
+        )
+
+    lang_instruction = (
+        "Respond in French." if language == "fr" else "Respond in English."
+    )
+
+    json_schema = (
+        "Return a JSON object with exactly these fields:\n"
+        "{\n"
+        '  "probable_causes": ["string", "string"],\n'
+        '  "suggested_checks": ["string", "string", "string"],\n'
+        '  "escalation_hint": "string or null"\n'
+        "}\n"
+        "probable_causes: 2-3 items maximum.\n"
+        "suggested_checks: 2-4 items maximum, ordered least invasive first.\n"
+        "escalation_hint: include only if priority is critical or high, "
+        "otherwise set to null.\n"
+    )
+
+    user_prompt = (
+        f"Ticket title: {ticket_title}\n"
+        f"Category: {ticket_category}\n"
+        f"Priority: {ticket_priority}\n"
+        f"Description: {ticket_description[:600]}\n\n"
+        f"{families_instruction}"
+        f"{attempted_instruction}"
+        f"{priority_instruction}"
+        f"{lang_instruction}\n\n"
+        f"{json_schema}"
+    )
+
+    return system_prompt, user_prompt
+
+
+def build_llm_fallback_action_prompt(
+    *,
+    ticket_title: str,
+    ticket_description: str,
+    ticket_category: str,
+    ticket_priority: str,
+    attempted_steps: list[str],
+    concurrent_families: list[str],
+    deterministic_fallback: str | None,
+    language: str = "fr",
+) -> tuple[str, str]:
+    """Build a prompt for low-trust incident actions when no strong match exists."""
+
+    system_prompt = (
+        "You are an experienced IT support engineer giving cautious next-step guidance "
+        "when no reliable historical ticket match is available. "
+        "You do NOT have access to the organisation's private configuration or real ticket history. "
+        "Reason only from general IT knowledge and the ticket text. "
+        "Do not claim a confirmed fix. Do not invent ticket IDs, server names, user names, "
+        "internal system names, or environment-specific facts. "
+        "Keep recommendations practical, low-risk, and diagnostic-first. "
+        "Return ONLY valid JSON with no markdown."
+    )
+
+    attempted_instruction = (
+        f"The following steps were already attempted and must not be repeated unless you add new value: {', '.join(attempted_steps)}. "
+        if attempted_steps
+        else ""
+    )
+    families_instruction = (
+        f"Retrieval detected weak signals from these families with no dominant evidence: {', '.join(concurrent_families)}. "
+        if concurrent_families
+        else ""
+    )
+    fallback_instruction = (
+        f"The current deterministic fallback is: {deterministic_fallback}. Improve on it with more specific but still cautious guidance. "
+        if deterministic_fallback
+        else ""
+    )
+    lang_instruction = "Respond in French." if language == "fr" else "Respond in English."
+
+    user_prompt = (
+        f"Ticket title: {ticket_title}\n"
+        f"Category: {ticket_category}\n"
+        f"Priority: {ticket_priority}\n"
+        f"Description: {ticket_description[:800]}\n\n"
+        f"{families_instruction}"
+        f"{attempted_instruction}"
+        f"{fallback_instruction}"
+        f"{lang_instruction}\n"
+        "Return a JSON object with exactly these fields:\n"
+        "{\n"
+        '  "recommended_action": "string",\n'
+        '  "next_best_actions": ["string", "string"],\n'
+        '  "validation_steps": ["string", "string"],\n'
+        '  "reasoning_note": "short cautious sentence"\n'
+        "}\n"
+        "Rules:\n"
+        "- recommended_action must be a cautious next step, not a confirmed fix.\n"
+        "- next_best_actions: 1-4 items, ordered least invasive first.\n"
+        "- validation_steps: 1-3 items.\n"
+        "- reasoning_note must explain why the advice is low-trust and general.\n"
+    )
+    return system_prompt, user_prompt
+
+
+def build_service_request_refinement_prompt(
+    *,
+    ticket_title: str,
+    ticket_description: str,
+    profile_metadata: dict[str, object],
+    base_recommended_action: str,
+    base_next_best_actions: list[str],
+    base_validation_steps: list[str],
+    language: str = "fr",
+) -> tuple[str, str]:
+    """Build a prompt for refining deterministic service-request actions."""
+
+    system_prompt = (
+        "You are refining a deterministic IT service-request runbook. "
+        "Do NOT change the workflow class: this remains a planned fulfillment task, not incident troubleshooting. "
+        "Do NOT invent systems, ticket IDs, approvals, teams, users, or environment facts. "
+        "Make the wording clearer and more specific while staying aligned to the extracted request profile. "
+        "Keep the tone operational and runbook-oriented. "
+        "Return ONLY valid JSON with no markdown."
+    )
+
+    lang_instruction = "Respond in French." if language == "fr" else "Respond in English."
+    profile_bits = json.dumps(profile_metadata or {}, ensure_ascii=True)
+    base_payload = json.dumps(
+        {
+            "base_recommended_action": base_recommended_action,
+            "base_next_best_actions": base_next_best_actions,
+            "base_validation_steps": base_validation_steps,
+        },
+        ensure_ascii=True,
+    )
+    user_prompt = (
+        f"Ticket title: {ticket_title}\n"
+        f"Description: {ticket_description[:800]}\n"
+        f"Structured service-request profile: {profile_bits}\n"
+        f"Deterministic base action package: {base_payload}\n\n"
+        f"{lang_instruction}\n"
+        "Return a JSON object with exactly these fields:\n"
+        "{\n"
+        '  "recommended_action": "string",\n'
+        '  "next_best_actions": ["string", "string"],\n'
+        '  "validation_steps": ["string", "string"],\n'
+        '  "reasoning_note": "short sentence explaining the refinement"\n'
+        "}\n"
+        "Rules:\n"
+        "- Preserve the same fulfillment family and workflow intent.\n"
+        "- Do not switch into root-cause diagnosis.\n"
+        "- Keep the action package specific and operational, not vague.\n"
+        "- validation_steps must verify fulfillment completion, not incident recovery.\n"
+    )
+    return system_prompt, user_prompt

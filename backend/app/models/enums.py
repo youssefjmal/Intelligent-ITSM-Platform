@@ -37,6 +37,11 @@ class TicketPriority(str, enum.Enum):
     low = "low"
 
 
+class TicketType(str, enum.Enum):
+    incident = "incident"
+    service_request = "service_request"
+
+
 class TicketCategory(str, enum.Enum):
     infrastructure = "infrastructure"
     network = "network"

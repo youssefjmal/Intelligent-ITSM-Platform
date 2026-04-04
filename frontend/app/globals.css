@@ -7,6 +7,14 @@
     text-wrap: balance;
   }
 
+  .scrollbar-hide {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
   .logo-emphasis {
     filter: drop-shadow(0 2px 6px hsl(150 25% 10% / 0.22));
   }
@@ -33,6 +41,15 @@
 
   .section-title {
     @apply text-base font-semibold text-foreground;
+  }
+
+  .page-title { font-size: 28px; font-weight: 500; }
+  .page-subtitle { font-size: 14px; color: var(--muted-foreground); }
+  .card-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
   }
 
   .section-subtitle {
@@ -191,3 +208,67 @@
     transform: translateY(0);
   }
 }
+
+/* data-theme attribute selectors — mirrors .dark class for components that use data-theme */
+[data-theme="light"] {
+  color-scheme: light;
+}
+[data-theme="dark"] {
+  color-scheme: dark;
+  --background: 154 26% 8%;
+  --foreground: 0 0% 95%;
+  --card: 155 20% 11%;
+  --card-foreground: 0 0% 96%;
+  --popover: 155 20% 11%;
+  --popover-foreground: 0 0% 96%;
+  --primary: 153 66% 46%;
+  --primary-foreground: 150 20% 10%;
+  --secondary: 155 13% 18%;
+  --secondary-foreground: 0 0% 96%;
+  --muted: 155 11% 16%;
+  --muted-foreground: 152 9% 66%;
+  --accent: 33 31% 20%;
+  --accent-foreground: 0 0% 96%;
+  --destructive: 0 70% 50%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 155 10% 23%;
+  --input: 155 10% 23%;
+  --ring: 153 66% 46%;
+  --chart-1: 153 66% 46%;
+  --chart-2: 178 58% 43%;
+  --chart-3: 38 92% 57%;
+  --chart-4: 0 72% 55%;
+  --chart-5: 215 72% 60%;
+  --sidebar-background: 154 33% 12%;
+  --sidebar-foreground: 0 0% 95%;
+  --sidebar-primary: 153 66% 46%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 154 23% 18%;
+  --sidebar-accent-foreground: 0 0% 95%;
+  --sidebar-border: 154 19% 20%;
+  --sidebar-ring: 153 66% 46%;
+  --success: 153 66% 46%;
+  --success-foreground: 0 0% 100%;
+  --warning: 38 92% 57%;
+  --warning-foreground: 35 82% 14%;
+  --info: 215 72% 60%;
+  --info-foreground: 0 0% 100%;
+}
+
+/* Thin scrollbar for popup body overflow */
+.popup-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.popup-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.popup-scroll::-webkit-scrollbar-thumb {
+  background: var(--border, #e5e7eb);
+  border-radius: 2px;
+}
+
+/* Global scrollbar styling */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: hsl(var(--ring)); }

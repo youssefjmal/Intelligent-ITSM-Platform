@@ -7,7 +7,6 @@ import { usePathname } from "next/navigation"
 import {
   LayoutDashboard,
   Ticket,
-  PlusCircle,
   MessageSquareText,
   BrainCircuit,
   AlertOctagon,
@@ -30,7 +29,6 @@ interface NavItem {
 const navigation: NavItem[] = [
   { nameKey: "nav.dashboard", href: "/", icon: LayoutDashboard, permission: "view_dashboard" },
   { nameKey: "nav.tickets", href: "/tickets", icon: Ticket, permission: "view_tickets" },
-  { nameKey: "nav.newTicket", href: "/tickets/new", icon: PlusCircle, permission: "create_ticket" },
   { nameKey: "nav.chat", href: "/chat", icon: MessageSquareText, permission: "use_chat" },
   { nameKey: "nav.recommendations", href: "/recommendations", icon: BrainCircuit, permission: "view_recommendations" },
   { nameKey: "nav.problems", href: "/problems", icon: AlertOctagon, permission: "view_tickets" },
@@ -81,10 +79,10 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
               key={item.nameKey}
               href={item.href}
               className={cn(
-                "group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring",
+                "group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring",
                 isActive
-                  ? "bg-sidebar-accent text-sidebar-accent-foreground shadow-sm ring-1 ring-white/10"
-                  : "text-sidebar-foreground/80 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
+                  ? "bg-[var(--color-background-secondary,hsl(var(--sidebar-accent)))] border-l-[3px] border-l-[#1D9E75] font-medium text-sidebar-accent-foreground shadow-sm ring-1 ring-white/10"
+                  : "font-normal text-sidebar-foreground/80 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
               )}
             >
               <span

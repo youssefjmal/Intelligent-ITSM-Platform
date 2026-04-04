@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import { useI18n } from "@/lib/i18n"
-import { type TicketCategory } from "@/lib/ticket-data"
+import { type TicketCategory, type TicketType } from "@/lib/ticket-data"
 
 type OperationalTicket = {
   id: string
@@ -21,6 +21,7 @@ type OperationalTicket = {
     | "pending"
     | "resolved"
     | "closed"
+  ticket_type: TicketType
   category: TicketCategory
   assignee: string
   created_at: string
@@ -85,6 +86,9 @@ function InsightTicketRow({ ticket, localeCode }: TicketRowProps) {
               <Badge variant="secondary" className="text-[10px]">
                 {statusLabel(ticket.status, t)}
               </Badge>
+              <Badge variant="outline" className="text-[10px]">
+                {t(`type.${ticket.ticket_type}` as "type.incident")}
+              </Badge>
               <span>{t("dashboard.lastUpdateDays", { days: ticket.inactive_days })}</span>
               <span>
                 {new Date(ticket.updated_at).toLocaleDateString(localeCode, {
@@ -111,6 +115,10 @@ function InsightTicketRow({ ticket, localeCode }: TicketRowProps) {
           <div className="rounded-md border border-border/60 bg-muted/40 px-2 py-1.5">
             <p className="text-[10px] text-muted-foreground">{t("tickets.status")}</p>
             <p className="text-xs font-semibold text-foreground">{statusLabel(ticket.status, t)}</p>
+          </div>
+          <div className="rounded-md border border-border/60 bg-muted/40 px-2 py-1.5">
+            <p className="text-[10px] text-muted-foreground">{t("tickets.type")}</p>
+            <p className="text-xs font-semibold text-foreground">{t(`type.${ticket.ticket_type}` as "type.incident")}</p>
           </div>
           <div className="rounded-md border border-border/60 bg-muted/40 px-2 py-1.5">
             <p className="text-[10px] text-muted-foreground">{t("tickets.category")}</p>

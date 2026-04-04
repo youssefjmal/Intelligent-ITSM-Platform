@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -14,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.enums import TicketCategory, TicketPriority, TicketStatus, TicketType, UserRole
+from app.models.problem import Problem
 from app.models.ticket import Ticket
 from app.schemas.ai import (
     AIChatGrounding,
@@ -31,17 +33,32 @@ from app.schemas.ai import (
     ChatResponse,
     ClassificationRequest,
     ClassificationResponse,
+    GuidanceContract,
+    GuidanceDisplayMode,
+    RetrievalResult,
     SuggestRequest,
     SuggestResponse,
     TicketDraft,
 )
-from app.services.ai.analytics_queries import _answer_data_query
+from app.services.ai.calibration import (
+    CHAT_KB_SEMANTIC_MIN_SCORE,
+    DEFAULT_RESOLVER_TOP_K,
+    GUIDANCE_CONFIDENCE_THRESHOLD,
+    confidence_band,
+)
+from app.services.ai.analytics_queries import _answer_data_query, _extract_ticket_query_meta
 from app.services.ai.chat_payloads import (
     build_assignment_recommendation_payload,
     build_cause_analysis_payload,
     build_insufficient_evidence_payload,
+    build_problem_detail_payload,
+    build_problem_linked_tickets_payload,
+    build_problem_list_payload,
+    build_recommendation_list_payload,
     build_resolution_advice_payload,
+    build_service_request_response,
     build_similar_tickets_payload,
+    build_ticket_list_payload,
     is_assignment_query,
 )
 from app.services.ai.chat_session import (
@@ -49,6 +66,7 @@ from app.services.ai.chat_session import (
     build_relevant_history_context,
     resolve_comparison_targets,
     resolve_contextual_reference,
+    resolve_problem_contextual_reference,
 )
 from app.services.ai.classifier import (
     apply_category_guardrail,
@@ -56,6 +74,7 @@ from app.services.ai.classifier import (
     classify_ticket_detailed,
     infer_ticket_type,
     score_recommendations,
+    split_ticket_type_inference,
 )
 from app.services.ai.feedback import get_feedback_bundle_for_target
 from app.services.ai.formatters import (
@@ -72,9 +91,11 @@ from app.services.ai.formatters import (
 from app.services.ai.intents import (
     ACTIVE_STATUSES,
     ChatIntent,
-    detect_intent_hybrid_details,
-    extract_ticket_id,
+    parse_chat_intent_details,
+    extract_problem_id,
     extract_recent_ticket_constraints,
+    extract_status_filter,
+    extract_ticket_id,
     _is_explicit_ticket_create_request,
     _normalize_intent_text,
     _normalize_locale,
@@ -88,12 +109,19 @@ from app.services.ai.prompts import build_chat_grounded_prompt, build_chat_promp
 from app.services.ai.quickfix import append_solution
 from app.services.ai.resolver import (
     ResolverOutput,
+    build_ticket_retrieval_query,
+    build_manual_triage_advice_payload,
     build_resolution_advice_model as _build_shared_resolution_advice_model,
     resolve_problem_advice,
     resolve_ticket_advice,
 )
 from app.services.ai.resolution_advisor import build_resolution_advice
+from app.services.ai.routing_validation import validate_ticket_routing, validate_ticket_routing_for_ticket
 from app.services.ai.retrieval import unified_retrieve
+from app.services.ai.service_requests import (
+    build_service_request_profile,
+    build_service_request_guidance,
+)
 from app.services.embeddings import search_kb
 from app.services.jira_kb import build_jira_knowledge_block
 from app.services.problems import get_problem
@@ -103,6 +131,34 @@ from app.services.users import list_assignees
 logger = logging.getLogger(__name__)
 _CHAT_TICKET_ID_RE = re.compile(r"\bTW-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", re.IGNORECASE)
 _CHAT_PROBLEM_ID_RE = re.compile(r"\bPB-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", re.IGNORECASE)
+_DETERMINISTIC_CHAT_RESPONSE_PLANS = {
+    "forced_create_ticket",
+    "shortcut_recent_ticket",
+    "shortcut_most_used_tickets",
+    "shortcut_weekly_summary",
+    "shortcut_critical_tickets",
+    "shortcut_recurring_solutions",
+    "shortcut_problems",
+    "shortcut_problem_detail",
+    "shortcut_problem_linked_tickets",
+    "shortcut_recommendations",
+    "structured_data_query",
+}
+
+
+def _iso_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, dt.datetime):
+        normalized = value if value.tzinfo else value.replace(tzinfo=dt.timezone.utc)
+        return normalized.isoformat()
+    return str(value).strip() or None
+
+
+def _truncate_to(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit - 3].rstrip() + "..."
 
 
 @dataclass(slots=True)
@@ -135,6 +191,10 @@ def build_routing_plan(
     *,
     intent: ChatIntent,
     create_requested: bool,
+    guidance_requested: bool = False,
+    entity_specific_ticket_query: bool = False,
+    needs_structured_ticket_filter: bool = False,
+    resolver_first_pattern: str | None = None,
 ) -> RoutingPlan:
     if create_requested or intent == ChatIntent.create_ticket:
         return RoutingPlan(
@@ -143,6 +203,24 @@ def build_routing_plan(
             use_llm=True,
             use_kb=True,
             reason="explicit_create_request" if create_requested else "hybrid_create_intent",
+        )
+
+    if entity_specific_ticket_query:
+        return RoutingPlan(
+            name="structured_data_query",
+            intent=ChatIntent.data_query,
+            use_llm=False,
+            use_kb=False,
+            reason="entity_specific_ticket_override",
+        )
+
+    if guidance_requested:
+        return RoutingPlan(
+            name="general_llm",
+            intent=ChatIntent.general,
+            use_llm=True,
+            use_kb=True,
+            reason="guidance_priority_override",
         )
 
     if intent == ChatIntent.recent_ticket:
@@ -169,8 +247,21 @@ def build_routing_plan(
         ChatIntent.weekly_summary: "shortcut_weekly_summary",
         ChatIntent.critical_tickets: "shortcut_critical_tickets",
         ChatIntent.recurring_solutions: "shortcut_recurring_solutions",
+        # New problem and recommendation shortcuts
+        ChatIntent.problem_listing: "shortcut_problems",
+        ChatIntent.problem_detail: "shortcut_problem_detail",
+        ChatIntent.problem_drill_down: "shortcut_problem_linked_tickets",
+        ChatIntent.recommendation_listing: "shortcut_recommendations",
     }
     if intent in deterministic:
+        if intent == ChatIntent.critical_tickets and needs_structured_ticket_filter:
+            return RoutingPlan(
+                name="structured_data_query",
+                intent=ChatIntent.data_query,
+                use_llm=False,
+                use_kb=False,
+                reason="compound_ticket_filter_override",
+            )
         return RoutingPlan(
             name=deterministic[intent],
             intent=intent,
@@ -180,6 +271,14 @@ def build_routing_plan(
         )
 
     if intent == ChatIntent.data_query:
+        if resolver_first_pattern in {"SIMILAR_TICKETS", "PROBLEM_ANALYSIS", "ASSIGNMENT_RECOMMENDATION"}:
+            return RoutingPlan(
+                name="general_llm",
+                intent=ChatIntent.general,
+                use_llm=True,
+                use_kb=True,
+                reason="resolver_first_pattern_override",
+            )
         return RoutingPlan(
             name="structured_data_query",
             intent=intent,
@@ -210,6 +309,88 @@ def _is_degraded_retrieval(retrieval_mode: str) -> bool:
     return retrieval_mode in {"lexical_only", "fallback_rules"}
 
 
+def _guidance_display_mode(value: Any, *, default: GuidanceDisplayMode = GuidanceDisplayMode.no_strong_match) -> GuidanceDisplayMode:
+    return GuidanceDisplayMode.coerce(value, default=default)
+
+
+def _guidance_fallback_mode(*, retrieval: RetrievalResult, base_mode: GuidanceDisplayMode) -> GuidanceDisplayMode:
+    if base_mode == GuidanceDisplayMode.service_request:
+        return GuidanceDisplayMode.service_request
+    has_retrieval_evidence = bool(retrieval.similar_tickets or retrieval.kb_articles or retrieval.solution_recommendations)
+    if has_retrieval_evidence and base_mode in {
+        GuidanceDisplayMode.evidence_action,
+        GuidanceDisplayMode.tentative_diagnostic,
+    }:
+        return GuidanceDisplayMode.needs_more_info
+    return GuidanceDisplayMode.manual_triage
+
+
+def _build_guidance_contract(resolver_output: ResolverOutput | None) -> tuple[RetrievalResult, GuidanceContract | None]:
+    retrieval = RetrievalResult.coerce(getattr(resolver_output, "retrieval", None))
+    if resolver_output is None:
+        return retrieval, None
+    if resolver_output.guidance_contract is not None and isinstance(resolver_output.retrieval, RetrievalResult):
+        return resolver_output.retrieval, resolver_output.guidance_contract
+
+    advice = resolver_output.advice
+    retrieval_confidence = float(retrieval.confidence or 0.0)
+    advisor_confidence = float(getattr(advice, "confidence", 0.0) or resolver_output.confidence or 0.0)
+    base_mode = _guidance_display_mode(getattr(advice, "display_mode", None))
+    if base_mode in {GuidanceDisplayMode.service_request, GuidanceDisplayMode.llm_general_knowledge}:
+        unified_confidence = advisor_confidence if advisor_confidence > 0.0 else max(
+            retrieval_confidence,
+            GUIDANCE_CONFIDENCE_THRESHOLD,
+        )
+    elif base_mode in {GuidanceDisplayMode.evidence_action, GuidanceDisplayMode.tentative_diagnostic}:
+        unified_confidence = retrieval_confidence if retrieval_confidence > 0.0 else advisor_confidence
+    else:
+        unified_confidence = advisor_confidence if advisor_confidence > 0.0 else retrieval_confidence
+    effective_mode = base_mode
+    downgraded = False
+    downgrade_reason: str | None = None
+    if base_mode not in {GuidanceDisplayMode.service_request, GuidanceDisplayMode.llm_general_knowledge} and unified_confidence < GUIDANCE_CONFIDENCE_THRESHOLD:
+        effective_mode = _guidance_fallback_mode(retrieval=retrieval, base_mode=base_mode)
+        downgraded = effective_mode != base_mode
+        downgrade_reason = "below_confidence_threshold"
+
+    evidence_allowed = (
+        unified_confidence >= GUIDANCE_CONFIDENCE_THRESHOLD
+        and effective_mode in {GuidanceDisplayMode.evidence_action, GuidanceDisplayMode.tentative_diagnostic}
+    )
+    contract = GuidanceContract(
+        display_mode=effective_mode,
+        confidence=round(unified_confidence, 4),
+        advisor_confidence=round(advisor_confidence, 4),
+        retrieval_confidence=round(retrieval_confidence, 4),
+        threshold=GUIDANCE_CONFIDENCE_THRESHOLD,
+        source=str(retrieval.source or "fallback_rules"),
+        downgraded=downgraded,
+        downgrade_reason=downgrade_reason,
+        evidence_allowed=evidence_allowed,
+    )
+    resolver_output.retrieval = retrieval
+    resolver_output.guidance_contract = contract
+    resolver_output.confidence = contract.confidence
+
+    if advice is not None:
+        compat_mode = contract.legacy_display_mode
+        contract_band = confidence_band(contract.confidence)
+        resolver_output.advice = advice.model_copy(
+            update={
+                "confidence": contract.confidence,
+                "confidence_band": contract_band,
+                "confidence_label": contract_band,
+                "display_mode": compat_mode,
+                "mode": compat_mode,
+                "recommended_action": None if contract.display_mode == GuidanceDisplayMode.manual_triage else advice.recommended_action,
+            }
+        )
+        resolver_output.mode = resolver_output.advice.display_mode.value
+    else:
+        resolver_output.mode = contract.legacy_display_mode.value
+    return retrieval, contract
+
+
 def _supports_resolver_first_guidance(pattern: str, *, plan: RoutingPlan) -> bool:
     if plan.name in {
         "shortcut_recent_ticket",
@@ -217,6 +398,10 @@ def _supports_resolver_first_guidance(pattern: str, *, plan: RoutingPlan) -> boo
         "shortcut_weekly_summary",
         "shortcut_critical_tickets",
         "shortcut_recurring_solutions",
+        "shortcut_problems",
+        "shortcut_problem_detail",
+        "shortcut_problem_linked_tickets",
+        "shortcut_recommendations",
         "structured_data_query",
         "forced_create_ticket",
     }:
@@ -242,6 +427,75 @@ def _find_ticket_by_id(tickets: list[Any], ticket_id: str | None) -> Any | None:
         if current == wanted:
             return ticket
     return None
+
+
+def _load_ticket_hint(
+    db: Session,
+    *,
+    ticket_id: str | None,
+    current_user: Any = None,
+) -> Any | None:
+    normalized_ticket_id = str(ticket_id or "").strip()
+    if not normalized_ticket_id:
+        return None
+
+    if current_user is not None:
+        try:
+            visible_tickets = list_tickets_for_user(db, current_user)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Ticket hint lookup via visible tickets failed: %s", exc)
+            visible_tickets = []
+        ticket = _find_ticket_by_id(visible_tickets, normalized_ticket_id)
+        return ticket
+
+    query = getattr(db, "query", None)
+    if not callable(query):
+        return None
+    try:
+        return db.query(Ticket).filter(Ticket.id == normalized_ticket_id).first()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Ticket hint lookup via direct query failed: %s", exc)
+        return None
+
+
+def _single_line_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _truncate_text(value: str, limit: int = 220) -> str:
+    text = _single_line_text(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 3)].rstrip()}..."
+
+
+def _ticket_context_snippets(ticket: Any) -> dict[str, str]:
+    if ticket is None:
+        return {"summary_context": "", "comment_context": "", "resolution_context": ""}
+
+    summary_context = _truncate_text(
+        getattr(ticket, "ai_summary", None)
+        or getattr(ticket, "summary", None)
+        or "",
+        limit=220,
+    )
+    resolution_context = _truncate_text(getattr(ticket, "resolution", None) or "", limit=220)
+
+    comment_lines: list[str] = []
+    comments = list(getattr(ticket, "comments", []) or [])
+    for comment in comments[-3:]:
+        content = _truncate_text(getattr(comment, "content", "") or "", limit=180)
+        if not content:
+            continue
+        author = _single_line_text(getattr(comment, "author", "") or "")
+        comment_lines.append(f"{author}: {content}" if author else content)
+    comment_context = _truncate_text(" | ".join(comment_lines), limit=420)
+
+    return {
+        "summary_context": summary_context,
+        "comment_context": comment_context,
+        "resolution_context": resolution_context,
+    }
 
 
 def _extract_unique_ticket_ids(text: str) -> list[str]:
@@ -306,6 +560,20 @@ def _is_entity_specific_ticket_query(text: str, ticket_id: str | None) -> bool:
             "status",
             "statut",
             "etat",
+            "type",
+            "ticket type",
+            "kind",
+            "priority",
+            "priorite",
+            "category",
+            "categorie",
+            "assignee",
+            "assigne",
+            "owner",
+            "reporter",
+            "sla",
+            "deadline",
+            "due",
             "detail",
             "details",
             "summary",
@@ -377,15 +645,16 @@ def _build_chat_grounding(
 ) -> AIChatGrounding | None:
     if resolver_output is None:
         return None
+    retrieval, guidance_contract = _build_guidance_contract(resolver_output)
     advice = resolver_output.advice
-    retrieval_source = str((resolver_output.retrieval or {}).get("source") or "fallback_rules")
+    retrieval_source = str(retrieval.get("source") or "fallback_rules")
     retrieval_mode = _retrieval_mode_from_source(retrieval_source)
     degraded = _is_degraded_retrieval(retrieval_mode)
     if advice is None:
         return AIChatGrounding(
             entity_type=entity_type,
             entity_id=entity_id,
-            mode="informational",
+            mode=guidance_contract.legacy_display_mode.value if guidance_contract is not None else "informational",
             confidence_band="low",
             retrieval_mode=retrieval_mode,
             degraded=degraded,
@@ -407,6 +676,81 @@ def _build_chat_grounding(
         retrieval_mode=retrieval_mode,
         degraded=degraded,
     )
+
+
+def _resolver_output_from_classification_response(
+    *,
+    ticket: Any,
+    classification: ClassificationResponse,
+) -> ResolverOutput:
+    retrieval_query = build_ticket_retrieval_query(ticket, include_priority=True)
+    retrieval = RetrievalResult(
+        query=retrieval_query,
+        query_context={
+            "metadata": {
+                "ticket_id": str(getattr(ticket, "id", "") or "").strip() or None,
+                "ticket_type": str(getattr(classification.ticket_type, "value", classification.ticket_type) or ""),
+                "category": str(getattr(classification.category, "value", classification.category) or ""),
+                "routing_decision_source": classification.routing_decision_source,
+                "cross_check_conflict_flag": bool(classification.cross_check_conflict_flag),
+                "service_request_profile_detected": bool(classification.service_request_profile_detected),
+            }
+        },
+        source=str(classification.source_label or "fallback_rules"),
+    )
+    advice = classification.resolution_advice
+    return ResolverOutput(
+        mode=str(classification.display_mode or classification.mode or "no_strong_match"),
+        retrieval_query=retrieval_query,
+        retrieval=retrieval,
+        advice=advice,
+        recommended_action=classification.recommended_action,
+        reasoning=classification.reasoning,
+        match_summary=classification.match_summary,
+        root_cause=classification.root_cause,
+        supporting_context=classification.supporting_context,
+        why_this_matches=list(classification.why_this_matches),
+        evidence_sources=list(classification.evidence_sources),
+        next_best_actions=list(classification.next_best_actions),
+        workflow_steps=list(advice.workflow_steps) if advice is not None else [],
+        validation_steps=list(classification.validation_steps),
+        fallback_action=advice.fallback_action if advice is not None else None,
+        confidence=(
+            float(classification.guidance_contract.confidence)
+            if classification.guidance_contract is not None
+            else float(advice.confidence if advice is not None else classification.resolution_confidence or 0.0)
+        ),
+        missing_information=list(advice.missing_information) if advice is not None else [],
+        guidance_contract=classification.guidance_contract,
+    )
+
+
+def _resolve_ticket_guidance_consistent_with_detail(
+    *,
+    db: Session,
+    ticket: Any,
+    current_user: Any,
+    lang: str,
+) -> ResolverOutput | None:
+    try:
+        classification = handle_classify(
+            ClassificationRequest(
+                title=str(getattr(ticket, "title", "") or ""),
+                description=str(getattr(ticket, "description", "") or ""),
+                ticket_id=str(getattr(ticket, "id", "") or "").strip() or None,
+                locale=lang,
+            ),
+            db,
+            current_user=current_user,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.info(
+            "Ticket-specific chat guidance fallback to resolver path for %s: %s",
+            str(getattr(ticket, "id", "") or "?"),
+            exc,
+        )
+        return None
+    return _resolver_output_from_classification_response(ticket=ticket, classification=classification)
 
 
 def _time_greeting(lang: str) -> str:
@@ -625,7 +969,13 @@ def _chat_section_title(key: str, *, lang: str) -> str:
 
 def _default_summary_items(grounding: AIChatGrounding, *, lang: str) -> list[str]:
     items: list[str] = []
-    if grounding.mode == "tentative_diagnostic":
+    if grounding.mode == "service_request":
+        items.append(
+            "This is planned task guidance, not incident diagnosis."
+            if lang == "en"
+            else "Il s'agit d'un guidage de tache planifiee, pas d'un diagnostic d'incident."
+        )
+    elif grounding.mode == "tentative_diagnostic":
         items.append(
             "This is a tentative diagnostic, not a confirmed fix."
             if lang == "en"
@@ -666,6 +1016,12 @@ def _default_action_items(grounding: AIChatGrounding, *, lang: str) -> list[str]
         return [grounding.recommended_action]
     if grounding.fallback_action:
         return [grounding.fallback_action]
+    if grounding.mode == "service_request":
+        return [
+            "Confirm prerequisites and execute the planned task using the documented workflow."
+            if lang == "en"
+            else "Confirmez les prerequis et executez la tache planifiee selon le workflow documente."
+        ]
     if grounding.mode == "no_strong_match":
         return [
             "Collect one more verified signal before applying a broad change."
@@ -716,6 +1072,12 @@ def _default_why_items(grounding: AIChatGrounding, *, lang: str) -> list[str]:
 def _default_validation_items(grounding: AIChatGrounding, *, lang: str) -> list[str]:
     if grounding.validation_steps:
         return [_normalize_chat_render_text(item) for item in grounding.validation_steps]
+    if grounding.mode == "service_request":
+        return [
+            "Confirm the task was completed and documented on the ticket."
+            if lang == "en"
+            else "Confirmez que la tache a ete realisee et documentee sur le ticket."
+        ]
     if grounding.mode == "evidence_action":
         return [
             "Confirm the affected workflow works end to end after the change."
@@ -746,6 +1108,12 @@ def _default_next_step_items(grounding: AIChatGrounding, *, lang: str) -> list[s
 
 def _default_confidence_note(grounding: AIChatGrounding, *, lang: str) -> str:
     degraded = grounding.retrieval_mode in {"lexical_only", "fallback_rules"}
+    if grounding.mode == "service_request":
+        return (
+            "Runbook-guided - this request matches a planned fulfillment workflow."
+            if lang == "en"
+            else "Guide par runbook - cette demande correspond a un workflow planifie de fulfilment."
+        )
     if grounding.confidence_band == "high":
         return (
             "High - evidence-backed recommendation supported by closely matching incidents."
@@ -896,7 +1264,7 @@ def build_chat_reply(
         lang=lang,
         limit=3,
         semantic_only=True,
-        semantic_min_score=0.55,
+        semantic_min_score=CHAT_KB_SEMANTIC_MIN_SCORE,
     )
     knowledge_section = f"{knowledge_block}\n\n" if knowledge_block else ""
     prompt = build_chat_prompt(
@@ -1060,7 +1428,9 @@ def _build_forced_ai_ticket_draft(
     except Exception:
         priority, ticket_type, category, _ = classify_ticket(title, description)
     else:
-        ticket_type = infer_ticket_type(title, description, category=category, current=ticket_type)
+        ticket_type, _ = split_ticket_type_inference(
+            infer_ticket_type(title, description, category=category, current=ticket_type)
+        )
 
     assignee = data.get("assignee")
     if isinstance(assignee, str):
@@ -1188,7 +1558,9 @@ def _build_ticket_draft_from_payload(
     except Exception:
         priority, ticket_type, category, _ = classify_ticket(title, description)
     else:
-        ticket_type = infer_ticket_type(title, description, category=category, current=ticket_type)
+        ticket_type, _ = split_ticket_type_inference(
+            infer_ticket_type(title, description, category=category, current=ticket_type)
+        )
     tags = ticket_payload.get("tags") or []
     if not isinstance(tags, list):
         tags = []
@@ -1543,32 +1915,135 @@ def get_sla_strategies_advice(
 def handle_classify(payload: ClassificationRequest, db: Session, current_user=None) -> ClassificationResponse:
     lang = _normalize_locale(payload.locale)
     details = classify_ticket_detailed(payload.title, payload.description, db=db, use_llm=False)
+    stored_ticket = _load_ticket_hint(
+        db,
+        ticket_id=payload.ticket_id,
+        current_user=current_user,
+    )
+    try:
+        visible_tickets = list_tickets_for_user(db, current_user) if current_user is not None else []
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Visible ticket scope lookup failed during classify: %s", exc)
+        visible_tickets = []
     priority = details["priority"]
-    ticket_type = details["ticket_type"]
+    stored_ticket_type = getattr(stored_ticket, "ticket_type", None)
+    classifier_ticket_type = details.get("classifier_ticket_type") or details.get("ticket_type")
+    profile = build_service_request_profile(payload.title, payload.description)
+    routing_cross_check = validate_ticket_routing(
+        title=payload.title,
+        description=payload.description,
+        classifier_details=details,
+        stored_ticket_type=stored_ticket_type,
+        profile=profile,
+    )
+    unresolved_routing = routing_cross_check.routing_decision_source == "cross_check_unresolved"
+    ticket_type = None if unresolved_routing else (routing_cross_check.resolved_ticket_type or details["ticket_type"] or stored_ticket_type)
+    unknown_ticket_type = details.get("unknown_ticket_type")
     category = details["category"]
+    ticket_context = _ticket_context_snippets(stored_ticket)
     resolver_ticket = SimpleNamespace(
         id=str(payload.ticket_id or "").strip() or None,
         title=payload.title,
         description=payload.description,
         priority=priority,
-        status=None,
+        status=getattr(stored_ticket, "status", None),
+        ticket_type=ticket_type,
         category=category,
-        problem_id=None,
+        problem_id=getattr(stored_ticket, "problem_id", None),
+        summary_context=ticket_context["summary_context"],
+        comment_context=ticket_context["comment_context"],
+        resolution_context=ticket_context["resolution_context"],
     )
-    resolver_output = resolve_ticket_advice(
-        db,
-        resolver_ticket,
-        visible_tickets=[],
-        top_k=5,
-        solution_quality="medium",
-        include_workflow=True,
-        include_priority=True,
-        lang=lang,
-        retrieval_fn=unified_retrieve,
-        advice_builder=build_resolution_advice,
-    )
-    retrieval = resolver_output.retrieval
-    resolution_advice = resolver_output.advice
+    service_request_mode = routing_cross_check.use_service_request_guidance
+    if service_request_mode:
+        service_request_payload = build_service_request_guidance(
+            resolver_ticket,
+            lang=lang,
+            enable_llm_refinement=True,
+        )
+        resolution_advice = _build_shared_resolution_advice_model(
+            service_request_payload,
+            default_source_label=str(service_request_payload.get("source_label") or "service_request"),
+            lang=lang,
+        )
+        retrieval = RetrievalResult(
+            query=f"{payload.title}\n{payload.description}",
+            query_context={
+                "metadata": {
+                    "ticket_type": "service_request",
+                    "category": str(getattr(category, "value", category) or ""),
+                    "service_request_profile": service_request_payload.get("service_request_profile") or {},
+                    "routing_decision_source": routing_cross_check.routing_decision_source,
+                    "cross_check_conflict_flag": routing_cross_check.cross_check_conflict_flag,
+                }
+            },
+            source="service_request",
+        )
+        guidance_contract = GuidanceContract(
+            display_mode=GuidanceDisplayMode.service_request,
+            confidence=round(float(service_request_payload.get("confidence") or 0.0), 4),
+            advisor_confidence=round(float(service_request_payload.get("confidence") or 0.0), 4),
+            retrieval_confidence=0.0,
+            threshold=GUIDANCE_CONFIDENCE_THRESHOLD,
+            source=str(service_request_payload.get("source_label") or "service_request"),
+            downgraded=False,
+            downgrade_reason=None,
+            evidence_allowed=False,
+        )
+    elif unresolved_routing:
+        manual_reason = (
+            "Les signaux de routage restent en conflit entre incident et demande de service; un triage manuel est preferable avant de lancer une resolution guidee."
+            if lang == "fr"
+            else "Routing signals still conflict between incident and service request, so manual triage is safer before guided resolution."
+        )
+        manual_payload = build_manual_triage_advice_payload(
+            reason=manual_reason,
+            lang=lang,
+            source_label="cross_check",
+        )
+        resolution_advice = _build_shared_resolution_advice_model(
+            manual_payload,
+            default_source_label="cross_check",
+            lang=lang,
+        )
+        retrieval = RetrievalResult(
+            query=f"{payload.title}\n{payload.description}",
+            query_context={
+                "metadata": {
+                    "ticket_type": str(getattr(classifier_ticket_type, "value", classifier_ticket_type) or ""),
+                    "category": str(getattr(category, "value", category) or ""),
+                    "routing_decision_source": routing_cross_check.routing_decision_source,
+                    "cross_check_conflict_flag": True,
+                }
+            },
+            source="cross_check",
+        )
+        guidance_contract = GuidanceContract(
+            display_mode=GuidanceDisplayMode.manual_triage,
+            confidence=round(float(manual_payload.get("confidence") or 0.0), 4),
+            advisor_confidence=round(float(manual_payload.get("confidence") or 0.0), 4),
+            retrieval_confidence=0.0,
+            threshold=GUIDANCE_CONFIDENCE_THRESHOLD,
+            source="cross_check",
+            downgraded=True,
+            downgrade_reason="cross_check_unresolved",
+            evidence_allowed=False,
+        )
+    else:
+        resolver_output = resolve_ticket_advice(
+            db,
+            resolver_ticket,
+            visible_tickets=visible_tickets,
+            top_k=DEFAULT_RESOLVER_TOP_K,
+            solution_quality="medium",
+            include_workflow=True,
+            include_priority=True,
+            lang=lang,
+            retrieval_fn=unified_retrieve,
+            advice_builder=build_resolution_advice,
+        )
+        retrieval, guidance_contract = _build_guidance_contract(resolver_output)
+        resolution_advice = resolver_output.advice
     raw_groups = {
         "recommendations": list(details.get("recommendations") or []),
         "recommendations_embedding": list(details.get("recommendations_embedding") or []),
@@ -1603,7 +2078,7 @@ def handle_classify(payload: ClassificationRequest, db: Session, current_user=No
         )
         recommendation_mode = resolution_advice.recommendation_mode
         source_label = resolution_advice.source_label
-        resolution_confidence = resolution_advice.confidence
+        resolution_confidence = guidance_contract.confidence if guidance_contract is not None else resolution_advice.confidence
         evidence_sources = resolution_advice.evidence_sources
         recommended_action = resolution_advice.recommended_action
         reasoning = resolution_advice.reasoning
@@ -1616,10 +2091,15 @@ def handle_classify(payload: ClassificationRequest, db: Session, current_user=No
         confidence_label = resolution_advice.confidence_label
         action_relevance_score = resolution_advice.action_relevance_score
         filtered_weak_match = resolution_advice.filtered_weak_match
-        mode = resolution_advice.mode
-        display_mode = resolution_advice.display_mode
+        mode = guidance_contract.legacy_display_mode.value if guidance_contract is not None else str(resolution_advice.mode or resolution_advice.display_mode)
+        display_mode = guidance_contract.legacy_display_mode.value if guidance_contract is not None else resolution_advice.display_mode.value
         match_summary = resolution_advice.match_summary
         next_best_actions = list(resolution_advice.next_best_actions)
+        validation_steps = list(resolution_advice.validation_steps)
+        base_recommended_action = resolution_advice.base_recommended_action
+        base_next_best_actions = list(resolution_advice.base_next_best_actions)
+        base_validation_steps = list(resolution_advice.base_validation_steps)
+        action_refinement_source = resolution_advice.action_refinement_source
         incident_cluster = resolution_advice.incident_cluster
         impact_summary = resolution_advice.impact_summary
     else:
@@ -1639,10 +2119,15 @@ def handle_classify(payload: ClassificationRequest, db: Session, current_user=No
         confidence_label = "low"
         action_relevance_score = 0.0
         filtered_weak_match = False
-        display_mode = "evidence_action" if recommendations else "no_strong_match"
+        display_mode = guidance_contract.legacy_display_mode.value if guidance_contract is not None else ("evidence_action" if recommendations else "no_strong_match")
         mode = display_mode
         match_summary = None
         next_best_actions = []
+        validation_steps = []
+        base_recommended_action = None
+        base_next_best_actions = []
+        base_validation_steps = []
+        action_refinement_source = "none"
         incident_cluster = None
         impact_summary = None
     if resolution_advice is None and str(details.get("recommendation_mode") or "") in {"embedding", "hybrid"}:
@@ -1676,6 +2161,13 @@ def handle_classify(payload: ClassificationRequest, db: Session, current_user=No
     return ClassificationResponse(
         priority=priority,
         ticket_type=ticket_type,
+        classifier_ticket_type=classifier_ticket_type,
+        manual_triage_required=(
+            bool(details.get("manual_triage_required"))
+            or bool(unknown_ticket_type)
+            or routing_cross_check.routing_decision_source == "cross_check_unresolved"
+        ),
+        unknown_ticket_type=unknown_ticket_type,
         category=category,
         classification_confidence=int(details.get("classification_confidence") or 70),
         recommendations=recommendations,
@@ -1708,13 +2200,43 @@ def handle_classify(payload: ClassificationRequest, db: Session, current_user=No
         filtered_weak_match=filtered_weak_match,
         mode=mode,
         display_mode=display_mode,
+        guidance_contract=guidance_contract,
         match_summary=match_summary,
         next_best_actions=next_best_actions,
+        validation_steps=validation_steps,
+        base_recommended_action=base_recommended_action,
+        base_next_best_actions=base_next_best_actions,
+        base_validation_steps=base_validation_steps,
+        action_refinement_source=action_refinement_source,
+        routing_decision_source=routing_cross_check.routing_decision_source,
+        service_request_profile_detected=routing_cross_check.service_request_profile_detected,
+        service_request_profile_confidence=routing_cross_check.service_request_profile_confidence,
+        cross_check_conflict_flag=routing_cross_check.cross_check_conflict_flag,
+        cross_check_summary=routing_cross_check.cross_check_summary,
         incident_cluster=incident_cluster,
         impact_summary=impact_summary,
         current_feedback=feedback_bundle.get("current_feedback"),
         feedback_summary=feedback_bundle.get("feedback_summary"),
     )
+
+
+def _requires_structured_ticket_filter_route(text: str, assignee_names: list[str]) -> bool:
+    meta = _extract_ticket_query_meta(text, assignee_names)
+    priorities = set(meta.get("priorities") or set())
+    statuses = set(meta.get("statuses") or set())
+    categories = set(meta.get("categories") or set())
+    ticket_types = set(meta.get("ticket_types") or set())
+    assignees = set(meta.get("assignees") or set())
+    window_days = meta.get("window_days")
+
+    extra_filters = bool(statuses or categories or ticket_types or assignees or window_days)
+    if not extra_filters:
+        return False
+
+    # Preserve fast deterministic shortcuts for simple "critical tickets"
+    # queries, but route compound filters like "critical incident tickets"
+    # through the shared structured query engine so no constraint is lost.
+    return priorities == {TicketPriority.critical} or bool(priorities)
 
 
 def _detect_unified_pattern(question: str, *, plan: RoutingPlan, guidance_requested: bool = False) -> str:
@@ -1776,6 +2298,7 @@ def resolve_chat_guidance(
     db: Session,
     tickets: list[Any],
     conversation_state: Any,
+    current_user: Any = None,
     solution_quality: str,
     guidance_requested: bool = False,
     resolved_ticket_id: str | None = None,
@@ -1788,7 +2311,10 @@ def resolve_chat_guidance(
             authoritative=False,
         )
 
+    session_state = build_chat_session(conversation_state)
     problem_id = _extract_chat_problem_id(question)
+    if not problem_id:
+        problem_id, _ = resolve_problem_contextual_reference(question, session_state)
     if problem_id and db is not None:
         try:
             problem = get_problem(db, problem_id)
@@ -1803,7 +2329,7 @@ def resolve_chat_guidance(
                 linked_tickets=linked_tickets,
                 user_question=question,
                 conversation_state=conversation_state,
-                top_k=5,
+                top_k=DEFAULT_RESOLVER_TOP_K,
                 solution_quality=solution_quality,
                 include_workflow=True,
                 lang=lang,
@@ -1827,14 +2353,50 @@ def resolve_chat_guidance(
 
     ticket_id = _extract_chat_ticket_id(question) or (str(resolved_ticket_id).strip().upper() if resolved_ticket_id else None)
     referenced_ticket = _find_ticket_by_id(tickets, ticket_id)
+
     if referenced_ticket is not None:
+        if db is not None:
+            classification_resolver_output = _resolve_ticket_guidance_consistent_with_detail(
+                db=db,
+                ticket=referenced_ticket,
+                current_user=current_user,
+                lang=lang,
+            )
+            if classification_resolver_output is not None:
+                grounding = _build_chat_grounding(
+                    entity_type="ticket",
+                    entity_id=str(getattr(referenced_ticket, "id", "") or None),
+                    resolver_output=classification_resolver_output,
+                )
+                return ChatGuidanceContext(
+                    grounding=grounding,
+                    resolver_output=classification_resolver_output,
+                    authoritative=True,
+                    entity_type="ticket",
+                    entity_id=str(getattr(referenced_ticket, "id", "") or None),
+                    retrieval_mode=grounding.retrieval_mode if grounding else "fallback_rules",
+                    degraded=bool(grounding.degraded) if grounding else True,
+                )
+
+        if validate_ticket_routing_for_ticket(referenced_ticket).use_service_request_guidance:
+            _sr_payload = build_service_request_response(referenced_ticket, lang=lang)
+            return ChatGuidanceContext(
+                grounding=None,
+                resolver_output=None,
+                authoritative=False,
+                entity_type="ticket",
+                entity_id=str(getattr(referenced_ticket, "id", "") or None),
+                retrieval_mode="service_request",
+                degraded=False,
+            )
+
         resolver_output = resolve_ticket_advice(
             db,
             referenced_ticket,
             user_question=question,
             conversation_state=conversation_state,
             visible_tickets=tickets,
-            top_k=5,
+            top_k=DEFAULT_RESOLVER_TOP_K,
             solution_quality=solution_quality,
             include_workflow=True,
             include_priority=True,
@@ -1863,7 +2425,7 @@ def resolve_chat_guidance(
         user_question=question,
         conversation_state=conversation_state,
         visible_tickets=tickets,
-        top_k=5,
+        top_k=DEFAULT_RESOLVER_TOP_K,
         solution_quality=solution_quality,
         include_workflow=True,
         include_priority=False,
@@ -1900,7 +2462,13 @@ def _render_resolver_first_chat_reply(
             else "Je n'ai pas encore pu construire une recommandation etayee pour cette demande."
         )
     lines: list[str] = []
-    if advice.display_mode == "evidence_action":
+    if advice.display_mode == "service_request":
+        lines.append(
+            f"Service request guidance: {advice.recommended_action}"
+            if lang == "en"
+            else f"Guidage de demande de service : {advice.recommended_action}"
+        )
+    elif advice.display_mode == "evidence_action":
         lines.append(
             f"Recommended action: {advice.recommended_action}"
             if lang == "en"
@@ -1947,14 +2515,15 @@ def _render_resolver_first_chat_reply(
 
 
 def _build_suggestion_bundle(resolver_output: ResolverOutput, *, lang: str) -> AISuggestionBundle:
-    retrieval = resolver_output.retrieval
-    confidence = float(retrieval.get("confidence") or 0.0)
-    source = str(retrieval.get("source") or "fallback_rules")
-    if confidence < 0.6:
+    retrieval, guidance_contract = _build_guidance_contract(resolver_output)
+    confidence = float(guidance_contract.confidence if guidance_contract is not None else retrieval.get("confidence") or 0.0)
+    source = str(guidance_contract.source if guidance_contract is not None else retrieval.get("source") or "fallback_rules")
+    if guidance_contract is not None and not guidance_contract.evidence_allowed:
         return AISuggestionBundle(
             confidence=confidence,
             source=source,
             resolution_advice=resolver_output.advice,
+            guidance_contract=guidance_contract,
         )
 
     tickets = [
@@ -2009,6 +2578,7 @@ def _build_suggestion_bundle(resolver_output: ResolverOutput, *, lang: str) -> A
         kb_articles=kb_articles,
         solution_recommendations=solution_recommendations,
         resolution_advice=resolver_output.advice,
+        guidance_contract=guidance_contract,
         confidence=confidence,
         source=source,
     )
@@ -2042,7 +2612,7 @@ def _suggestion_actions(pattern: str, bundle: AISuggestionBundle, *, base_action
 
 def _augment_reply_with_hints(reply: str, *, pattern: str, bundle: AISuggestionBundle, lang: str) -> str:
     text = (reply or "").strip()
-    if bundle.confidence < 0.6:
+    if bundle.confidence < GUIDANCE_CONFIDENCE_THRESHOLD:
         fallback = (
             "\n\nNeed more specific help? Try: create ticket / show mine."
             if lang == "en"
@@ -2110,7 +2680,7 @@ def _build_draft_context(
         preferred = str(bundle.kb_articles[0].excerpt or "").strip()
 
     prefilled = ticket.description
-    if preferred and bundle.confidence >= 0.6:
+    if preferred and bundle.confidence >= GUIDANCE_CONFIDENCE_THRESHOLD:
         prefilled = _merge_suggested_fix_into_description(prefilled, suggestion=preferred, lang=lang)
 
     return AIDraftContext(
@@ -2148,9 +2718,12 @@ def _compose_chat_response(
     chat_guidance: ChatGuidanceContext | None = None,
     resolved_ticket_id: str | None = None,
     ticket_context_source: str = "none",
+    allow_resolver_fallback: bool = True,
+    request_started_at: float | None = None,
 ) -> ChatResponse:
     resolver_output = chat_guidance.resolver_output if chat_guidance is not None else None
-    if resolver_output is None:
+    deterministic_response = not allow_resolver_fallback and resolver_output is None and chat_guidance is None
+    if resolver_output is None and allow_resolver_fallback:
         try:
             resolver_output = resolve_ticket_advice(
                 db,
@@ -2158,7 +2731,7 @@ def _compose_chat_response(
                 user_question=question,
                 conversation_state=conversation_state,
                 visible_tickets=tickets,
-                top_k=5,
+                top_k=DEFAULT_RESOLVER_TOP_K,
                 solution_quality=solution_quality,
                 include_workflow=True,
                 include_priority=False,
@@ -2185,12 +2758,12 @@ def _compose_chat_response(
                 reasoning=None,
                 match_summary=None,
             )
-    bundle = _build_suggestion_bundle(resolver_output, lang=lang)
+    bundle = _build_suggestion_bundle(resolver_output, lang=lang) if resolver_output is not None else AISuggestionBundle()
     pattern = _detect_unified_pattern(question, plan=plan)
     draft_context = _build_draft_context(ticket=ticket, bundle=bundle, lang=lang)
     if draft_context and ticket is not None:
         ticket.description = draft_context.pre_filled_description
-    skip_hint_augmentation = plan.name in {"shortcut_recent_ticket", "recent_ticket_filtered"}
+    skip_hint_augmentation = plan.name in _DETERMINISTIC_CHAT_RESPONSE_PLANS or plan.name == "recent_ticket_filtered"
     referenced_ticket_id = (
         str(chat_guidance.entity_id).strip().upper()
         if chat_guidance is not None and chat_guidance.entity_type == "ticket" and chat_guidance.entity_id
@@ -2249,9 +2822,20 @@ def _compose_chat_response(
     if anchor and anchor.casefold() not in reply_text.casefold():
         reply_text = f"Ticket {anchor}\n\n{reply_text}".strip()
     actions = _suggestion_actions(pattern, bundle, base_action=action)
-    retrieval_mode = chat_guidance.retrieval_mode if chat_guidance is not None else _retrieval_mode_from_source(bundle.source)
-    degraded = chat_guidance.degraded if chat_guidance is not None else _is_degraded_retrieval(retrieval_mode)
-    rag_grounding = resolver_output.confidence >= 0.6 and retrieval_mode == "semantic" and bundle.source not in {"fallback_rules", "kb_empty"}
+    retrieval_mode = (
+        chat_guidance.retrieval_mode
+        if chat_guidance is not None
+        else "deterministic"
+        if deterministic_response
+        else _retrieval_mode_from_source(bundle.source)
+    )
+    degraded = chat_guidance.degraded if chat_guidance is not None else (False if deterministic_response else _is_degraded_retrieval(retrieval_mode))
+    rag_grounding = bool(
+        bundle.guidance_contract is not None
+        and bundle.guidance_contract.evidence_allowed
+        and retrieval_mode == "semantic"
+        and bundle.source not in {"fallback_rules", "kb_empty"}
+    )
     normalized_action = action if action and action != "none" else None
     logger.info(
         "AI formatter selected: formatter=%s entity_ticket_id=%s context_source=%s route=%s",
@@ -2259,6 +2843,17 @@ def _compose_chat_response(
         referenced_ticket_id or "-",
         ticket_context_source,
         plan.name,
+    )
+    duration_ms = round((time.perf_counter() - request_started_at) * 1000, 2) if request_started_at is not None else None
+    logger.info(
+        "AI chat completed: route=%s payload_type=%s resolver_used=%s llm_enabled=%s deterministic=%s retrieval_mode=%s duration_ms=%s",
+        plan.name,
+        getattr(response_payload, "type", "legacy_text"),
+        resolver_output is not None,
+        plan.use_llm,
+        deterministic_response,
+        retrieval_mode,
+        duration_ms if duration_ms is not None else "-",
     )
     return ChatResponse(
         reply=reply_text,
@@ -2279,6 +2874,7 @@ def _compose_chat_response(
 
 
 def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse:
+    request_started_at = time.perf_counter()
     tickets = list_tickets_for_user(db, current_user)
     tickets = sorted(
         tickets,
@@ -2297,9 +2893,38 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
     compare_current_id, compare_previous_id = resolve_comparison_targets(last_question, history_session)
     history_context = build_relevant_history_context(history_session, question=last_question)
     entity_specific_ticket_query = _is_entity_specific_ticket_query(last_question, resolved_ticket_id)
-    intent, intent_confidence, intent_source, guidance_requested = detect_intent_hybrid_details(last_question or "")
+    intent_details = parse_chat_intent_details(last_question or "")
+    intent = intent_details.intent
+    intent_confidence = intent_details.confidence
+    intent_source = intent_details.source
+    guidance_requested = intent_details.guidance_requested
     create_requested = _is_explicit_ticket_create_request(last_question or "") or intent == ChatIntent.create_ticket
-    plan = build_routing_plan(last_question, intent=intent, create_requested=create_requested)
+    provisional_plan = build_routing_plan(
+        last_question,
+        intent=intent,
+        create_requested=create_requested,
+    )
+    provisional_pattern = _detect_unified_pattern(
+        last_question,
+        plan=provisional_plan,
+        guidance_requested=guidance_requested,
+    )
+    plan = build_routing_plan(
+        last_question,
+        intent=intent,
+        create_requested=create_requested,
+        guidance_requested=guidance_requested,
+        entity_specific_ticket_query=entity_specific_ticket_query,
+        needs_structured_ticket_filter=(
+            provisional_plan.name == "shortcut_critical_tickets"
+            and _requires_structured_ticket_filter_route(lowered, assignee_names)
+        ),
+        resolver_first_pattern=(
+            "ASSIGNMENT_RECOMMENDATION"
+            if provisional_plan.name == "structured_data_query" and is_assignment_query(last_question)
+            else provisional_pattern
+        ),
+    )
     logger.info(
         "AI intent detection: intent=%s confidence=%s source=%s",
         intent.value,
@@ -2311,45 +2936,21 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
         resolved_ticket_id or "-",
         ticket_context_source,
     )
-    if entity_specific_ticket_query and plan.name != "forced_create_ticket":
-        plan = RoutingPlan(
-            name="structured_data_query",
-            intent=ChatIntent.data_query,
-            use_llm=False,
-            use_kb=False,
-            reason="entity_specific_ticket_override",
-        )
-    if guidance_requested and plan.name != "forced_create_ticket":
-        plan = RoutingPlan(
-            name="general_llm",
-            intent=ChatIntent.general,
-            use_llm=True,
-            use_kb=True,
-            reason="guidance_priority_override",
-        )
     resolver_first_pattern = _detect_unified_pattern(
         last_question,
         plan=plan,
         guidance_requested=guidance_requested,
     )
-    if (
-        plan.name != "forced_create_ticket"
-        and plan.name == "structured_data_query"
-        and (resolver_first_pattern in {"SIMILAR_TICKETS", "PROBLEM_ANALYSIS"} or is_assignment_query(last_question))
-    ):
-        plan = RoutingPlan(
-            name="general_llm",
-            intent=ChatIntent.general,
-            use_llm=True,
-            use_kb=True,
-            reason="resolver_first_pattern_override",
-        )
     logger.info(
-        "AI routing plan selected: %s (intent=%s, constraints=%s, reason=%s)",
+        "AI routing plan selected: %s (intent=%s, constraints=%s, reason=%s, entity_kind=%s, entity_id=%s, inventory_kind=%s, guidance=%s)",
         plan.name,
         plan.intent.value,
         plan.constraints,
         plan.reason,
+        intent_details.entity_kind,
+        intent_details.entity_id or "-",
+        intent_details.inventory_kind or "-",
+        guidance_requested,
     )
     if resolved_ticket_id:
         logger.info(
@@ -2361,14 +2962,10 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
     top = _ticket_prompt_lines(tickets)
 
     if plan.name == "forced_create_ticket":
-        draft_response = _build_forced_ai_ticket_draft(
-            question=last_question,
-            lang=lang,
-            db=db,
-            stats=stats,
-            assignee_names=assignee_names,
-            current_user=current_user,
-            top=top,
+        redirect_reply = (
+            "La création de tickets se fait via Jira. Je peux vous aider à modifier, analyser ou prioriser un ticket existant."
+            if lang == "fr"
+            else "Ticket creation is handled via Jira. I can help you modify, analyse, or prioritise an existing ticket."
         )
         return _compose_chat_response(
             question=last_question,
@@ -2377,10 +2974,12 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
             db=db,
             tickets=tickets,
             solution_quality=payload.solution_quality,
-            reply=draft_response.reply,
-            action=draft_response.action,
-            ticket=draft_response.ticket,
+            reply=redirect_reply,
+            action=None,
+            ticket=None,
             conversation_state=conversation_session,
+            allow_resolver_fallback=False,
+            request_started_at=request_started_at,
         )
 
     if plan.name == "shortcut_recent_ticket":
@@ -2400,6 +2999,8 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
             action="show_ticket" if summary else None,
             ticket=summary,
             conversation_state=conversation_session,
+            allow_resolver_fallback=False,
+            request_started_at=request_started_at,
         )
 
     if plan.name == "shortcut_most_used_tickets":
@@ -2415,6 +3016,8 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
             action=None,
             ticket=None,
             conversation_state=conversation_session,
+            allow_resolver_fallback=False,
+            request_started_at=request_started_at,
         )
 
     if plan.name == "shortcut_weekly_summary":
@@ -2430,6 +3033,8 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
             action=None,
             ticket=None,
             conversation_state=conversation_session,
+            allow_resolver_fallback=False,
+            request_started_at=request_started_at,
         )
 
     if plan.name == "shortcut_critical_tickets":
@@ -2449,6 +3054,14 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
             if critical
             else None
         )
+        response_payload = build_ticket_list_payload(
+            tickets=critical,
+            lang=lang,
+            list_kind="critical",
+            title="Critical tickets" if lang == "en" else "Tickets critiques",
+            scope=("Status: active" if lang == "en" else "Statut: actifs") if active_only else None,
+            total_count=len(critical),
+        )
         return _compose_chat_response(
             question=last_question,
             lang=lang,
@@ -2460,7 +3073,10 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
             action="show_ticket" if summary else None,
             ticket=summary,
             ticket_results=ticket_results,
+            response_payload=response_payload,
             conversation_state=conversation_session,
+            allow_resolver_fallback=False,
+            request_started_at=request_started_at,
         )
 
     if plan.name == "shortcut_recurring_solutions":
@@ -2476,6 +3092,242 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
             action=None,
             ticket=None,
             conversation_state=conversation_session,
+            allow_resolver_fallback=False,
+            request_started_at=request_started_at,
+        )
+
+    if plan.name == "shortcut_problems":
+        # Problem listing shortcut — fetch from DB, no LLM
+        from app.services.ai.conversation_policy import STATUS_KEYWORD_MAP  # noqa: F401
+        status_filter = extract_status_filter(lowered)
+        query = db.query(Problem)
+        if status_filter:
+            query = query.filter(Problem.status == status_filter)
+        problems_db = query.order_by(Problem.occurrences_count.desc()).limit(20).all()
+        problems_list = [
+            {
+                "id": str(getattr(p, "id", "") or ""),
+                "title": str(getattr(p, "title", "") or ""),
+                "status": str(getattr(getattr(p, "status", None), "value", getattr(p, "status", None)) or ""),
+                "category": str(getattr(getattr(p, "category", None), "value", getattr(p, "category", None)) or ""),
+                "occurrences_count": int(getattr(p, "occurrences_count", 0) or 0),
+                "active_count": int(getattr(p, "active_count", 0) or 0),
+                "last_seen_at": _iso_or_none(getattr(p, "last_seen_at", None)),
+                "workaround": _truncate_to(str(getattr(p, "workaround", "") or ""), 120),
+            }
+            for p in problems_db
+        ]
+        problem_ids = [p["id"] for p in problems_list if p["id"]]
+        # Update session context
+        if problem_ids:
+            conversation_session.last_problem_list = problem_ids[:8]
+            if len(problem_ids) == 1:
+                conversation_session.last_problem_id = problem_ids[0]
+        response_payload = build_problem_list_payload(problems_list, status_filter, lang)
+        if lang == "fr":
+            if not problems_list:
+                reply = "Aucun problème trouvé" + (f" avec le statut « {status_filter} »" if status_filter else "") + "."
+            else:
+                reply = f"{len(problems_list)} problème(s) trouvé(s)" + (f" — statut : {status_filter}" if status_filter else "") + "."
+        else:
+            if not problems_list:
+                reply = "No problems found" + (f" with status '{status_filter}'" if status_filter else "") + "."
+            else:
+                reply = f"{len(problems_list)} problem(s) found" + (f" — status: {status_filter}" if status_filter else "") + "."
+        return _compose_chat_response(
+            question=last_question, lang=lang, plan=plan, db=db, tickets=tickets,
+            solution_quality=payload.solution_quality, reply=reply,
+            action=None, ticket=None, response_payload=response_payload,
+            conversation_state=conversation_session,
+            allow_resolver_fallback=False,
+            request_started_at=request_started_at,
+        )
+
+    if plan.name == "shortcut_problem_detail":
+        # Single problem detail — fetch by explicit ID or session context
+        explicit_problem_id = extract_problem_id(last_question)
+        if not explicit_problem_id:
+            explicit_problem_id, _ = resolve_problem_contextual_reference(last_question, history_session)
+        if not explicit_problem_id:
+            explicit_problem_id = history_session.last_problem_id
+        problem_obj = get_problem(db, explicit_problem_id) if explicit_problem_id else None
+        if problem_obj is None:
+            not_found_id = explicit_problem_id or "?"
+            reply = (
+                f"Problème {not_found_id} introuvable." if lang == "fr"
+                else f"Problem {not_found_id} not found."
+            )
+            return _compose_chat_response(
+                question=last_question, lang=lang, plan=plan, db=db, tickets=tickets,
+                solution_quality=payload.solution_quality, reply=reply,
+                action=None, ticket=None, conversation_state=conversation_session,
+                allow_resolver_fallback=False,
+                request_started_at=request_started_at,
+            )
+        # Update session context
+        conversation_session.last_problem_id = str(getattr(problem_obj, "id", "") or "")
+        visible_linked_tickets = [
+            ticket
+            for ticket in tickets
+            if str(getattr(ticket, "problem_id", "") or "").strip() == str(getattr(problem_obj, "id", "") or "").strip()
+        ]
+        linked_count = len(visible_linked_tickets)
+        ai_probable_cause: str | None = None
+        if not getattr(problem_obj, "root_cause", None):
+            try:
+                resolver_output = resolve_problem_advice(
+                    db,
+                    problem_obj,
+                    linked_tickets=visible_linked_tickets,
+                    user_question=last_question,
+                    conversation_state=conversation_session,
+                    top_k=DEFAULT_RESOLVER_TOP_K,
+                    solution_quality=payload.solution_quality,
+                    include_workflow=True,
+                    lang=lang,
+                    retrieval_fn=unified_retrieve,
+                    advice_builder=build_resolution_advice,
+                )
+                ai_probable_cause = (
+                    getattr(getattr(resolver_output, "advice", None), "root_cause", None)
+                    or getattr(getattr(resolver_output, "advice", None), "probable_root_cause", None)
+                    or getattr(resolver_output, "root_cause", None)
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.info("Problem detail enrichment failed for %s: %s", explicit_problem_id, exc)
+        problem_dict = {
+            "id": str(getattr(problem_obj, "id", "") or ""),
+            "title": str(getattr(problem_obj, "title", "") or ""),
+            "status": str(getattr(getattr(problem_obj, "status", None), "value", getattr(problem_obj, "status", None)) or ""),
+            "category": str(getattr(getattr(problem_obj, "category", None), "value", getattr(problem_obj, "category", None)) or ""),
+            "occurrences_count": int(getattr(problem_obj, "occurrences_count", 0) or 0),
+            "active_count": int(getattr(problem_obj, "active_count", 0) or 0),
+            "root_cause": str(getattr(problem_obj, "root_cause", "") or "") or None,
+            "workaround": str(getattr(problem_obj, "workaround", "") or "") or None,
+            "permanent_fix": str(getattr(problem_obj, "permanent_fix", "") or "") or None,
+            "last_seen_at": _iso_or_none(getattr(problem_obj, "last_seen_at", None)),
+        }
+        response_payload = build_problem_detail_payload(problem_dict, linked_count, ai_probable_cause, lang)
+        if lang == "fr":
+            reply = f"Problème {problem_dict['id']} — {problem_dict['title']} ({problem_dict['status']})."
+        else:
+            reply = f"Problem {problem_dict['id']} — {problem_dict['title']} ({problem_dict['status']})."
+        return _compose_chat_response(
+            question=last_question, lang=lang, plan=plan, db=db, tickets=tickets,
+            solution_quality=payload.solution_quality, reply=reply,
+            action=None, ticket=None, response_payload=response_payload,
+            conversation_state=conversation_session,
+            allow_resolver_fallback=False,
+            request_started_at=request_started_at,
+        )
+
+    if plan.name == "shortcut_problem_linked_tickets":
+        # Drill-down: tickets linked to the last discussed problem
+        target_problem_id = extract_problem_id(last_question)
+        if not target_problem_id:
+            target_problem_id, _ = resolve_problem_contextual_reference(last_question, history_session)
+        if not target_problem_id:
+            target_problem_id = history_session.last_problem_id
+        if not target_problem_id:
+            reply = (
+                "Aucun problème sélectionné. Mentionnez un ID de problème (ex: PB-001)."
+                if lang == "fr"
+                else "No problem selected. Please mention a problem ID (e.g. PB-001)."
+            )
+            return _compose_chat_response(
+                question=last_question, lang=lang, plan=plan, db=db, tickets=tickets,
+                solution_quality=payload.solution_quality, reply=reply,
+                action=None, ticket=None, conversation_state=conversation_session,
+                allow_resolver_fallback=False,
+                request_started_at=request_started_at,
+            )
+        linked_tickets = [
+            ticket
+            for ticket in tickets
+            if str(getattr(ticket, "problem_id", "") or "").strip() == str(target_problem_id).strip()
+        ]
+        # Group: open/in_progress first, resolved/closed last
+        active_linked = [t for t in linked_tickets if t.status not in {TicketStatus.resolved, TicketStatus.closed}]
+        resolved_linked = [t for t in linked_tickets if t.status in {TicketStatus.resolved, TicketStatus.closed}]
+        ordered = active_linked + resolved_linked
+        conversation_session.last_problem_id = str(target_problem_id)
+        ticket_summaries = [
+            {
+                "id": str(getattr(t, "id", "") or ""),
+                "title": str(getattr(t, "title", "") or ""),
+                "status": str(getattr(getattr(t, "status", None), "value", getattr(t, "status", None)) or ""),
+                "priority": str(getattr(getattr(t, "priority", None), "value", getattr(t, "priority", None)) or ""),
+                "assignee": str(getattr(t, "assignee", "") or ""),
+                "created_at": _iso_or_none(getattr(t, "created_at", None)),
+                "route": f"/tickets/{getattr(t, 'id', '')}",
+            }
+            for t in ordered
+        ]
+        response_payload = build_problem_linked_tickets_payload(
+            problem_id=str(target_problem_id),
+            tickets=ticket_summaries,
+            language=lang,
+        )
+        if lang == "fr":
+            reply = f"{len(ticket_summaries)} ticket(s) lié(s) au problème {target_problem_id}."
+        else:
+            reply = f"{len(ticket_summaries)} ticket(s) linked to problem {target_problem_id}."
+        return _compose_chat_response(
+            question=last_question, lang=lang, plan=plan, db=db, tickets=tickets,
+            solution_quality=payload.solution_quality, reply=reply,
+            action=None, ticket=None, response_payload=response_payload,
+            conversation_state=conversation_session,
+            allow_resolver_fallback=False,
+            request_started_at=request_started_at,
+        )
+
+    if plan.name == "shortcut_recommendations":
+        # Recommendation listing shortcut — read from recommendations service
+        try:
+            from app.services.recommendations import list_recommendations
+            all_recs = list_recommendations(db, current_user)
+        except Exception:  # noqa: BLE001
+            all_recs = []
+        from app.services.ai.calibration import MAX_CHAT_RECOMMENDATIONS
+        top_recs = sorted(
+            all_recs,
+            key=lambda r: float(getattr(r, "confidence", 0) or 0),
+            reverse=True,
+        )[:MAX_CHAT_RECOMMENDATIONS]
+        rec_list = [
+            {
+                "id": str(getattr(r, "id", "") or ""),
+                "title": str(getattr(r, "title", "") or ""),
+                "type": str(getattr(r, "recommendation_type", "") or getattr(r, "type", "") or ""),
+                "confidence": float(getattr(r, "confidence", 0) or 0),
+                "impact": str(getattr(r, "impact", "") or ""),
+                "description": str(getattr(r, "description", "") or "")[:160],
+            }
+            for r in top_recs
+        ]
+        response_payload = build_recommendation_list_payload(
+            recommendations=rec_list,
+            language=lang,
+        )
+        if not rec_list:
+            reply = (
+                "Aucune recommandation disponible. Ouvrez la page des recommandations pour en générer de nouvelles."
+                if lang == "fr"
+                else "No recommendations available. Open the recommendations page to generate new ones."
+            )
+        else:
+            reply = (
+                f"{len(rec_list)} recommandation(s) disponible(s)."
+                if lang == "fr"
+                else f"{len(rec_list)} recommendation(s) available."
+            )
+        return _compose_chat_response(
+            question=last_question, lang=lang, plan=plan, db=db, tickets=tickets,
+            solution_quality=payload.solution_quality, reply=reply,
+            action=None, ticket=None, response_payload=response_payload,
+            conversation_state=conversation_session,
+            allow_resolver_fallback=False,
+            request_started_at=request_started_at,
         )
 
     if plan.name != "forced_create_ticket" and compare_current_id and compare_previous_id:
@@ -2507,6 +3359,8 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
                 conversation_state=conversation_session,
                 resolved_ticket_id=compare_current_id,
                 ticket_context_source="comparison_context",
+                allow_resolver_fallback=False,
+                request_started_at=request_started_at,
             )
 
     if plan.name == "structured_data_query":
@@ -2517,6 +3371,7 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
             assignee_names,
             resolved_ticket_id=resolved_ticket_id if entity_specific_ticket_query else None,
             force_single_ticket=entity_specific_ticket_query,
+            parsed_filter_meta=intent_details.filter_meta,
         )
         if structured_answer:
             return _compose_chat_response(
@@ -2534,6 +3389,8 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
                 conversation_state=conversation_session,
                 resolved_ticket_id=resolved_ticket_id,
                 ticket_context_source=ticket_context_source,
+                allow_resolver_fallback=False,
+                request_started_at=request_started_at,
             )
         logger.info("AI routing fallback to general_llm because structured_data_query returned no answer.")
         plan = RoutingPlan(
@@ -2579,17 +3436,22 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
     if history_context and history_context not in question_for_llm:
         question_for_llm = f"{question_for_llm}\n\nConversation context:\n{history_context}".strip()
 
-    chat_guidance = resolve_chat_guidance(
-        question=last_question,
-        lang=lang,
-        plan=plan,
-        db=db,
-        tickets=tickets,
-        conversation_state=conversation_session,
-        solution_quality=payload.solution_quality,
-        guidance_requested=guidance_requested,
-        resolved_ticket_id=resolved_ticket_id,
-    )
+    try:
+        chat_guidance = resolve_chat_guidance(
+            question=last_question,
+            lang=lang,
+            plan=plan,
+            db=db,
+            tickets=tickets,
+            conversation_state=conversation_session,
+            current_user=current_user,
+            solution_quality=payload.solution_quality,
+            guidance_requested=guidance_requested,
+            resolved_ticket_id=resolved_ticket_id,
+        )
+    except Exception as _guidance_exc:
+        logger.warning("resolve_chat_guidance failed, falling back to LLM-only path: %s", _guidance_exc)
+        chat_guidance = ChatGuidanceContext(grounding=None, resolver_output=None, authoritative=False)
     # For recommendation-like chat requests, the resolver/advisor owns the
     # recommendation truth. The LLM is only allowed to format that grounding.
     if chat_guidance.authoritative and chat_guidance.grounding is not None:
@@ -2638,6 +3500,7 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
         chat_guidance=chat_guidance,
         resolved_ticket_id=resolved_ticket_id,
         ticket_context_source=ticket_context_source,
+        request_started_at=request_started_at,
     )
 
 
@@ -2649,7 +3512,7 @@ def handle_suggest(payload: SuggestRequest, db: Session, current_user) -> Sugges
         user_question=payload.query,
         conversation_state=None,
         visible_tickets=tickets,
-        top_k=5,
+        top_k=DEFAULT_RESOLVER_TOP_K,
         solution_quality=payload.solution_quality,
         include_workflow=True,
         include_priority=False,
@@ -2667,7 +3530,11 @@ def handle_suggest(payload: SuggestRequest, db: Session, current_user) -> Sugges
     )
     pattern = _detect_unified_pattern(payload.query, plan=plan)
     actions = _suggestion_actions(pattern, bundle, base_action=None)
-    rag_grounding = bundle.confidence >= 0.6 and bundle.source not in {"fallback_rules", "kb_empty"}
+    rag_grounding = bool(
+        bundle.guidance_contract is not None
+        and bundle.guidance_contract.evidence_allowed
+        and bundle.source not in {"fallback_rules", "kb_empty"}
+    )
     return SuggestResponse(
         rag_grounding=rag_grounding,
         suggestions=bundle,

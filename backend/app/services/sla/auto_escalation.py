@@ -7,6 +7,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.enums import TicketPriority, TicketStatus
 from app.models.ticket import Ticket
 
@@ -63,15 +64,17 @@ def compute_escalation(ticket: Ticket) -> tuple[TicketPriority | None, str | Non
             reason = "jira_sla_first_response_breached"
     else:
         remaining = ticket.sla_remaining_minutes
+        escalate_high_minutes = max(1, int(settings.SLA_ESCALATE_HIGH_MINUTES))
+        escalate_step_minutes = max(escalate_high_minutes, int(settings.SLA_ESCALATE_STEP_MINUTES))
         if remaining is not None:
-            if remaining <= 10 and _PRIORITY_RANK[current] < _PRIORITY_RANK[TicketPriority.high]:
+            if remaining <= escalate_high_minutes and _PRIORITY_RANK[current] < _PRIORITY_RANK[TicketPriority.high]:
                 target = TicketPriority.high
-                reason = "jira_sla_remaining_le_10m"
-            elif remaining <= 30:
+                reason = "jira_sla_remaining_le_high_threshold"
+            elif remaining <= escalate_step_minutes:
                 stepped = _one_step_higher(current)
                 if _is_higher(stepped, current):
                     target = stepped
-                    reason = "jira_sla_remaining_le_30m"
+                    reason = "jira_sla_remaining_le_step_threshold"
 
     if target is None or not _is_higher(target, current):
         return None, None
@@ -99,4 +102,3 @@ def apply_escalation(db: Session, ticket: Ticket, actor: str = "system") -> bool
     db.flush()
     logger.info("Auto-escalated ticket %s to %s (%s)", ticket.id, target.value, ticket.priority_escalation_reason)
     return True
-
