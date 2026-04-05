@@ -3,7 +3,7 @@
 Enterprise documentation for the PFE internship project delivered for Teamwill.
 
 ## 1. Executive Summary
-This platform is an internal ITSM application designed for Teamwill internship operations.
+This platform is an internal ITSM application designed for Teamwill  operations.
 It centralizes ticket intake, triage, resolution tracking, AI-assisted recommendations, and Jira Service Management interoperability.
 
 Business objectives:
