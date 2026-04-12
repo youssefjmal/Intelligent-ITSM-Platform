@@ -126,6 +126,11 @@ class TicketTriageUpdate(BaseModel):
     category: TicketCategory | None = None
     due_at: dt.datetime | None = None
     comment: str | None = Field(default=None, max_length=MAX_DESCRIPTION_LEN)
+    # Change Management
+    change_risk: str | None = Field(default=None, pattern="^(low|medium|high|critical)$")
+    change_scheduled_at: dt.datetime | None = None
+    change_approved: bool | None = None
+    change_approved_by: str | None = Field(default=None, max_length=255)
 
     @field_validator("title", mode="before")
     @classmethod
@@ -182,6 +187,12 @@ class TicketOut(TicketBase):
     created_at: dt.datetime
     updated_at: dt.datetime
     resolution: str | None
+    # Change Management fields
+    change_risk: str | None = None
+    change_scheduled_at: dt.datetime | None = None
+    change_approved: bool | None = None
+    change_approved_by: str | None = None
+    change_approved_at: dt.datetime | None = None
     comments: list[TicketCommentOut]
 
     class Config:
@@ -250,6 +261,9 @@ class TicketPerformanceOut(BaseModel):
     median_time_to_first_action_hours: float | None = None
     classification_accuracy_rate: float | None
     classification_samples: int
+    high_confidence_rate: float | None = None
+    low_confidence_rate: float | None = None
+    classification_correction_count: int = 0
     auto_assignment_accuracy_rate: float | None
     auto_assignment_samples: int
     auto_triage_no_correction_rate: float | None = None

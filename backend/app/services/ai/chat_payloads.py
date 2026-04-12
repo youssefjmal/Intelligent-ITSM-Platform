@@ -34,12 +34,15 @@ from app.schemas.ai import (
     AIChatStatusResponse,
     AIChatStructuredResponse,
     AIChatTicketDetailsResponse,
+    AIChatTicketCommentItem,
     AIChatTicketListResponse,
+    AIChatTicketThreadResponse,
     AIChatTopRecommendation,
 )
 from app.services.ai.calibration import confidence_band
 from app.services.ai.formatters import _priority_label, _status_label
 from app.services.ai.resolver import ResolverOutput
+from app.services.ai.similar_tickets import select_visible_similar_ticket_matches
 from app.services.ai.service_requests import build_service_request_guidance
 from app.services.ai.taxonomy import TOPIC_HINTS
 
@@ -169,7 +172,12 @@ def build_ticket_status_payload(ticket: Any, *, lang: str) -> AIChatStatusRespon
 
 def build_ticket_details_payload(ticket: Any, *, lang: str) -> AIChatTicketDetailsResponse:
     ticket_id = str(getattr(ticket, "id", "") or "")
-    comments = getattr(ticket, "comments", None) or []
+    comments = list(getattr(ticket, "comments", None) or [])
+    comments = sorted(
+        comments,
+        key=lambda comment: _iso_or_none(getattr(comment, "created_at", None)) or "",
+        reverse=True,
+    )
     recent_comments: list[AIChatCommentSummary] = []
     for comment in comments[:3]:
         content = _string_or_none(getattr(comment, "content", None) or getattr(comment, "body", None))
@@ -800,21 +808,29 @@ def _similarity_reason(row: dict[str, Any], *, lang: str) -> str:
 def build_similar_tickets_payload(
     *,
     source_ticket_id: str | None,
+    source_ticket: Any | None,
+    visible_tickets: list[Any] | None,
     resolver_output: ResolverOutput | None,
     lang: str,
 ) -> AIChatStructuredResponse:
     rows = list((resolver_output.retrieval or {}).get("similar_tickets") or []) if resolver_output is not None else []
+    filtered_matches = select_visible_similar_ticket_matches(
+        source_ticket=source_ticket,
+        visible_tickets=visible_tickets,
+        retrieval_rows=rows,
+        limit=5,
+        min_score=0.3,
+    )
     matches = [
         AIChatSimilarTicketMatch(
-            ticket_id=str(row.get("id") or ""),
-            title=_string_or_none(row.get("title")) or str(row.get("id") or "Ticket"),
-            match_reason=_similarity_reason(row, lang=lang),
-            match_score=float(row.get("similarity_score") or 0.0),
-            status=_string_or_none(row.get("status")),
-            route=_ticket_route(str(row.get("id") or "")),
+            ticket_id=str(getattr(match["ticket"], "id", "") or ""),
+            title=_string_or_none(getattr(match["ticket"], "title", None)) or str(getattr(match["ticket"], "id", "") or "Ticket"),
+            match_reason=_similarity_reason(match["row"], lang=lang),
+            match_score=float(match["similarity_score"] or 0.0),
+            status=_string_or_none(getattr(match["ticket"], "status", None)),
+            route=_ticket_route(str(getattr(match["ticket"], "id", "") or "")),
         )
-        for row in rows
-        if _string_or_none(row.get("id"))
+        for match in filtered_matches
     ]
     if not matches:
         return build_insufficient_evidence_payload(
@@ -833,7 +849,7 @@ def build_similar_tickets_payload(
         )
     return AIChatSimilarTicketsResponse(
         source_ticket_id=source_ticket_id,
-        matches=matches[:5],
+        matches=matches,
     )
 
 
@@ -1128,4 +1144,49 @@ def build_recommendation_list_payload(
                 route="/recommendations",
             )
         ],
+    )
+
+
+def build_ticket_thread_payload(ticket: Any, *, lang: str) -> AIChatTicketThreadResponse:
+    """Build a structured payload exposing all comments + resolution for a ticket."""
+    ticket_id = str(getattr(ticket, "id", "") or "")
+    title = str(getattr(ticket, "title", "") or "")
+    raw_status = getattr(ticket, "status", None)
+    status_val = str(getattr(raw_status, "value", raw_status) or "")
+    is_resolved = status_val in {"resolved", "closed"}
+    resolution = str(getattr(ticket, "resolution", "") or "").strip() or None
+
+    comments_raw = list(getattr(ticket, "comments", []) or [])
+    items: list[AIChatTicketCommentItem] = []
+    for c in comments_raw:
+        content = str(getattr(c, "content", "") or "").strip()
+        if not content:
+            continue
+        author = str(getattr(c, "author", "") or "").strip() or ("Unknown" if lang == "en" else "Inconnu")
+        created_at = None
+        raw_ts = getattr(c, "created_at", None)
+        if raw_ts is not None:
+            try:
+                if hasattr(raw_ts, "strftime"):
+                    created_at = raw_ts.strftime("%Y-%m-%d %H:%M")
+                else:
+                    created_at = str(raw_ts)[:16]
+            except Exception:  # noqa: BLE001
+                pass
+        source = str(getattr(c, "external_source", "") or "").strip() or None
+        items.append(AIChatTicketCommentItem(
+            author=author,
+            content=content[:600],
+            created_at=created_at,
+            source=source,
+        ))
+
+    return AIChatTicketThreadResponse(
+        ticket_id=ticket_id,
+        title=title,
+        status=status_val,
+        is_resolved=is_resolved,
+        resolution=resolution,
+        comment_count=len(items),
+        comments=items,
     )

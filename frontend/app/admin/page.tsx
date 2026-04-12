@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { AppShell } from "@/components/app-shell"
 import { useAuth, type UserRole, type User, type UserSeniority } from "@/lib/auth"
 import { useI18n } from "@/lib/i18n"
@@ -34,12 +34,26 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
-import { Shield, Users, Trash2, Mail, History } from "lucide-react"
+import { Shield, Users, Trash2, Mail, History, RefreshCw } from "lucide-react"
 import Link from "next/link"
 import { apiFetch } from "@/lib/api"
 import { fetchTicketHistory, type TicketHistoryEvent } from "@/lib/tickets-api"
 
 const SENIORITY_OPTIONS: UserSeniority[] = ["intern", "junior", "middle", "senior"]
+
+interface JiraSyncStatus {
+  configured: boolean
+  project_key: string | null
+  base_url: string | null
+  auto_reconcile_enabled: boolean
+  total_synced_tickets: number
+  projects: Array<{
+    project_key: string
+    last_synced_at: string | null
+    last_error: string | null
+    updated_at: string | null
+  }>
+}
 
 interface EmailRecord {
   to: string
@@ -102,6 +116,8 @@ export default function AdminPage() {
   const [emails, setEmails] = useState<EmailRecord[]>([])
   const [history, setHistory] = useState<TicketHistoryEvent[]>([])
   const [actionError, setActionError] = useState<string | null>(null)
+  const [jiraStatus, setJiraStatus] = useState<JiraSyncStatus | null>(null)
+  const [jiraStatusLoading, setJiraStatusLoading] = useState(false)
   const [userSearch, setUserSearch] = useState("")
   const [userRoleFilter, setUserRoleFilter] = useState<"all" | UserRole>("all")
   const [userSeniorityFilter, setUserSeniorityFilter] = useState<"all" | UserSeniority>("all")
@@ -128,6 +144,18 @@ export default function AdminPage() {
       .then(setHistory)
       .catch(() => setHistory([]))
   }, [hasPermission])
+
+  const loadJiraStatus = useCallback(() => {
+    setJiraStatusLoading(true)
+    apiFetch<JiraSyncStatus>("/integrations/jira/status")
+      .then(setJiraStatus)
+      .catch(() => setJiraStatus(null))
+      .finally(() => setJiraStatusLoading(false))
+  }, [])
+
+  useEffect(() => {
+    if (hasPermission("view_admin")) loadJiraStatus()
+  }, [hasPermission, loadJiraStatus])
 
   const normalizedUserSearch = userSearch.trim().toLowerCase()
   const filteredUsers = users.filter((candidate) => {
@@ -251,7 +279,13 @@ export default function AdminPage() {
           <p className="mt-2 max-w-3xl text-sm text-muted-foreground sm:text-base">{t("admin.subtitle")}</p>
           <div className="mt-3 flex gap-2 flex-wrap">
             <Button asChild variant="outline" size="sm">
+              <Link href="/admin/analytics">Tableau de bord analytique</Link>
+            </Button>
+            <Button asChild variant="outline" size="sm">
               <Link href="/admin/ai-governance">Gouvernance IA</Link>
+            </Button>
+            <Button asChild variant="outline" size="sm">
+              <Link href="/admin/security">Sécurité & Conformité</Link>
             </Button>
             <Button asChild variant="outline" size="sm">
               <Link href="/admin/notifications-debug">Notifications debug</Link>
@@ -259,6 +293,97 @@ export default function AdminPage() {
           </div>
           {actionError && <p className="mt-2 text-sm text-destructive">{actionError}</p>}
         </div>
+
+        {/* Jira Sync Status */}
+        <Card className="surface-card">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between gap-3">
+              <CardTitle className="flex items-center gap-2 text-base font-semibold text-foreground">
+                <svg className="h-5 w-5 text-primary" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M11.571 11.429L6 5.857 7.857 4l5.571 5.571 5.572-5.571L21 5.857l-5.572 5.572L21 17l-1.857 1.857-5.572-5.571L8 18.857 6.143 17l5.571-5.571L6 5.857z" fillRule="evenodd" clipRule="evenodd" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                {locale === "fr" ? "Intégration Jira" : "Jira Integration"}
+              </CardTitle>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1.5 text-xs"
+                onClick={loadJiraStatus}
+                disabled={jiraStatusLoading}
+              >
+                <RefreshCw className={`h-3 w-3 ${jiraStatusLoading ? "animate-spin" : ""}`} />
+                {locale === "fr" ? "Actualiser" : "Refresh"}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {jiraStatusLoading ? (
+              <div className="space-y-2">
+                <div className="h-4 w-48 animate-pulse rounded bg-muted/40" />
+                <div className="h-4 w-64 animate-pulse rounded bg-muted/40" />
+              </div>
+            ) : jiraStatus === null ? (
+              <p className="text-sm text-muted-foreground py-2">
+                {locale === "fr" ? "Impossible de charger le statut Jira." : "Could not load Jira sync status."}
+              </p>
+            ) : !jiraStatus.configured ? (
+              <div className="flex items-center gap-2 py-2">
+                <span className="h-2 w-2 rounded-full bg-muted-foreground/40 inline-block" />
+                <p className="text-sm text-muted-foreground">
+                  {locale === "fr" ? "Variables JIRA_BASE_URL / JIRA_API_TOKEN non configurées." : "JIRA_BASE_URL / JIRA_API_TOKEN not set."}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex flex-wrap gap-3">
+                  <div className="rounded-lg border border-border bg-muted/20 px-4 py-3">
+                    <p className="text-xs text-muted-foreground">{locale === "fr" ? "Tickets synchronisés" : "Synced tickets"}</p>
+                    <p className="text-xl font-bold text-foreground mt-0.5">{jiraStatus.total_synced_tickets}</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-muted/20 px-4 py-3">
+                    <p className="text-xs text-muted-foreground">{locale === "fr" ? "Projet" : "Project"}</p>
+                    <p className="text-xl font-bold text-foreground mt-0.5">{jiraStatus.project_key}</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-muted/20 px-4 py-3">
+                    <p className="text-xs text-muted-foreground">{locale === "fr" ? "Réconciliation auto" : "Auto reconcile"}</p>
+                    <p className={`text-sm font-semibold mt-0.5 ${jiraStatus.auto_reconcile_enabled ? "text-[#1D9E75]" : "text-muted-foreground"}`}>
+                      {jiraStatus.auto_reconcile_enabled ? (locale === "fr" ? "Activée" : "Enabled") : (locale === "fr" ? "Désactivée" : "Disabled")}
+                    </p>
+                  </div>
+                </div>
+                {jiraStatus.projects.length > 0 ? (
+                  <div className="space-y-2">
+                    {jiraStatus.projects.map((p) => (
+                      <div key={p.project_key} className="rounded-lg border border-border bg-muted/10 p-3">
+                        <div className="flex items-center justify-between gap-3 flex-wrap">
+                          <div className="flex items-center gap-2">
+                            <span className={`h-2 w-2 rounded-full inline-block shrink-0 ${p.last_error ? "bg-destructive" : "bg-[#1D9E75]"}`} />
+                            <span className="text-sm font-medium text-foreground">{p.project_key}</span>
+                          </div>
+                          {p.last_synced_at && (
+                            <span className="text-xs text-muted-foreground">
+                              {locale === "fr" ? "Dernière sync." : "Last sync:"}{" "}
+                              {new Date(p.last_synced_at).toLocaleString(locale === "fr" ? "fr-FR" : "en-US")}
+                            </span>
+                          )}
+                        </div>
+                        {p.last_error && (
+                          <p className="mt-1.5 text-xs text-destructive truncate">{p.last_error}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {locale === "fr"
+                      ? "Aucune réconciliation effectuée. Lancez une sync. manuelle pour initialiser l'état."
+                      : "No reconcile run yet. Trigger a manual sync to initialize state."}
+                  </p>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Users Table */}
         <Card className="surface-card">

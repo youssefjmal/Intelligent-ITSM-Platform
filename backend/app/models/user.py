@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from uuid import UUID, uuid4
 
-from sqlalchemy import Boolean, DateTime, Enum, Integer, String
+from sqlalchemy import Boolean, DateTime, Enum, Integer, String, SmallInteger
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -38,3 +38,7 @@ class User(Base):
     google_id: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    # Brute-force lockout (GAP 3)
+    failed_login_attempts: Mapped[int] = mapped_column(SmallInteger, default=0, nullable=False)
+    locked_until: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

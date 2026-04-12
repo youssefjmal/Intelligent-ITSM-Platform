@@ -10,7 +10,7 @@ export type TicketStatus =
   | "closed"
 export type TicketPriority = "critical" | "high" | "medium" | "low"
 export type SlaStatus = "ok" | "at_risk" | "breached" | "paused" | "completed" | "unknown"
-export type TicketType = "incident" | "service_request"
+export type TicketType = "incident" | "service_request" | "change"
 export type TicketCategory =
   | "infrastructure"
   | "network"
@@ -62,6 +62,12 @@ export interface Ticket {
   resolution?: string
   tags: string[]
   comments: TicketComment[]
+  // Change Management
+  changeRisk?: "low" | "medium" | "high" | "critical" | null
+  changeScheduledAt?: string | null
+  changeApproved?: boolean | null
+  changeApprovedBy?: string | null
+  changeApprovedAt?: string | null
 }
 
 export function getTicketStats(tickets: Ticket[]) {
@@ -99,9 +105,10 @@ export const PRIORITY_CONFIG: Record<TicketPriority, { label: string; color: str
   low: { label: "Basse", color: "bg-slate-100 text-slate-700" },
 }
 
-export const TICKET_TYPE_CONFIG: Record<TicketType, { label: string }> = {
-  incident: { label: "Incident" },
-  service_request: { label: "Service Request" },
+export const TICKET_TYPE_CONFIG: Record<TicketType, { label: string; color: string }> = {
+  incident: { label: "Incident", color: "bg-red-100 text-red-800" },
+  service_request: { label: "Service Request", color: "bg-blue-100 text-blue-800" },
+  change: { label: "Changement", color: "bg-purple-100 text-purple-800" },
 }
 
 export const CATEGORY_CONFIG: Record<TicketCategory, { label: string }> = {

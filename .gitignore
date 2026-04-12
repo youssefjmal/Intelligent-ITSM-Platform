@@ -43,6 +43,20 @@ backend/problem_payload.jsoncurl.exe
 docs/n8n/n8n_key.txt
 docs/n8n/.env
 
+# Local Markdown notes kept outside the docs tree
+/README.md
+/backend/README.md
+/frontend/README.md
+
 # OS
 .DS_Store
 Thumbs.db
+
+# PFE report — local only, never push
+rapport/
+
+# Personal portfolio — separate project, not part of this repo
+portfolio/
+
+# Claude Code local settings
+.claude/

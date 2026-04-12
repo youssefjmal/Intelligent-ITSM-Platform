@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from app.services.ai.pii_scrubber import scrub_pii
 from app.services.ai.prompt_policy import (
     CHAT_KNOWLEDGE_FIRST_POLICY,
     CHAT_SIGNAL_POLICY,
@@ -23,6 +24,8 @@ def build_classification_prompt(
     knowledge_section: str,
     recommendations_mode: str = "llm_general",
 ) -> str:
+    title = scrub_pii(title)
+    description = scrub_pii(description)
     if recommendations_mode == "comments_strong":
         mode_hint = "Knowledge Section contient des correspondances Jira fortes."
     else:
@@ -62,8 +65,13 @@ def build_chat_prompt(
     stats: dict,
     top_tickets: list[str],
 ) -> str:
+    question = scrub_pii(question)
     return (
-        "You are an ITSM assistant. Return ONLY valid JSON.\n"
+        "You are an ITSM assistant for a Jira-based ticket management platform. Return ONLY valid JSON.\n"
+        "Scope: only answer questions about tickets, SLA, incidents, problems, assignments, the platform, "
+        "or ITSM/IT concepts. For anything unrelated (weather, sports, general knowledge, etc.), "
+        "set reply to a polite one-sentence refusal explaining you only handle ITSM topics, "
+        "and set action=none, ticket=null.\n"
         f"{CHAT_SIGNAL_POLICY}"
         f"{CHAT_KNOWLEDGE_FIRST_POLICY}"
         "JSON schema:\n"
@@ -188,6 +196,8 @@ def build_general_advisory_prompt(
         "No markdown code fences."
     )
 
+    ticket_title = scrub_pii(ticket_title)
+    ticket_description = scrub_pii(ticket_description)
     priority_instruction = ""
     if ticket_priority.lower() in ("critical", "high", "critique", "haute"):
         priority_instruction = (
@@ -255,6 +265,8 @@ def build_llm_fallback_action_prompt(
     language: str = "fr",
 ) -> tuple[str, str]:
     """Build a prompt for low-trust incident actions when no strong match exists."""
+    ticket_title = scrub_pii(ticket_title)
+    ticket_description = scrub_pii(ticket_description)
 
     system_prompt = (
         "You are an experienced IT support engineer giving cautious next-step guidance "
@@ -320,6 +332,8 @@ def build_service_request_refinement_prompt(
     language: str = "fr",
 ) -> tuple[str, str]:
     """Build a prompt for refining deterministic service-request actions."""
+    ticket_title = scrub_pii(ticket_title)
+    ticket_description = scrub_pii(ticket_description)
 
     system_prompt = (
         "You are refining a deterministic IT service-request runbook. "

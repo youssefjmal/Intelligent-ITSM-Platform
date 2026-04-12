@@ -789,6 +789,14 @@ export function RecommendationsPanel() {
                   : rec.type === "priority"
                     ? "border-l-[4px] border-l-[#E24B4A]"
                     : "border-l-[4px] border-l-[#378ADD]"
+            const typeTopColor =
+              rec.type === "pattern"
+                ? "#534AB7"
+                : rec.type === "solution"
+                  ? "#1D9E75"
+                  : rec.type === "priority"
+                    ? "#E24B4A"
+                    : "#378ADD"
             const ticketLabel = rec.relatedTickets[0]
               ? `${rec.relatedTickets[0]} | ${rec.title}`
               : rec.title
@@ -823,7 +831,7 @@ export function RecommendationsPanel() {
                     }}
                     className="w-full text-left"
                   >
-                    <div className="h-1.5 bg-gradient-to-r from-primary/80 via-emerald-500/80 to-amber-500/80" />
+                    <div className="h-[3px]" style={{ backgroundColor: typeTopColor }} />
                     <CardContent className="p-5">
                       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                         <div className="flex gap-3 flex-1">
@@ -879,14 +887,14 @@ export function RecommendationsPanel() {
                                   size="sm"
                                 />
                               </div>
-                              <Badge variant="outline" className="text-[10px]">
+                              <Badge variant="outline" className="rounded-sm text-[10px] tracking-[0.03em]">
                                 {recommendationModeLabel(rec.recommendationMode, locale)}
                               </Badge>
-                              <Badge variant="outline" className="text-[10px]">
+                              <Badge variant="outline" className="rounded-sm text-[10px] tracking-[0.03em]">
                                 {sourceLabelText(rec.sourceLabel, locale)}
                               </Badge>
                               {primaryEvidence ? (
-                                <Badge variant="outline" className="text-[10px]">
+                                <Badge variant="outline" className="rounded-sm text-[10px] tracking-[0.03em]">
                                   {evidenceTypeLabel(primaryEvidence, locale)}
                                 </Badge>
                               ) : null}

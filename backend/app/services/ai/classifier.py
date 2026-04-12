@@ -1287,24 +1287,53 @@ def _compute_classification_confidence(
     has_recommendations: bool,
     llm_success: bool,
 ) -> int:
-    score = 62
+    """Compute a 0-100 classification confidence score.
+
+    Signals must be earned — there is no inflated base score.
+    Each signal independently contributes, so a ticket with no
+    evidence honestly scores low rather than defaulting to ~60.
+
+    Score ranges:
+        0–29  : very low  — almost no signal
+        30–49 : low       — limited evidence
+        50–69 : medium    — partial signal
+        70–84 : high      — LLM + evidence
+        85–97 : very high — all signals present
+    """
+    score = 0
+
+    # Primary signal: LLM succeeded (well-formed response, no parse error)
     if llm_success:
-        score += 8
+        score += 35
+
+    # Historical evidence: semantically similar past tickets found
     if strong_matches:
-        score += 12
-    if inferred_priority is not None:
-        score += 5
+        # Reward more matches up to 4 (diminishing returns beyond that)
+        match_bonus = min(25, 10 + 5 * min(len(strong_matches), 3))
+        score += match_bonus
+
+    # Field inference signals — each independently indicates the classifier
+    # extracted a meaningful value rather than falling back to a default
     if inferred_category is not None:
-        score += 5
+        score += 15
+    if inferred_priority is not None:
+        score += 10
     if inferred_ticket_type is not None:
-        score += 5
+        score += 10
+
+    # Recommendation quality: hybrid means both LLM + embedding agreed
     if recommendation_mode == "hybrid":
-        score += 4
+        score += 5
     elif recommendation_mode == "embedding":
         score += 2
+
+    # Penalise if no actionable recommendations were produced
     if not has_recommendations:
-        score -= 6
-    return int(max(45, min(97, score)))
+        score -= 10
+
+    # Floor at 10 (not 0) so UI never shows "0% confident"
+    # Ceiling at 97 — never claim perfect confidence
+    return int(max(10, min(97, score)))
 
 
 def _semantic_signal_confidence(
@@ -1625,8 +1654,32 @@ def score_recommendations(
     rank_decay: int = 7,
     floor: int = 55,
     ceiling: int = 95,
+    classification_confidence: int | None = None,
 ) -> list[dict[str, object]]:
-    """Build short confidence scores for recommendation strings."""
+    """Build confidence scores for recommendation strings.
+
+    When ``classification_confidence`` is provided (0-100 int from
+    ``_compute_classification_confidence``), each recommendation's score is
+    scaled by how certain the classifier was.  A ticket classified with 30%
+    confidence produces recommendations capped lower than one with 90%
+    confidence, preventing the UI from showing confident-looking cards for
+    poorly understood tickets.
+
+    Scaling formula:
+        effective_ceiling = ceiling × (classification_confidence / 100)
+        effective_floor   = max(floor × 0.5, floor × (classification_confidence / 100))
+    """
+    if classification_confidence is not None:
+        conf_factor = max(0.1, min(1.0, classification_confidence / 100))
+        ceiling = int(ceiling * conf_factor)
+        floor = int(max(floor * 0.5, floor * conf_factor))
+        # Ensure a minimum gap of 5 points between floor and ceiling so that
+        # rank_decay can produce at least one visible confidence step between
+        # the top and bottom recommendations even at very low classification
+        # confidence.  Without this guard, floor could equal ceiling and all
+        # recommendations would display the same score.
+        floor = min(floor, max(0, ceiling - 5))
+
     scored: list[dict[str, object]] = []
     seen: set[str] = set()
     action_tokens = {"verify", "check", "collect", "apply", "rollback", "document", "monitor", "logs", "review"}

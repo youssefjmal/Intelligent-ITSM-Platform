@@ -5,12 +5,11 @@ from __future__ import annotations
 import datetime as dt
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, Header, Path, Query
+from fastapi import APIRouter, Body, Depends, Path, Query
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
-from app.core.deps import get_current_user, require_roles
-from app.core.exceptions import AuthenticationException, BadRequestError, NotFoundError
+from app.core.deps import get_current_user, require_n8n_inbound_auth, require_roles
+from app.core.exceptions import NotFoundError
 from app.core.rate_limit import rate_limit
 from app.db.session import get_db
 from app.models.enums import UserRole
@@ -269,14 +268,9 @@ def _dedupe_user_ids(
 @router.post("/system", dependencies=[])
 def post_system_notification(
     payload: SystemNotificationCreate = Body(...),
-    x_automation_secret: str | None = Header(default=None, alias="X-Automation-Secret"),
+    _authorized: None = Depends(require_n8n_inbound_auth),
     db: Session = Depends(get_db),
 ) -> dict:
-    configured = settings.AUTOMATION_SECRET.strip()
-    if not configured:
-        raise BadRequestError("automation_secret_not_configured")
-    if (x_automation_secret or "").strip() != configured:
-        raise AuthenticationException("invalid_automation_secret", error_code="INVALID_AUTOMATION_SECRET", status_code=401)
 
     # ── ticket_id fan-out ──────────────────────────────────────────────────────
     if payload.ticket_id:

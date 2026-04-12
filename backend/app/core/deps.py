@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
+import hmac
+import logging
+
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.exceptions import AuthenticationException, ExpiredTokenError, InsufficientPermissionsError
+from app.core.exceptions import AuthenticationException, BadRequestError, ExpiredTokenError, InsufficientPermissionsError
+from app.core.metrics import n8n_machine_auth_total
 from app.core.rbac import has_permission
 from app.core.security import ACCESS_TOKEN_TYPE, decode_token
 from app.db.session import get_db
 from app.models.enums import UserRole
 from app.models.user import User
 
-_AUTOMATION_ALLOWED_PREFIXES = (
-    "/api/sla/run",
-    "/api/tickets",
-    "/api/problems",
-    "/api/notifications",
-    "/api/integrations/",
-)
+logger = logging.getLogger(__name__)
 
 
 def _extract_bearer_token(request: Request) -> str | None:
@@ -33,42 +31,41 @@ def _extract_bearer_token(request: Request) -> str | None:
     return cleaned or None
 
 
-def _is_automation_secret_valid(request: Request) -> bool:
-    configured = settings.AUTOMATION_SECRET.strip()
+def _n8n_inbound_secret_matches(candidate: str | None) -> bool:
+    configured = settings.N8N_INBOUND_SECRET.strip()
+    provided = (candidate or "").strip()
     if not configured:
         return False
-    provided = (request.headers.get("X-Automation-Secret") or "").strip()
     if not provided:
         return False
-    return provided == configured
+    return hmac.compare_digest(provided, configured)
 
 
-def _automation_allowed_for_path(request: Request) -> bool:
-    path = str(request.url.path or "").strip().lower()
-    return any(path.startswith(prefix) for prefix in _AUTOMATION_ALLOWED_PREFIXES)
+def require_n8n_inbound_auth(request: Request) -> None:
+    endpoint = str(request.url.path or "").strip().lower() or "unknown"
+    configured = settings.N8N_INBOUND_SECRET.strip()
+    if not configured:
+        logger.warning("n8n inbound auth rejected: secret not configured path=%s", endpoint)
+        n8n_machine_auth_total.labels(endpoint=endpoint, outcome="config_missing").inc()
+        raise BadRequestError("n8n_inbound_secret_not_configured")
 
+    provided = request.headers.get("X-Automation-Secret")
+    if not _n8n_inbound_secret_matches(provided):
+        logger.warning("n8n inbound auth rejected: invalid secret path=%s", endpoint)
+        n8n_machine_auth_total.labels(endpoint=endpoint, outcome="rejected").inc()
+        raise AuthenticationException(
+            "invalid_automation_secret",
+            error_code="INVALID_AUTOMATION_SECRET",
+            status_code=401,
+        )
 
-def _is_n8n_actor_request(request: Request) -> bool:
-    actor = str(request.headers.get("X-Actor") or "").strip().lower()
-    return actor == "system:n8n"
-
-
-def _resolve_automation_user(db: Session) -> User | None:
-    admin = db.query(User).filter(User.role == UserRole.admin).order_by(User.created_at.asc()).first()
-    if admin:
-        return admin
-    return db.query(User).order_by(User.created_at.asc()).first()
+    n8n_machine_auth_total.labels(endpoint=endpoint, outcome="accepted").inc()
+    logger.info("n8n inbound auth accepted path=%s", endpoint)
 
 
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
-    path_allowed = _automation_allowed_for_path(request)
-    automation_ok = path_allowed and (_is_automation_secret_valid(request) or _is_n8n_actor_request(request))
     token = _extract_bearer_token(request) or request.cookies.get(settings.COOKIE_NAME)
     if not token:
-        if automation_ok:
-            automation_user = _resolve_automation_user(db)
-            if automation_user:
-                return automation_user
         raise AuthenticationException(
             "not_authenticated",
             error_code="NOT_AUTHENTICATED",
@@ -79,15 +76,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
         payload = decode_token(token)
     except ValueError as exc:
         if str(exc) == "expired_token":
-            if automation_ok:
-                automation_user = _resolve_automation_user(db)
-                if automation_user:
-                    return automation_user
             raise ExpiredTokenError("access_token_expired")
-        if automation_ok:
-            automation_user = _resolve_automation_user(db)
-            if automation_user:
-                return automation_user
         raise AuthenticationException(
             "invalid_token",
             error_code="INVALID_TOKEN",
@@ -95,10 +84,6 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
         )
     token_type = payload.get("type")
     if token_type and token_type != ACCESS_TOKEN_TYPE:
-        if automation_ok:
-            automation_user = _resolve_automation_user(db)
-            if automation_user:
-                return automation_user
         raise AuthenticationException(
             "invalid_token",
             error_code="INVALID_TOKEN",
@@ -106,10 +91,6 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
         )
     user_id = payload.get("sub")
     if not user_id:
-        if automation_ok:
-            automation_user = _resolve_automation_user(db)
-            if automation_user:
-                return automation_user
         raise AuthenticationException(
             "invalid_token",
             error_code="INVALID_TOKEN",

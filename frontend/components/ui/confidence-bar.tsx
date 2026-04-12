@@ -38,8 +38,8 @@ const BAND_LABELS: Record<string, { fr: string; en: string }> = {
 
 const SIZE_TRACK: Record<string, string> = {
   sm: "h-[3px]",
-  md: "h-[4px]",
-  lg: "h-[6px]",
+  md: "h-[3px]",
+  lg: "h-[4px]",
 };
 
 const SIZE_TEXT: Record<string, string> = {
@@ -68,9 +68,9 @@ export function ConfidenceBar({
             : `${label} ${percentage}%`}
         </span>
       )}
-      <div className={`w-full rounded-full bg-gray-200 ${SIZE_TRACK[size]}`}>
+      <div className={`w-full rounded-sm bg-gray-200 dark:bg-gray-700 ${SIZE_TRACK[size]}`}>
         <div
-          className={`${SIZE_TRACK[size]} rounded-full transition-all duration-300`}
+          className={`${SIZE_TRACK[size]} rounded-sm transition-all duration-300`}
           style={{ width: `${clamped * 100}%`, backgroundColor: color }}
         />
       </div>

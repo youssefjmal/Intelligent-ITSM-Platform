@@ -48,7 +48,7 @@ from app.services.tickets import (
 from app.services.problems import problem_analytics_summary
 from app.services.ai.resolver import resolve_ticket_advice
 from app.services.ai.routing_validation import validate_ticket_routing_for_ticket
-from app.services.ai.service_requests import service_request_profile_from_ticket, service_request_profile_similarity
+from app.services.ai.similar_tickets import select_visible_similar_ticket_matches
 
 router = APIRouter(dependencies=[Depends(rate_limit()), Depends(get_current_user)])
 _ALLOWED_SLA_STATUS_FILTERS = {"ok", "at_risk", "breached", "paused", "completed", "unknown"}
@@ -514,27 +514,16 @@ def get_similar_tickets(
         top_k=max(limit, 5),
         include_workflow=False,
     )
-    base_is_service_request = validate_ticket_routing_for_ticket(ticket).use_service_request_guidance
-    base_profile = service_request_profile_from_ticket(ticket) if base_is_service_request else None
-    visible_by_id = {str(item.id): item for item in visible_tickets if getattr(item, "id", None)}
     matches: list[TicketSimilarOut] = []
-    for row in list((resolver_output.retrieval or {}).get("similar_tickets") or []):
-        similar_id = str(row.get("id") or "").strip()
-        if not similar_id or similar_id == ticket.id:
-            continue
-        candidate = visible_by_id.get(similar_id)
-        if candidate is None:
-            continue
-        if base_is_service_request and not validate_ticket_routing_for_ticket(candidate).use_service_request_guidance:
-            continue
-        if base_is_service_request:
-            candidate_profile = service_request_profile_from_ticket(candidate)
-            profile_similarity = service_request_profile_similarity(base_profile, candidate_profile)
-            if profile_similarity < 0.2:
-                continue
-        similarity_score = round(float(row.get("similarity_score") or 0.0), 4)
-        if similarity_score < min_score:
-            continue
+    for match in select_visible_similar_ticket_matches(
+        source_ticket=ticket,
+        visible_tickets=visible_tickets,
+        retrieval_rows=list((resolver_output.retrieval or {}).get("similar_tickets") or []),
+        limit=limit,
+        min_score=min_score,
+    ):
+        candidate = match["ticket"]
+        similarity_score = float(match["similarity_score"] or 0.0)
         matches.append(
             TicketSimilarOut(
                 id=candidate.id,
@@ -551,8 +540,6 @@ def get_similar_tickets(
                 similarity_score=similarity_score,
             )
         )
-        if len(matches) >= limit:
-            break
     result = TicketSimilarResponse(
         ticket_id=ticket.id,
         matches=matches,
@@ -651,12 +638,10 @@ async def get_ticket_summary(
         force_regenerate: Bypass cache and regenerate.
         language: "fr" or "en" (default "fr").
     """
-    from fastapi import HTTPException
-    from app.models.ticket import Ticket
     from app.services.ai.summarization import generate_ticket_summary
-    ticket_obj = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    ticket_obj = get_ticket_for_user(db, ticket_id, current_user)
     if ticket_obj is None:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+        raise NotFoundError("ticket_not_found", details={"ticket_id": ticket_id})
     ticket_dict = {
         "id": ticket_obj.id,
         "title": ticket_obj.title,

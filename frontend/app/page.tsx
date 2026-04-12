@@ -8,7 +8,6 @@ import { RecentActivity } from "@/components/recent-activity"
 import { OperationalInsights } from "@/components/operational-insights"
 import { ProblemInsights } from "@/components/problem-insights"
 import { PerformanceMetrics } from "@/components/performance-metrics"
-import { AIFeedbackAnalytics } from "@/components/ai-feedback-analytics"
 import { DashboardPriorityInsights } from "@/components/dashboard-priority-insights"
 import { type Ticket, type TicketCategory, type TicketType } from "@/lib/ticket-data"
 import { useI18n } from "@/lib/i18n"
@@ -781,10 +780,6 @@ export default function DashboardPage() {
           ) : (
             <PerformanceMetrics performance={insights.performance} assignees={assigneeOptions} tickets={tickets} />
           )}
-        </section>
-
-        <section className="section-block">
-          <AIFeedbackAnalytics />
         </section>
 
         {slaInsightSection}

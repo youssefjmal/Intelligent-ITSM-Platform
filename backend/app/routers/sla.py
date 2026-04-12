@@ -825,6 +825,15 @@ def export_sla_csv(
     if current_user.role not in {UserRole.admin, UserRole.agent}:
         raise InsufficientPermissionsError("forbidden")
 
+    # ISO 27001 A.12 — log bulk data exports
+    from app.models.security_event import DATA_EXPORT
+    from app.services.auth import log_security_event
+    log_security_event(
+        db, DATA_EXPORT,
+        user_id=current_user.id,
+        metadata={"export_type": "sla_csv", "scope": "all_tickets"},
+    )
+
     tickets = db.execute(select(Ticket)).scalars().all()
 
     def _fmt(v: Any) -> str:

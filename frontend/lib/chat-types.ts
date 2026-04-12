@@ -284,6 +284,24 @@ export interface RecommendationListPayload {
   action_links?: Array<{ label: string; route?: string }>
 }
 
+export interface TicketThreadCommentItem {
+  author: string
+  content: string
+  created_at?: string | null
+  source?: string | null
+}
+
+export interface TicketThreadPayload {
+  type: "ticket_thread"
+  ticket_id: string
+  title: string
+  status: string
+  is_resolved: boolean
+  resolution?: string | null
+  comment_count: number
+  comments: TicketThreadCommentItem[]
+}
+
 export type ChatResponsePayload =
   | TicketStatusPayload
   | TicketDetailsPayload
@@ -297,6 +315,7 @@ export type ChatResponsePayload =
   | SimilarTicketsPayload
   | AssignmentRecommendationPayload
   | InsufficientEvidencePayload
+  | TicketThreadPayload
 
 export function ticketListPayloadToResults(payload: TicketListPayload): TicketResultsPayload {
   return {

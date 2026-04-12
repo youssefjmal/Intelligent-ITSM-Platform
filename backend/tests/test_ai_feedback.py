@@ -36,6 +36,16 @@ class _FakeQuery:
         self._rows = list(rows)
 
     def filter(self, *args, **kwargs):  # noqa: ANN001
+        for expression in args:
+            left = getattr(expression, "left", None)
+            right = getattr(expression, "right", None)
+            operator = getattr(expression, "operator", None)
+            field_name = getattr(left, "key", None)
+            value = getattr(right, "value", None)
+            if field_name is None or value is None or operator is None:
+                continue
+            if getattr(operator, "__name__", "") == "eq":
+                self._rows = [row for row in self._rows if getattr(row, field_name, None) == value]
         return self
 
     def order_by(self, *args, **kwargs):  # noqa: ANN001
@@ -184,6 +194,16 @@ def test_ai_feedback_request_rejects_invalid_feedback_type() -> None:
         )
 
 
+def test_ai_feedback_request_requires_answer_type_for_ticket_chatbot() -> None:
+    with pytest.raises(ValidationError):
+        AIFeedbackRequest(
+            ticket_id="TW-909",
+            source_surface="ticket_chatbot",
+            feedback_type="useful",
+            recommended_action="Restart the worker.",
+        )
+
+
 def test_aggregate_agent_feedback_analytics_groups_by_surface() -> None:
     now = _now()
     db = _FakeAnalyticsDB(
@@ -248,6 +268,72 @@ def test_get_feedback_bundle_returns_empty_summary_when_query_fails() -> None:
     assert payload["current_feedback"] is None
     assert payload["feedback_summary"]["total_feedback"] == 0
     assert db.rollbacks == 1
+
+
+def test_upsert_agent_feedback_uses_answer_type_in_ticket_chatbot_target_key(monkeypatch) -> None:
+    db = _FakeDB()
+    monkeypatch.setattr(feedback_service, "_find_existing_agent_feedback", lambda *args, **kwargs: None)
+
+    row = feedback_service.upsert_agent_feedback(
+        db,
+        user_id=uuid4(),
+        feedback_type="useful",
+        source_surface="ticket_chatbot",
+        ticket_id="TW-303",
+        answer_type="cause_analysis",
+        recommended_action="Inspect the queue consumer backlog.",
+        display_mode="cause_analysis",
+        confidence=0.67,
+        reasoning="Repeated queue timeout evidence.",
+        match_summary="Matched on queue timeout symptoms",
+        evidence_count=2,
+        metadata={"source_label": "ticket_chatbot"},
+    )
+
+    assert row.target_key == "ticket_chatbot:TW-303:cause_analysis"
+    assert row.source_surface == "ticket_chatbot"
+    assert row.source_id == "cause_analysis"
+
+
+def test_get_feedback_bundle_for_ticket_chatbot_is_scoped_per_answer_type() -> None:
+    current_user_id = uuid4()
+    now = _now()
+    db = _FakeAnalyticsDB(
+        [
+            SimpleNamespace(
+                feedback_type="useful",
+                source_surface="ticket_chatbot",
+                target_key="ticket_chatbot:TW-303:resolution_advice",
+                ticket_id="TW-303",
+                source_id="resolution_advice",
+                user_id=current_user_id,
+                created_at=now,
+                updated_at=now,
+            ),
+            SimpleNamespace(
+                feedback_type="rejected",
+                source_surface="ticket_chatbot",
+                target_key="ticket_chatbot:TW-303:cause_analysis",
+                ticket_id="TW-303",
+                source_id="cause_analysis",
+                user_id=current_user_id,
+                created_at=now,
+                updated_at=now,
+            ),
+        ]
+    )
+
+    payload = feedback_service.get_feedback_bundle_for_target(
+        db,
+        current_user_id=current_user_id,
+        source_surface="ticket_chatbot",
+        ticket_id="TW-303",
+        answer_type="cause_analysis",
+    )
+
+    assert payload["current_feedback"]["feedback_type"] == "rejected"
+    assert payload["feedback_summary"]["total_feedback"] == 1
+    assert payload["feedback_summary"]["rejected_count"] == 1
 
 
 def test_aggregate_feedback_for_sources_returns_empty_map_when_query_fails() -> None:

@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.metrics import ai_pipeline_duration_seconds
 from app.models.enums import TicketCategory, TicketPriority, TicketStatus, TicketType, UserRole
 from app.models.problem import Problem
 from app.models.ticket import Ticket
@@ -59,6 +60,7 @@ from app.services.ai.chat_payloads import (
     build_service_request_response,
     build_similar_tickets_payload,
     build_ticket_list_payload,
+    build_ticket_thread_payload,
     is_assignment_query,
 )
 from app.services.ai.chat_session import (
@@ -103,6 +105,7 @@ from app.services.ai.intents import (
     _wants_open_only,
     detect_intent,
     is_guidance_request as _is_guidance_request,
+    is_chitchat_or_offtopic as _is_chitchat_or_offtopic,
 )
 from app.services.ai.llm import extract_json, ollama_generate
 from app.services.ai.prompts import build_chat_grounded_prompt, build_chat_prompt
@@ -125,7 +128,14 @@ from app.services.ai.service_requests import (
 from app.services.embeddings import search_kb
 from app.services.jira_kb import build_jira_knowledge_block
 from app.services.problems import get_problem
-from app.services.tickets import compute_stats, list_tickets_for_user, select_best_assignee
+from app.services.tickets import (
+    compute_stats,
+    get_critical_tickets_for_user,
+    get_recent_ticket_for_user,
+    get_tickets_by_category_for_user,
+    list_tickets_for_user,
+    select_best_assignee,
+)
 from app.services.users import list_assignees
 
 logger = logging.getLogger(__name__)
@@ -142,6 +152,8 @@ _DETERMINISTIC_CHAT_RESPONSE_PLANS = {
     "shortcut_problem_detail",
     "shortcut_problem_linked_tickets",
     "shortcut_recommendations",
+    "shortcut_ticket_thread",
+    "shortcut_chitchat",
     "structured_data_query",
 }
 
@@ -252,6 +264,8 @@ def build_routing_plan(
         ChatIntent.problem_detail: "shortcut_problem_detail",
         ChatIntent.problem_drill_down: "shortcut_problem_linked_tickets",
         ChatIntent.recommendation_listing: "shortcut_recommendations",
+        ChatIntent.ticket_thread: "shortcut_ticket_thread",
+        ChatIntent.chitchat: "shortcut_chitchat",
     }
     if intent in deterministic:
         if intent == ChatIntent.critical_tickets and needs_structured_ticket_filter:
@@ -402,6 +416,8 @@ def _supports_resolver_first_guidance(pattern: str, *, plan: RoutingPlan) -> boo
         "shortcut_problem_detail",
         "shortcut_problem_linked_tickets",
         "shortcut_recommendations",
+        "shortcut_ticket_thread",
+        "shortcut_chitchat",
         "structured_data_query",
         "forced_create_ticket",
     }:
@@ -1913,6 +1929,11 @@ def get_sla_strategies_advice(
 
 
 def handle_classify(payload: ClassificationRequest, db: Session, current_user=None) -> ClassificationResponse:
+    with ai_pipeline_duration_seconds.labels(operation="classify").time():
+        return _handle_classify_inner(payload, db, current_user)
+
+
+def _handle_classify_inner(payload: ClassificationRequest, db: Session, current_user=None) -> ClassificationResponse:
     lang = _normalize_locale(payload.locale)
     details = classify_ticket_detailed(payload.title, payload.description, db=db, use_llm=False)
     stored_ticket = _load_ticket_hint(
@@ -2130,14 +2151,17 @@ def handle_classify(payload: ClassificationRequest, db: Session, current_user=No
         action_refinement_source = "none"
         incident_cluster = None
         impact_summary = None
+    # Scale recommendation confidence by how certain the classifier was.
+    # A ticket with weak classification signals produces lower-confidence cards.
+    _cls_conf: int | None = details.get("classification_confidence")
     if resolution_advice is None and str(details.get("recommendation_mode") or "") in {"embedding", "hybrid"}:
-        scored = score_recommendations(recommendations, start_confidence=90, rank_decay=6, floor=55, ceiling=97)
+        scored = score_recommendations(recommendations, start_confidence=90, rank_decay=6, floor=55, ceiling=97, classification_confidence=_cls_conf)
     elif resolution_advice is None:
-        scored = score_recommendations(recommendations, start_confidence=84, rank_decay=8, floor=56, ceiling=92)
+        scored = score_recommendations(recommendations, start_confidence=84, rank_decay=8, floor=56, ceiling=92, classification_confidence=_cls_conf)
     if resolution_advice is None:
         scored_out = [AIRecommendationOut(text=str(item["text"]), confidence=int(item["confidence"])) for item in scored]
-    scored_embedding = score_recommendations(recommendations_embedding, start_confidence=90, rank_decay=6, floor=55, ceiling=97)
-    scored_llm = score_recommendations(recommendations_llm, start_confidence=82, rank_decay=8, floor=50, ceiling=93)
+    scored_embedding = score_recommendations(recommendations_embedding, start_confidence=90, rank_decay=6, floor=55, ceiling=97, classification_confidence=_cls_conf)
+    scored_llm = score_recommendations(recommendations_llm, start_confidence=82, rank_decay=8, floor=50, ceiling=93, classification_confidence=_cls_conf)
     feedback_bundle = {"current_feedback": None, "feedback_summary": None}
     ticket_id = str(payload.ticket_id or "").strip() or None
     current_user_id = getattr(current_user, "id", None)
@@ -2245,15 +2269,25 @@ def _detect_unified_pattern(question: str, *, plan: RoutingPlan, guidance_reques
         return "CONFIRM_RESOLUTION"
     if any(token in text for token in ["similar", "related ticket", "ticket like", "semblable", "similaire"]):
         return "SIMILAR_TICKETS"
+    # Priority analysis questions must be caught before PROBLEM_ANALYSIS — "analyse" alone is
+    # too broad and would otherwise route priority questions into the resolver pipeline.
+    _has_priority_token = any(token in text for token in [
+        "priorit", "priority", "urgenc", "urgency", "severit", "severite",
+    ])
+    _has_recommend_token = any(token in text for token in [
+        "recommand", "recommend", "correcte", "correct", "appropriate",
+        "appropriee", "should be", "devrait", "evaluer", "evaluate",
+        "classifier", "classify", "quelle priorite", "what priority",
+    ])
+    if _has_priority_token and (_has_recommend_token or "analyse" in text or "analysis" in text):
+        return "PRIORITY_ANALYSIS"
     if any(
         token in text
         for token in [
-            "problem",
             "root cause",
             "pattern",
             "cause",
             "why",
-            "analyse",
             "pourquoi",
             "why did this happen",
             "why does this happen",
@@ -2262,6 +2296,9 @@ def _detect_unified_pattern(question: str, *, plan: RoutingPlan, guidance_reques
         ]
     ):
         return "PROBLEM_ANALYSIS"
+    # Generic "analyse/analysis" without priority or root-cause context → let LLM handle it.
+    if any(token in text for token in ["analyse", "analysis", "analyser"]):
+        return "GENERAL_ITSM"
     if any(token in text for token in ["status", "statut", "etat", "detail", "details", "summary", "resume", "info", "information"]):
         return "STATUS_UPDATE"
     if any(token in text for token in ["escalat", "urgent help", "need escalation", "escalade"]):
@@ -2701,6 +2738,30 @@ def _response_payload_anchor(response_payload: AIChatStructuredResponse | None) 
     return None
 
 
+def _call_llm_for_chitchat(message: str, history_context: str, *, lang: str) -> str:
+    """Minimal LLM call for chitchat / off-topic messages.
+
+    No retrieval, no KB, no embeddings. Just the last conversational turns
+    and a brief ITSM-assistant system instruction.
+    """
+    lang_instruction = (
+        "Respond in French. You are a concise ITSM assistant."
+        if lang == "fr"
+        else "Respond in English. You are a concise ITSM assistant."
+    )
+    history_block = f"\nConversation so far:\n{history_context}\n" if history_context and history_context.strip() else ""
+    prompt = (
+        f"{lang_instruction} Keep replies short (1-2 sentences). "
+        f"If the user's message is off-topic (not related to IT support or tickets), "
+        f"politely redirect them."
+        f"{history_block}\nUser: {message}\nAssistant:"
+    )
+    try:
+        return ollama_generate(prompt).strip()
+    except Exception:  # noqa: BLE001
+        return "Bonjour ! Comment puis-je vous aider ?" if lang == "fr" else "Hello! How can I help you?"
+
+
 def _compose_chat_response(
     *,
     question: str,
@@ -2774,6 +2835,8 @@ def _compose_chat_response(
         if pattern == "SIMILAR_TICKETS":
             response_payload = build_similar_tickets_payload(
                 source_ticket_id=referenced_ticket_id,
+                source_ticket=referenced_ticket,
+                visible_tickets=tickets,
                 resolver_output=resolver_output,
                 lang=lang,
             )
@@ -2800,7 +2863,12 @@ def _compose_chat_response(
                 resolver_output=resolver_output,
                 lang=lang,
             )
-        elif resolver_output is not None and resolver_output.advice is None:
+        elif resolver_output is not None and resolver_output.advice is None and pattern in {
+            "HOW_TO_FIX", "PROBLEM_ANALYSIS", "ESCALATION_HELP", "SIMILAR_TICKETS",
+        }:
+            # Only show INSUFFICIENT EVIDENCE for patterns that expect resolver output.
+            # GENERAL_ITSM, STATUS_UPDATE, PRIORITY_ANALYSIS, ANALYTICS and CONFIRM_RESOLUTION
+            # use the LLM reply directly — no resolver evidence is expected for them.
             response_payload = build_insufficient_evidence_payload(
                 resolver_output=resolver_output,
                 ticket=referenced_ticket,
@@ -2855,6 +2923,15 @@ def _compose_chat_response(
         retrieval_mode,
         duration_ms if duration_ms is not None else "-",
     )
+    # Guard: response_payload must carry a 'type' discriminator to satisfy the
+    # pydantic union. Drop it silently if something non-conforming slipped through
+    # (e.g. an AIChatTicketResults object that has no 'type' field).
+    if response_payload is not None and not hasattr(response_payload, "type"):
+        logger.warning(
+            "response_payload dropped: missing 'type' discriminator (got %s)",
+            type(response_payload).__name__,
+        )
+        response_payload = None
     return ChatResponse(
         reply=reply_text,
         message=reply_text,
@@ -2874,7 +2951,104 @@ def _compose_chat_response(
 
 
 def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse:
+    with ai_pipeline_duration_seconds.labels(operation="chat").time():
+        return _handle_chat_inner(payload, db, current_user)
+
+
+def _handle_chat_inner(payload: ChatRequest, db: Session, current_user) -> ChatResponse:
     request_started_at = time.perf_counter()
+    last_question = payload.messages[-1].content if payload.messages else ""
+    lang = _normalize_locale(payload.locale)
+    lowered = _normalize_intent_text(last_question or "")
+    history_session = build_chat_session(payload.messages[:-1])
+    conversation_session = build_chat_session(payload.messages)
+    resolved_ticket_id, ticket_context_source = resolve_ticket_context(last_question, history_session)
+    compare_current_id, compare_previous_id = resolve_comparison_targets(last_question, history_session)
+    history_context = build_relevant_history_context(history_session, question=last_question)
+    entity_specific_ticket_query = _is_entity_specific_ticket_query(last_question, resolved_ticket_id)
+
+    # ── Intent detection happens BEFORE loading all tickets ───────────────
+    intent_details = parse_chat_intent_details(last_question or "")
+    intent = intent_details.intent
+    intent_confidence = intent_details.confidence
+    intent_source = intent_details.source
+    guidance_requested = intent_details.guidance_requested
+
+    # ── Shortcut intents: use targeted DB queries, skip full table scan ───
+    _PURE_SHORTCUTS = {
+        ChatIntent.recent_ticket,
+        ChatIntent.critical_tickets,
+        ChatIntent.most_used_tickets,
+    }
+    if intent in _PURE_SHORTCUTS and not guidance_requested and not entity_specific_ticket_query:
+        if intent == ChatIntent.recent_ticket:
+            open_only = _wants_open_only(lowered)
+            recent = get_recent_ticket_for_user(db, current_user, open_only=open_only)
+            reply = _format_most_recent_ticket(recent, lang, open_only=open_only)
+            summary = _ticket_to_summary(recent, lang)
+            plan = build_routing_plan(
+                last_question, intent=intent, create_requested=False,
+                guidance_requested=False, entity_specific_ticket_query=False,
+            )
+            return _compose_chat_response(
+                question=last_question, lang=lang, plan=plan, db=db,
+                tickets=[], solution_quality=payload.solution_quality,
+                reply=reply, action="show_ticket" if summary else None,
+                ticket=summary, conversation_state=conversation_session,
+                allow_resolver_fallback=False, request_started_at=request_started_at,
+            )
+
+        if intent == ChatIntent.critical_tickets:
+            active_only = _wants_active_only(lowered)
+            critical = get_critical_tickets_for_user(db, current_user, active_only=active_only)
+            reply = _format_critical_tickets(critical, lang, active_only=active_only)
+            summary = _ticket_to_summary(critical[0], lang) if critical else None
+            ticket_results = (
+                _build_ticket_results_payload(
+                    critical, lang,
+                    header="Critical tickets:" if lang == "en" else "Tickets critiques :",
+                    kind="critical",
+                )
+                if critical else None
+            )
+            response_payload = build_ticket_list_payload(
+                tickets=critical,
+                lang=lang,
+                list_kind="critical",
+                title="Critical tickets" if lang == "en" else "Tickets critiques",
+                scope=("Status: active" if lang == "en" else "Statut: actifs") if active_only else None,
+                total_count=len(critical),
+            )
+            plan = build_routing_plan(
+                last_question, intent=intent, create_requested=False,
+                guidance_requested=False, entity_specific_ticket_query=False,
+            )
+            return _compose_chat_response(
+                question=last_question, lang=lang, plan=plan, db=db,
+                tickets=critical, solution_quality=payload.solution_quality,
+                reply=reply, action="show_ticket" if summary else None,
+                ticket=summary, ticket_results=ticket_results,
+                response_payload=response_payload,
+                conversation_state=conversation_session,
+                allow_resolver_fallback=False, request_started_at=request_started_at,
+            )
+
+        if intent == ChatIntent.most_used_tickets:
+            category_tickets = get_tickets_by_category_for_user(db, current_user)
+            reply = _format_most_used_tickets(category_tickets, lang)
+            plan = build_routing_plan(
+                last_question, intent=intent, create_requested=False,
+                guidance_requested=False, entity_specific_ticket_query=False,
+            )
+            return _compose_chat_response(
+                question=last_question, lang=lang, plan=plan, db=db,
+                tickets=[], solution_quality=payload.solution_quality,
+                reply=reply, action=None, ticket=None,
+                conversation_state=conversation_session,
+                allow_resolver_fallback=False, request_started_at=request_started_at,
+            )
+
+    # ── Full ticket load for all other intents (RAG, LLM, weekly, etc.) ──
     tickets = list_tickets_for_user(db, current_user)
     tickets = sorted(
         tickets,
@@ -2882,22 +3056,8 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
         reverse=True,
     )
     stats = compute_stats(tickets)
-    last_question = payload.messages[-1].content if payload.messages else ""
-    lang = _normalize_locale(payload.locale)
-    lowered = _normalize_intent_text(last_question or "")
     assignees = list_assignees(db)
     assignee_names = [u.name for u in assignees]
-    history_session = build_chat_session(payload.messages[:-1])
-    conversation_session = build_chat_session(payload.messages)
-    resolved_ticket_id, ticket_context_source = resolve_ticket_context(last_question, history_session)
-    compare_current_id, compare_previous_id = resolve_comparison_targets(last_question, history_session)
-    history_context = build_relevant_history_context(history_session, question=last_question)
-    entity_specific_ticket_query = _is_entity_specific_ticket_query(last_question, resolved_ticket_id)
-    intent_details = parse_chat_intent_details(last_question or "")
-    intent = intent_details.intent
-    intent_confidence = intent_details.confidence
-    intent_source = intent_details.source
-    guidance_requested = intent_details.guidance_requested
     create_requested = _is_explicit_ticket_create_request(last_question or "") or intent == ChatIntent.create_ticket
     provisional_plan = build_routing_plan(
         last_question,
@@ -3330,6 +3490,88 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
             request_started_at=request_started_at,
         )
 
+    if plan.name == "shortcut_ticket_thread":
+        # Ticket thread shortcut — show all comments + resolution for a ticket
+        tid = (
+            _extract_chat_ticket_id(last_question)
+            or (str(resolved_ticket_id).strip().upper() if resolved_ticket_id else None)
+        )
+        if not tid:
+            no_ctx_reply = (
+                "Précisez l'identifiant du ticket (ex. TW-123) pour afficher ses commentaires et sa résolution."
+                if lang == "fr"
+                else "Please specify the ticket ID (e.g. TW-123) to display its comments and resolution."
+            )
+            return _compose_chat_response(
+                question=last_question, lang=lang, plan=plan, db=db, tickets=tickets,
+                solution_quality=payload.solution_quality, reply=no_ctx_reply,
+                action=None, ticket=None, response_payload=None,
+                conversation_state=conversation_session,
+                allow_resolver_fallback=False,
+                request_started_at=request_started_at,
+            )
+        target_ticket = _find_ticket_by_id(tickets, tid)
+        if target_ticket is None:
+            not_found_reply = (
+                f"Ticket {tid} introuvable dans le contexte actuel."
+                if lang == "fr"
+                else f"Ticket {tid} not found in the current context."
+            )
+            return _compose_chat_response(
+                question=last_question, lang=lang, plan=plan, db=db, tickets=tickets,
+                solution_quality=payload.solution_quality, reply=not_found_reply,
+                action=None, ticket=None, response_payload=None,
+                conversation_state=conversation_session,
+                allow_resolver_fallback=False,
+                request_started_at=request_started_at,
+            )
+        thread_payload = build_ticket_thread_payload(target_ticket, lang=lang)
+        comment_count = thread_payload.comment_count
+        if thread_payload.is_resolved and thread_payload.resolution:
+            if lang == "fr":
+                thread_reply = (
+                    f"Le ticket {tid} est résolu. "
+                    f"{'%d commentaire(s) disponible(s).' % comment_count if comment_count else 'Aucun commentaire.'}"
+                )
+            else:
+                thread_reply = (
+                    f"Ticket {tid} is resolved. "
+                    f"{'%d comment(s) available.' % comment_count if comment_count else 'No comments.'}"
+                )
+        elif comment_count:
+            thread_reply = (
+                f"{comment_count} commentaire(s) pour {tid}."
+                if lang == "fr"
+                else f"{comment_count} comment(s) for {tid}."
+            )
+        else:
+            thread_reply = (
+                f"Aucun commentaire ni résolution pour {tid}."
+                if lang == "fr"
+                else f"No comments or resolution found for {tid}."
+            )
+        return _compose_chat_response(
+            question=last_question, lang=lang, plan=plan, db=db, tickets=tickets,
+            solution_quality=payload.solution_quality, reply=thread_reply,
+            action=None, ticket=target_ticket, response_payload=thread_payload,
+            conversation_state=conversation_session,
+            allow_resolver_fallback=False,
+            request_started_at=request_started_at,
+        )
+
+    if plan.name == "shortcut_chitchat":
+        # Chitchat / off-topic — no retrieval, no KB, no embeddings.
+        # One minimal LLM call with conversation context only.
+        reply = _call_llm_for_chitchat(last_question, history_context, lang=lang)
+        return _compose_chat_response(
+            question=last_question, lang=lang, plan=plan, db=db, tickets=tickets,
+            solution_quality=payload.solution_quality, reply=reply,
+            action=None, ticket=None, response_payload=None,
+            conversation_state=conversation_session,
+            allow_resolver_fallback=False,
+            request_started_at=request_started_at,
+        )
+
     if plan.name != "forced_create_ticket" and compare_current_id and compare_previous_id:
         current_ticket = _find_ticket_by_id(tickets, compare_current_id)
         previous_ticket = _find_ticket_by_id(tickets, compare_previous_id)
@@ -3505,6 +3747,11 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
 
 
 def handle_suggest(payload: SuggestRequest, db: Session, current_user) -> SuggestResponse:
+    with ai_pipeline_duration_seconds.labels(operation="suggest").time():
+        return _handle_suggest_inner(payload, db, current_user)
+
+
+def _handle_suggest_inner(payload: SuggestRequest, db: Session, current_user) -> SuggestResponse:
     tickets = list_tickets_for_user(db, current_user)
     resolver_output = resolve_ticket_advice(
         db,

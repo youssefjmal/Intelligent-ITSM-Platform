@@ -40,6 +40,7 @@ class TicketPriority(str, enum.Enum):
 class TicketType(str, enum.Enum):
     incident = "incident"
     service_request = "service_request"
+    change = "change"
 
 
 class TicketCategory(str, enum.Enum):

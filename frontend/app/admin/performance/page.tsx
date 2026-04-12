@@ -70,7 +70,7 @@ export default function AgentPerformancePage() {
     try {
       const params = new URLSearchParams({ period_days: String(period) });
       if (category) params.set("category", category);
-      const res = await fetch(`/api/tickets/agent-performance?${params}`);
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api"}/tickets/agent-performance?${params}`, { credentials: "include" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setData(await res.json());
     } catch (e: unknown) {

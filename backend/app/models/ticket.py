@@ -96,6 +96,12 @@ class Ticket(Base):
     priority_escalated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolution: Mapped[str | None] = mapped_column(Text, nullable=True)
     tags: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    # Change Management fields (only populated when ticket_type = "change")
+    change_risk: Mapped[str | None] = mapped_column(String(16), nullable=True)   # low / medium / high / critical
+    change_scheduled_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    change_approved: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # None = pending, True = approved, False = rejected
+    change_approved_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    change_approved_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ai_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary_generated_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

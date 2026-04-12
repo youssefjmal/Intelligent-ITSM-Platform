@@ -265,7 +265,8 @@ def _fallback_resolution_from_classifier(
     deduped = list(dict.fromkeys(actions))
     if not deduped:
         return None
-    scored = score_recommendations(deduped, start_confidence=76, rank_decay=8, floor=54, ceiling=82)
+    _cls_conf: int | None = details.get("classification_confidence")
+    scored = score_recommendations(deduped, start_confidence=76, rank_decay=8, floor=54, ceiling=82, classification_confidence=_cls_conf)
     if not scored:
         return None
     first = scored[0]

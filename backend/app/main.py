@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.core.config import settings
 from app.core.logging import setup_logging
@@ -17,6 +20,9 @@ from app.integrations.jira.auto_reconcile import start_jira_auto_reconcile, stop
 from app.core import cache as _cache_module
 from app.routers import ai, assignees, auth, emails, integrations_jira, notifications, problems, recommendations, sla, tickets, translations, users
 from app.routers import search as search_router
+from app.routers import security as security_router
+
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -30,6 +36,15 @@ def create_app() -> FastAPI:
         import anyio.to_thread
         anyio.to_thread.current_default_thread_limiter().total_tokens = 60
         _cache_module._get_client()  # warm up Redis; logs warning if unavailable
+        # ISO 27001 A.12.4 — enforce audit log retention on startup
+        try:
+            from app.db.session import SessionLocal
+            from app.services.audit_purge import purge_old_audit_events
+            with SessionLocal() as _db:
+                purge_old_audit_events(_db)
+        except Exception as _purge_exc:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("Audit purge failed on startup: %s", _purge_exc)
         await start_jira_auto_reconcile()
         # Start proactive SLA monitor background task
         try:
@@ -54,13 +69,14 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "Cookie", "X-Requested-With"],
     )
-    app.add_middleware(
-        TrustedHostMiddleware,
-        allowed_hosts=settings.allowed_hosts,
-    )
+    if settings.ENV != "development":
+        app.add_middleware(
+            TrustedHostMiddleware,
+            allowed_hosts=settings.allowed_hosts,
+        )
     install_global_rate_limit_middleware(app)
     install_security_headers_middleware(app, settings)
 
@@ -78,13 +94,37 @@ def create_app() -> FastAPI:
     app.include_router(integrations_jira.router, prefix="/api", tags=["integrations-jira"])
     app.include_router(sla.router, prefix="/api/sla", tags=["sla"])
     app.include_router(search_router.router, prefix="/api", tags=["search"])
+    app.include_router(security_router.router, prefix="/api/admin", tags=["security-audit"])
 
     @app.exception_handler(ITSMGatekeeperException)
     async def handle_itsm_exception(_: Request, exc: ITSMGatekeeperException) -> JSONResponse:
         headers = exc.headers if getattr(exc, "headers", None) else None
         return JSONResponse(status_code=exc.status_code, content=exc.to_dict(), headers=headers)
 
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics(request: Request) -> Response:
+        if not settings.PROMETHEUS_METRICS_ENABLED:
+            raise HTTPException(status_code=404, detail="Not Found")
+
+        if not settings.PROMETHEUS_METRICS_TOKEN.strip():
+            logger.warning("Metrics endpoint requested while PROMETHEUS_METRICS_TOKEN is unset.")
+            raise HTTPException(status_code=503, detail="metrics_misconfigured")
+
+        authorization = request.headers.get("Authorization", "").strip()
+        token = authorization.removeprefix("Bearer ").strip() if authorization.startswith("Bearer ") else ""
+        if not settings.prometheus_metrics_token_matches(token):
+            raise HTTPException(status_code=401, detail="unauthorized")
+
+        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
     return app
 
 
 app = create_app()
+
+# ── Prometheus HTTP metrics ────────────────────────────────────────────────
+
+Instrumentator(
+    should_group_status_codes=False,
+    excluded_handlers=["/metrics"],
+).instrument(app)

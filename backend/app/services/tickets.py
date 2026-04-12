@@ -258,6 +258,54 @@ def get_ticket_for_user(db: Session, ticket_id: str, user: User) -> Ticket | Non
     return ticket
 
 
+# ── Targeted shortcut queries (bypass full table scan) ────────────────────
+
+def get_recent_ticket_for_user(db: Session, user: User, *, open_only: bool = False) -> Ticket | None:
+    """Return the single most recent ticket visible to the user.
+
+    Uses a DB-side LIMIT 1 instead of loading the full ticket list.
+    Admins/agents see all tickets; viewers see only their own.
+    """
+    q = db.query(Ticket).order_by(Ticket.created_at.desc())
+    if open_only:
+        q = q.filter(Ticket.status == TicketStatus.open)
+    if user.role not in {UserRole.admin, UserRole.agent}:
+        q = q.filter(
+            (Ticket.reporter_id == user.id) | (Ticket.reporter == user.email) | (Ticket.assignee == user.email)
+        )
+    return q.first()
+
+
+def get_critical_tickets_for_user(db: Session, user: User, *, active_only: bool = False) -> list[Ticket]:
+    """Return critical-priority tickets visible to the user.
+
+    Fetches only the critical subset from the DB instead of the full table.
+    """
+    q = db.query(Ticket).filter(Ticket.priority == TicketPriority.critical).order_by(Ticket.created_at.desc())
+    if active_only:
+        q = q.filter(Ticket.status.in_([TicketStatus.open, TicketStatus.in_progress]))
+    if user.role not in {UserRole.admin, UserRole.agent}:
+        q = q.filter(
+            (Ticket.reporter_id == user.id) | (Ticket.reporter == user.email) | (Ticket.assignee == user.email)
+        )
+    return q.limit(50).all()
+
+
+def get_tickets_by_category_for_user(db: Session, user: User) -> list[Ticket]:
+    """Return minimal ticket data (id + category) for category-count shortcuts.
+
+    Loads only id and category columns to compute the most-used-categories stats.
+    """
+    q = db.query(Ticket.id, Ticket.category).order_by(Ticket.created_at.desc())
+    if user.role not in {UserRole.admin, UserRole.agent}:
+        q = q.filter(
+            (Ticket.reporter_id == user.id) | (Ticket.reporter == user.email) | (Ticket.assignee == user.email)
+        )
+    rows = q.all()
+    # Return lightweight namespace objects so formatters can access .category.value
+    return [type("T", (), {"category": r.category})() for r in rows]
+
+
 def _next_comment_id(db: Session) -> str:
     ids = [row[0] for row in db.query(TicketComment.id).all()]
     max_num = 0
@@ -760,6 +808,9 @@ def update_ticket_triage(
     previous_assignee = ticket.assignee
     previous_problem_id = ticket.problem_id
 
+    # Track AI corrections before mutating the ticket so we can compare
+    _ai_correction_fields: list[tuple[str, str, str]] = []  # (field, predicted, corrected)
+
     if payload.title is not None and payload.title != ticket.title:
         ticket.title = payload.title
         has_changes = True
@@ -774,19 +825,45 @@ def update_ticket_triage(
         has_changes = True
 
     if payload.priority and payload.priority != ticket.priority:
+        predicted_priority = getattr(ticket, "predicted_priority", None)
+        if predicted_priority and predicted_priority != payload.priority:
+            # Use .value for clean strings ("high" not "TicketPriority.high")
+            _ai_correction_fields.append(("priority", predicted_priority.value, payload.priority.value))
         ticket.priority = payload.priority
         has_changes = True
 
     if payload.ticket_type and payload.ticket_type != ticket.ticket_type:
+        predicted_type = getattr(ticket, "predicted_ticket_type", None)
+        if predicted_type and predicted_type != payload.ticket_type:
+            _ai_correction_fields.append(("ticket_type", predicted_type.value, payload.ticket_type.value))
         ticket.ticket_type = payload.ticket_type
         has_changes = True
 
     if payload.category and payload.category != ticket.category:
+        predicted_category = getattr(ticket, "predicted_category", None)
+        if predicted_category and predicted_category != payload.category:
+            _ai_correction_fields.append(("category", predicted_category.value, payload.category.value))
         ticket.category = payload.category
         has_changes = True
 
     if "due_at" in provided_fields and payload.due_at != ticket.due_at:
         ticket.due_at = payload.due_at
+        has_changes = True
+
+    # Change Management fields
+    if "change_risk" in provided_fields and payload.change_risk != ticket.change_risk:
+        ticket.change_risk = payload.change_risk
+        has_changes = True
+
+    if "change_scheduled_at" in provided_fields and payload.change_scheduled_at != ticket.change_scheduled_at:
+        ticket.change_scheduled_at = payload.change_scheduled_at
+        has_changes = True
+
+    if "change_approved" in provided_fields and payload.change_approved != ticket.change_approved:
+        ticket.change_approved = payload.change_approved
+        if payload.change_approved is not None:
+            ticket.change_approved_by = payload.change_approved_by or actor
+            ticket.change_approved_at = now
         has_changes = True
 
     note = (payload.comment or "").strip()
@@ -813,6 +890,38 @@ def update_ticket_triage(
     ticket.updated_at = now
     db.add(ticket)
     db.flush()
+
+    # Log AI classification corrections so accuracy metrics reflect real disagreements
+    if _ai_correction_fields:
+        try:
+            from app.models.ai_classification_log import AiClassificationLog as _ClassLog
+            for _field, _predicted, _corrected in _ai_correction_fields:
+                _correction_entry = _ClassLog(
+                    ticket_id=ticket.id,
+                    trigger="agent_correction",
+                    title=(ticket.title or "")[:500],
+                    description_snippet=(ticket.description or "")[:300],
+                    # suggested_* stores what the AI predicted (not the corrected value)
+                    suggested_priority=_predicted if _field == "priority" else None,
+                    suggested_category=_predicted if _field == "category" else None,
+                    suggested_ticket_type=_predicted if _field == "ticket_type" else None,
+                    confidence=None,
+                    confidence_band="correction",
+                    decision_source="agent_override",
+                    strong_match_count=None,
+                    recommendation_mode=None,
+                    reasoning=f"Agent corrected AI prediction: {_field} {_predicted!r} → {_corrected!r}",
+                    model_version="agent_override",
+                )
+                db.add(_correction_entry)
+            db.flush()
+            logger.debug(
+                "Logged %d AI classification correction(s) for ticket %s",
+                len(_ai_correction_fields), ticket.id,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to log AI classification correction.", exc_info=True)
+
     link_ticket_to_problem(db, ticket)
     after_snapshot = _history_snapshot(ticket)
     changes = _history_changes(before_snapshot, after_snapshot)
@@ -1085,6 +1194,45 @@ def compute_assignment_performance(
         else None
     )
 
+    # Correction count: tickets where AI prediction differed from current values
+    # (agent overrode the AI) — a direct measure of classification disagreement
+    classification_correction_count = classification_samples - classification_correct
+
+    # Confidence distribution from AiClassificationLog — gives an honest picture
+    # of how certain the AI was across all logged classifications, not just those
+    # with predicted_* fields on the ticket model.
+    high_confidence_rate: float | None = None
+    low_confidence_rate: float | None = None
+    try:
+        from app.models.ai_classification_log import AiClassificationLog
+        from sqlalchemy import select
+        # Only count rows that have a real confidence score.
+        # Agent-correction entries (trigger="agent_correction") store confidence=None
+        # and must be excluded from the denominator; counting them would inflate the
+        # apparent "medium" bucket on the frontend distribution bar.
+        log_total: int = db.execute(
+            select(func.count()).select_from(AiClassificationLog).where(
+                AiClassificationLog.confidence.is_not(None)
+            )
+        ).scalar_one()
+        if log_total > 0:
+            # High confidence: score >= 0.70 (LLM + at least one corroborating signal)
+            high_count: int = db.execute(
+                select(func.count()).select_from(AiClassificationLog).where(
+                    AiClassificationLog.confidence >= 0.70
+                )
+            ).scalar_one()
+            # Low confidence: score < 0.40 (weak or no corroborating signal)
+            low_count: int = db.execute(
+                select(func.count()).select_from(AiClassificationLog).where(
+                    AiClassificationLog.confidence < 0.40
+                )
+            ).scalar_one()
+            high_confidence_rate = round((high_count / log_total) * 100, 2)
+            low_confidence_rate = round((low_count / log_total) * 100, 2)
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to compute confidence distribution from classification log.", exc_info=True)
+
     mttr_values = [
         _duration_hours(analytics_created_at(t), analytics_resolved_at(t) or analytics_updated_at(t))
         for t in resolved_tickets
@@ -1240,6 +1388,9 @@ def compute_assignment_performance(
         "median_time_to_first_action_hours": median_first_action,
         "classification_accuracy_rate": classification_accuracy,
         "classification_samples": classification_samples,
+        "high_confidence_rate": high_confidence_rate,
+        "low_confidence_rate": low_confidence_rate,
+        "classification_correction_count": classification_correction_count,
         "auto_assignment_accuracy_rate": auto_assign_accuracy,
         "auto_assignment_samples": auto_assign_samples,
         "auto_triage_no_correction_rate": auto_triage_no_correction_rate,

@@ -54,6 +54,7 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
         "relative flex flex-col border-r border-sidebar-border/80 bg-sidebar text-sidebar-foreground shadow-2xl shadow-black/15 transition-all duration-300",
         collapsed ? "w-16" : "w-64"
       )}
+      style={{ backgroundImage: "repeating-linear-gradient(to right, transparent, transparent 1px, rgba(255,255,255,0.015) 1px, rgba(255,255,255,0.015) 2px)" }}
     >
       <div className="pointer-events-none absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-white/10 to-transparent" />
       <div className="relative flex items-center gap-3 border-b border-sidebar-border/70 px-4 py-5">
@@ -78,10 +79,11 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
             <Link
               key={item.nameKey}
               href={item.href}
+              style={isActive ? { background: "linear-gradient(to right, rgba(29,158,117,0.15), transparent)" } : undefined}
               className={cn(
                 "group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring",
                 isActive
-                  ? "bg-[var(--color-background-secondary,hsl(var(--sidebar-accent)))] border-l-[3px] border-l-[#1D9E75] font-medium text-sidebar-accent-foreground shadow-sm ring-1 ring-white/10"
+                  ? "border-l-[3px] border-l-[#1D9E75] font-medium text-sidebar-accent-foreground shadow-sm ring-1 ring-white/10"
                   : "font-normal text-sidebar-foreground/80 hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground"
               )}
             >
@@ -92,7 +94,9 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 )}
               />
               <item.icon className="h-5 w-5 shrink-0" />
-              {!collapsed && <span>{t(item.nameKey)}</span>}
+              {!collapsed && (
+                <span className={cn(!isActive && "tracking-[0.01em]")}>{t(item.nameKey)}</span>
+              )}
             </Link>
           )
         })}

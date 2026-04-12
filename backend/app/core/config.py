@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 import warnings
 from pathlib import Path
 
@@ -19,7 +20,7 @@ class Settings(BaseSettings):
 
     JWT_SECRET: str = ""
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60  # 1 hour — was 24h; stolen tokens expire quickly
     COOKIE_NAME: str = "tw_access"
     REFRESH_COOKIE_NAME: str = "tw_refresh"
     REFRESH_TOKEN_EXPIRE_DAYS: int = 14
@@ -38,22 +39,26 @@ class Settings(BaseSettings):
     FRONTEND_BASE_URL: str = "http://localhost:3000"
     CORS_ORIGINS: str = "http://localhost:3000"
     ALLOWED_HOSTS: str = "localhost,127.0.0.1"
-    AUTOMATION_SECRET: str = ""
+    N8N_INBOUND_SECRET: str = ""
+    N8N_OUTBOUND_SECRET: str = ""
     N8N_WEBHOOK_BASE_URL: str = ""
     #google login using oauth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/auth/google/callback"
-    #ollama credentials
+    # Groq LLM credentials
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    # Ollama — used for embeddings only (nomic-embed-text)
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "qwen3:4b"
+    OLLAMA_MODEL: str = "nomic-embed-text"  # kept for reference; LLM calls go to Groq
     OLLAMA_EMBED_MODEL: str = "nomic-embed-text"
     OLLAMA_EMBEDDING_DIM: int = 768
     OLLAMA_EMBED_TIMEOUT_SECONDS: int = 60
     # -1 means "use Ollama default placement" (typically GPU when available).
     OLLAMA_EMBED_NUM_GPU: int = -1
     AI_SLA_RISK_ENABLED: bool = True
-    AI_SLA_RISK_MODE: str = "shadow"
+    AI_SLA_RISK_MODE: str = "active"
     SLA_AT_RISK_MINUTES: int = 30
     SLA_ESCALATE_HIGH_MINUTES: int = 10
     SLA_ESCALATE_STEP_MINUTES: int = 30
@@ -102,6 +107,33 @@ class Settings(BaseSettings):
     RATE_LIMIT_MAX_REQUESTS: int = 120
     RATE_LIMIT_AUTH_MAX_REQUESTS: int = 20
     RATE_LIMIT_AI_MAX_REQUESTS: int = 30
+    PROMETHEUS_METRICS_ENABLED: bool = True
+    PROMETHEUS_METRICS_TOKEN: str = ""
+    PROMETHEUS_METRICS_WEAK_TOKENS: str = "local-prom-scrape-token,change-me,changeme,default,metrics-secret"
+
+    # Proxy trust — only set TRUST_PROXY=true when running behind a known
+    # reverse proxy (nginx, Caddy, AWS ALB).  When false, the rate limiter
+    # uses request.client.host and never reads X-Forwarded-For.
+    TRUST_PROXY: bool = False
+    TRUSTED_PROXY_DEPTH: int = 1  # how many rightmost hops to trust
+
+    # Per-account brute-force lockout
+    LOGIN_MAX_ATTEMPTS: int = 5        # failures before lockout
+    LOGIN_LOCKOUT_MINUTES: int = 15    # how long the account is locked
+
+    # ── ISO 27001 compliance settings (A.12.4 — logging & monitoring) ─────────
+    # How long to retain security_events rows (days). 0 = keep forever.
+    # ISO 27001 recommends a minimum of 1 year; set to 365 in production.
+    AUDIT_LOG_RETENTION_DAYS: int = 365
+
+    # ── ISO 27001 data classification (A.8.2) ─────────────────────────────────
+    # These are configuration-level labels — they describe what is held in each
+    # category so the ISMS documentation can reference concrete settings.
+    # Levels: PUBLIC | INTERNAL | CONFIDENTIAL | RESTRICTED
+    DATA_CLASS_TICKET_CONTENT: str = "CONFIDENTIAL"   # title, description, comments
+    DATA_CLASS_USER_PII: str = "CONFIDENTIAL"          # email, name, role
+    DATA_CLASS_AUDIT_LOGS: str = "RESTRICTED"          # security_events table
+    DATA_CLASS_AI_LOGS: str = "CONFIDENTIAL"           # ai_classification_logs
 
     model_config = SettingsConfigDict(env_file=str(BASE_DIR / ".env"), env_file_encoding="utf-8")
 
@@ -139,7 +171,25 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.ENV.strip().lower() in {"prod", "production"}
 
+    _ALLOWED_JWT_ALGORITHMS = {"HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "ES256", "ES384", "ES512"}
+
+    @property
+    def weak_prometheus_metrics_tokens(self) -> set[str]:
+        return {
+            token.strip()
+            for token in self.PROMETHEUS_METRICS_WEAK_TOKENS.split(",")
+            if token.strip()
+        }
+
     def validate_runtime_security(self) -> None:
+        # Reject dangerous algorithm values including the "none" attack vector
+        algo = self.JWT_ALGORITHM.strip()
+        if algo.lower() == "none" or algo not in self._ALLOWED_JWT_ALGORITHMS:
+            raise ValueError(
+                f"JWT_ALGORITHM '{algo}' is not allowed. "
+                f"Choose one of: {sorted(self._ALLOWED_JWT_ALGORITHMS)}"
+            )
+
         jwt_secret = self.JWT_SECRET.strip()
         weak_secret = jwt_secret in {"", "change-me", "changeme", "secret", "default"} or len(jwt_secret) < 32
 
@@ -156,12 +206,42 @@ class Settings(BaseSettings):
                 "Weak JWT_SECRET detected for non-production environment. Use a strong secret before deployment."
             )
 
-        if not self.AUTOMATION_SECRET.strip() and self.is_production:
+        if self.PROMETHEUS_METRICS_ENABLED and not self.PROMETHEUS_METRICS_TOKEN.strip():
+            message = (
+                "PROMETHEUS_METRICS_TOKEN is required when PROMETHEUS_METRICS_ENABLED=true. "
+                "Set a dedicated scrape token for Prometheus."
+            )
+            if self.is_production:
+                raise ValueError(message)
+            warnings.warn(message, stacklevel=2)
+        elif self.PROMETHEUS_METRICS_ENABLED:
+            metrics_token = self.PROMETHEUS_METRICS_TOKEN.strip()
+            weak_metrics_token = (
+                metrics_token in self.weak_prometheus_metrics_tokens
+                or len(metrics_token) < 24
+            )
+            if weak_metrics_token:
+                message = (
+                    "PROMETHEUS_METRICS_TOKEN is too weak or uses a known default. "
+                    "Set a long, unique scrape token before exposing /metrics."
+                )
+                if self.is_production:
+                    raise ValueError(message)
+                warnings.warn(message, stacklevel=2)
+
+        if not self.N8N_INBOUND_SECRET.strip() and self.is_production:
             warnings.warn(
-                "AUTOMATION_SECRET is not set. "
+                "N8N_INBOUND_SECRET is not set. "
                 "POST /api/notifications/system is disabled.",
                 stacklevel=2,
             )
+
+    def prometheus_metrics_token_matches(self, candidate: str | None) -> bool:
+        expected = self.PROMETHEUS_METRICS_TOKEN.strip()
+        provided = (candidate or "").strip()
+        if not expected or not provided:
+            return False
+        return secrets.compare_digest(expected, provided)
 
 
 settings = Settings()

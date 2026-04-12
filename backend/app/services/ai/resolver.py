@@ -32,8 +32,11 @@ logger = logging.getLogger(__name__)
 # "already tried" list when the user says they have NOT done something.
 # Example: "I haven't restarted the service" → do NOT add "restart" to attempted list.
 NEGATION_MARKERS: frozenset[str] = frozenset({
+    # English
     "not", "never", "haven't", "hasn't", "didn't", "don't",
     "doesn't", "no", "n't", "cannot", "can't",
+    # French — "je ne veux pas", "jamais", "sans", "ni"
+    "pas", "ne", "jamais", "aucun", "sans", "ni",
 })
 
 # Number of tokens to check on each side of a keyword match when detecting

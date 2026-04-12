@@ -31,8 +31,10 @@ docker run --rm -it \
 
 - `ITSM_BASE_URL`
   - Example: `http://localhost:8000`
-- `AUTOMATION_SECRET`
-  - Shared secret sent in `X-Automation-Secret` for backend automation calls.
+- `N8N_INBOUND_SECRET`
+  - Secret sent in `X-Automation-Secret` when n8n calls backend machine-auth endpoints such as `/api/notifications/system`.
+- `N8N_OUTBOUND_SECRET`
+  - Secret expected on backend-originated calls to external n8n webhooks. Keep it separate from inbound.
 - `FRONTEND_BASE_URL`
   - Example: `http://localhost:3000`
   - Used to build problem/ticket deep links in notifications.
@@ -70,4 +72,4 @@ Your backend supports bearer tokens through:
 
 - `POST /api/auth/token`
 
-Use a long random value for `AUTOMATION_SECRET` and keep it identical in backend `.env` and n8n environment variables.
+Use long random values for `N8N_INBOUND_SECRET` and `N8N_OUTBOUND_SECRET`. Only the inbound secret should be sent from n8n to backend machine-auth endpoints.

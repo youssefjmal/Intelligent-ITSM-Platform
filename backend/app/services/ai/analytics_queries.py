@@ -15,6 +15,7 @@ from app.services.ai.chat_payloads import (
 from app.services.ai.formatters import (
     _build_ticket_results_payload,
     _format_scope_summary,
+    _format_ticket_comments_snapshot,
     _format_ticket_detail,
     _format_ticket_digest,
     _format_ticket_status_snapshot,
@@ -151,6 +152,61 @@ def _extract_ticket_query_meta(text: str, assignee_names: list[str]) -> dict:
     }
 
 
+# Stop-words that should never be treated as topic keywords.
+_QUERY_STOP_WORDS: frozenset[str] = frozenset({
+    "are", "there", "any", "tickets", "ticket", "related", "to", "about", "for",
+    "show", "me", "list", "give", "find", "get", "all", "the", "a", "an", "of",
+    "with", "and", "or", "in", "on", "that", "have", "has", "is", "was", "be",
+    "do", "does", "can", "will", "what", "which", "how", "many", "much",
+    "y", "a-t-il", "des", "les", "le", "la", "de", "du", "un", "une", "qui",
+    "quels", "quelles", "quel", "quelle", "sur", "avec", "pour", "par", "dans",
+    "il", "elle", "ils", "elles", "est", "sont", "ont", "avoir", "etre",
+    "montre", "affiche", "voir", "donne", "cherche", "trouve",
+})
+
+
+def _stem_keyword(kw: str) -> str:
+    """Strip common inflection suffixes to get a matchable root (e.g. 'databases' → 'database')."""
+    for suffix in ("iques", "ique", "tions", "tion", "ings", "ing", "ers", "er", "es", "s"):
+        if kw.endswith(suffix) and len(kw) - len(suffix) >= 4:
+            return kw[: -len(suffix)]
+    return kw
+
+
+def _extract_topic_keywords(text: str, meta: dict) -> list[str]:
+    """Extract free-text topic words not captured by structured filters."""
+    covered: set[str] = set()
+    for kw_map in (STATUS_QUERY_KEYWORDS, PRIORITY_QUERY_KEYWORDS, CATEGORY_QUERY_KEYWORDS, TICKET_TYPE_QUERY_KEYWORDS):
+        for keywords in kw_map.values():
+            covered.update(keywords)
+
+    tokens = [t for t in text.split() if len(t) >= 2]
+    topic = []
+    for t in tokens:
+        if t in _QUERY_STOP_WORDS or t in covered or t.startswith("tw-") or t.startswith("pb-") or t.isdigit():
+            continue
+        # Use stemmed form for matching so "databases" → "database", "crashes" → "crash"
+        topic.append(_stem_keyword(t))
+    return topic
+
+
+def _ticket_content_blob(ticket: object) -> str:
+    parts = [
+        str(getattr(ticket, "id", "") or ""),
+        str(getattr(ticket, "title", "") or ""),
+        str(getattr(ticket, "description", "") or ""),
+        str(getattr(ticket, "assignee", "") or ""),
+        str(getattr(ticket, "reporter", "") or ""),
+        str(getattr(ticket, "resolution", "") or ""),
+    ]
+    tags = getattr(ticket, "tags", None) or []
+    parts.extend(str(t) for t in tags)
+    comments = getattr(ticket, "comments", None) or []
+    for comment in comments:
+        parts.append(str(getattr(comment, "content", "") or ""))
+    return " ".join(parts).casefold()
+
+
 def _filter_tickets_for_query(text: str, tickets: list, assignee_names: list[str]) -> tuple[list, dict]:
     meta = _extract_ticket_query_meta(text, assignee_names)
     statuses = meta["statuses"]
@@ -175,6 +231,18 @@ def _filter_tickets_for_query(text: str, tickets: list, assignee_names: list[str
         now = dt.datetime.now(dt.timezone.utc)
         cutoff = now - dt.timedelta(days=window_days)
         filtered = [ticket for ticket in filtered if analytics_created_at(ticket) >= cutoff]
+
+    # Free-text topic filter: if no structured filter narrowed the results AND
+    # the query contains topic keywords, filter by keyword match in ticket content.
+    no_structured_filter = not (statuses or priorities or categories or ticket_types or assignees)
+    if no_structured_filter:
+        topic_keywords = _extract_topic_keywords(_normalize_intent_text(text), meta)
+        if topic_keywords:
+            filtered = [
+                ticket for ticket in filtered
+                if any(kw in _ticket_content_blob(ticket) for kw in topic_keywords)
+            ]
+
     return filtered, meta
 
 
@@ -238,6 +306,20 @@ def _is_single_ticket_status_request(text: str) -> bool:
     return any(token in text for token in ["status", "statut", "etat"])
 
 
+def _is_single_ticket_comment_request(text: str) -> bool:
+    return any(
+        token in text
+        for token in [
+            "comment",
+            "comments",
+            "commentaire",
+            "commentaires",
+            "note",
+            "notes",
+        ]
+    )
+
+
 def _is_high_sla_risk_request(text: str) -> bool:
     lowered = str(text or "")
     if "sla" not in lowered:
@@ -296,6 +378,13 @@ def _answer_data_query(
                 action=None,
                 ticket=None,
                 response_payload=build_ticket_status_payload(selected, lang=lang),
+            )
+        if _is_single_ticket_comment_request(text):
+            return StructuredChatAnswer(
+                reply=_format_ticket_comments_snapshot(selected, lang),
+                action="show_ticket",
+                ticket=_ticket_to_summary(selected, lang),
+                response_payload=build_ticket_details_payload(selected, lang=lang),
             )
         return StructuredChatAnswer(
             reply=_format_ticket_detail(selected, lang),

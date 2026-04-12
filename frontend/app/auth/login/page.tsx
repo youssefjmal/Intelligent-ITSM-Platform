@@ -13,7 +13,7 @@ import { buildApiUrl } from "@/lib/api"
 import { LanguageSwitcher } from "@/components/language-switcher"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { GoogleMark } from "@/components/google-mark"
-import { Loader2, LogIn } from "lucide-react"
+import { Loader2, LogIn, LockKeyhole } from "lucide-react"
 
 export default function LoginPage() {
   const { continueWithEmail } = useAuth()
@@ -23,6 +23,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState("")
+  const [lockedMinutes, setLockedMinutes] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
   const oauthErrorCode = params.get("oauth_error")
   const oauthError = oauthErrorCode ? t(`auth.${oauthErrorCode}` as "auth.oauthFailed") : ""
@@ -34,10 +35,15 @@ export default function LoginPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError("")
+    setLockedMinutes(null)
     setLoading(true)
     const result = await continueWithEmail(email, password)
     if (result.error) {
-      setError(t(`auth.${result.error}` as "auth.invalidCredentials"))
+      if (result.error === "accountLocked") {
+        setLockedMinutes(result.lockedMinutes ?? 15)
+      } else {
+        setError(t(`auth.${result.error}` as "auth.invalidCredentials"))
+      }
       setLoading(false)
     } else if (result.requiresVerification) {
       const params = new URLSearchParams({ email })
@@ -85,6 +91,15 @@ export default function LoginPage() {
               {error && (
                 <div className="rounded-lg bg-destructive/10 border border-destructive/20 px-3 py-2.5">
                   <p className="text-sm text-destructive">{error}</p>
+                </div>
+              )}
+
+              {lockedMinutes !== null && (
+                <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 px-3 py-2.5 flex items-start gap-2">
+                  <LockKeyhole className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                  <p className="text-sm text-amber-700 dark:text-amber-300">
+                    {t("auth.accountLocked").replace("{minutes}", String(lockedMinutes))}
+                  </p>
                 </div>
               )}
 
@@ -142,7 +157,7 @@ export default function LoginPage() {
 
               <Button
                 type="submit"
-                disabled={loading || !email || !password}
+                disabled={loading || !email || !password || lockedMinutes !== null}
                 aria-busy={loading}
                 className="w-full bg-primary text-primary-foreground hover:bg-primary/90 gap-2"
               >

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, Header, Request
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, require_roles
@@ -61,6 +62,50 @@ def jira_reconcile(
         return reconcile(db, payload)
     except ValueError as exc:
         raise BadRequestError(str(exc))
+
+
+@router.get("/integrations/jira/status")
+def jira_sync_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _require_admin: None = Depends(require_roles(UserRole.admin)),
+) -> dict:
+    """Return Jira integration sync status for all configured projects."""
+    from app.core.config import settings
+    from app.models.jira_sync_state import JiraSyncState
+    from app.models.ticket import Ticket as TicketModel
+
+    configured = bool(
+        settings.JIRA_BASE_URL.strip()
+        and settings.JIRA_EMAIL.strip()
+        and settings.JIRA_API_TOKEN.strip()
+        and settings.JIRA_PROJECT_KEY.strip()
+    )
+
+    states = db.execute(select(JiraSyncState)).scalars().all()
+    synced_count: int = db.execute(
+        select(func.count()).select_from(TicketModel).where(
+            TicketModel.jira_key.is_not(None),
+            TicketModel.jira_key != "",
+        )
+    ).scalar_one()
+
+    return {
+        "configured": configured,
+        "project_key": settings.JIRA_PROJECT_KEY if configured else None,
+        "base_url": settings.JIRA_BASE_URL if configured else None,
+        "auto_reconcile_enabled": settings.JIRA_AUTO_RECONCILE_ENABLED,
+        "total_synced_tickets": synced_count,
+        "projects": [
+            {
+                "project_key": s.project_key,
+                "last_synced_at": s.last_synced_at.isoformat() if s.last_synced_at else None,
+                "last_error": s.last_error,
+                "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+            }
+            for s in states
+        ],
+    }
 
 
 @router.post("/integrations/jira/sync/{issue_key}", response_model=dict)

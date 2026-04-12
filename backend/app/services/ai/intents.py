@@ -108,6 +108,10 @@ class ChatIntent(str, Enum):
     problem_detail = "problem_detail"
     problem_drill_down = "problem_drill_down"
     recommendation_listing = "recommendation_listing"
+    # Ticket thread (comments + resolution)
+    ticket_thread = "ticket_thread"
+    # Trivial / off-topic — bypass retrieval pipeline
+    chitchat = "chitchat"
 
 
 class IntentConfidence(str, Enum):
@@ -518,6 +522,122 @@ def _is_recommendation_listing_request(text: str) -> bool:
     )
 
 
+_TICKET_THREAD_KEYWORDS = [
+    # English — comments (multi-word phrases, substring match)
+    "show comments", "show the comments", "show me the comments", "show me comments",
+    "list comments", "display comments", "see comments", "see the comments",
+    "what are the comments", "what did people say", "what was said",
+    "comments on this ticket", "comments on ticket", "ticket comments",
+    "any comments", "get comments", "read comments",
+    # English — resolution (multi-word phrases, substring match)
+    "show resolution", "show the resolution", "what is the resolution",
+    "what was the resolution", "how was it resolved", "resolution of this ticket",
+    "ticket resolution", "resolved how", "how was this resolved",
+    "see the resolution", "get the resolution",
+    # French — comments
+    "affiche les commentaires", "montre les commentaires", "commentaires du ticket",
+    "voir les commentaires", "quels sont les commentaires", "les commentaires",
+    "montre moi les commentaires", "affiche moi les commentaires",
+    # French — resolution
+    "affiche la resolution", "montre la resolution", "quelle est la resolution",
+    "comment a ete resolu", "resolution du ticket", "la resolution",
+    "voir la resolution", "montre moi la resolution",
+]
+
+
+_TICKET_THREAD_SINGLE_WORDS = [
+    # Word-boundary matched — broad but specific enough to avoid false positives
+    "commentaires",   # FR plural, rarely appears outside ticket context in chat
+    "commentaire",    # FR singular
+]
+
+
+def _is_ticket_thread_request(text: str) -> bool:
+    normalized = _normalize_intent_text(text or "")
+    if _contains_any(normalized, _TICKET_THREAD_KEYWORDS):
+        return True
+    # Single-word fallback: "commentaires" / "commentaire" alone is unambiguous
+    return _contains_any(normalized, _TICKET_THREAD_SINGLE_WORDS)
+
+
+# ---------------------------------------------------------------------------
+# Chitchat / off-topic detection
+# ---------------------------------------------------------------------------
+
+_CHITCHAT_EXACT_WORDS = frozenset([
+    # Acknowledgements EN
+    "ok", "okay", "k", "yep", "yup", "yeah", "yes", "no", "nope", "sure",
+    "thanks", "thank you", "thx", "ty", "noted", "got it", "understood", "great",
+    "cool", "nice", "perfect", "good", "fine", "alright", "right", "exactly",
+    # Acknowledgements FR
+    "oui", "non", "ok", "ouais", "ouaip", "merci", "super", "bien", "parfait",
+    "compris", "recu", "d'accord", "daccord", "entendu", "nickel", "top",
+    "genial", "exact", "correct", "formidable",
+    # Greetings EN
+    "hello", "hi", "hey", "howdy",
+    # Greetings FR
+    "bonjour", "salut", "bonsoir", "coucou", "allo",
+    # Farewells
+    "bye", "goodbye", "ciao", "aurevoir", "au revoir", "bonne journee",
+])
+
+# ITSM-relevant tokens — if ANY appear, the message is not off-topic
+_ITSM_SIGNAL_TOKENS = frozenset([
+    # Ticket / incident vocabulary
+    "ticket", "incident", "problème", "probleme", "bug", "erreur", "error",
+    "panne", "crash", "issue", "defect", "fault",
+    # IT infra
+    "vpn", "réseau", "reseau", "network", "serveur", "server", "base de donnees",
+    "database", "api", "application", "logiciel", "software", "hardware",
+    "imprimante", "printer", "wifi", "connexion", "connection", "acces", "accès",
+    "access", "permission", "authentification", "authentication", "mot de passe",
+    "password", "compte", "account", "email", "mail", "smtp", "dns", "ssl",
+    # ITSM process
+    "sla", "priority", "priorité", "assignee", "assigné", "résolution", "resolution",
+    "escalade", "escalation", "notification", "alerte", "alert", "classification",
+    "catégorie", "categorie", "category", "statut", "status",
+    # Actions on tickets
+    "classifier", "classer", "assigner", "assign", "résoudre", "resolve", "fermer",
+    "close", "escalader", "escalate", "ouvrir", "open", "créer", "create",
+    "signaler", "report", "afficher", "montrer", "show", "lister", "list",
+])
+
+_MAX_CHITCHAT_LENGTH = 40  # chars — messages longer than this always go through normal routing
+
+
+def _has_itsm_signal(text: str) -> bool:
+    """Return True if the message contains at least one ITSM-relevant token."""
+    normalized = _normalize_intent_text(text or "")
+    return any(_matches_keyword(normalized, token) for token in _ITSM_SIGNAL_TOKENS)
+
+
+def is_chitchat_or_offtopic(text: str) -> bool:
+    """Return True if the message should bypass the retrieval pipeline.
+
+    Fires for:
+    - Pure acknowledgements / greetings (exact word list)
+    - Short messages (< 40 chars) with no ITSM signal and no ticket ID
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    normalized = _normalize_intent_text(raw)
+
+    # Ticket ID present → always ITSM context
+    if extract_ticket_id(raw):
+        return False
+
+    # Exact single-word/phrase match → definitely chitchat
+    if normalized in _CHITCHAT_EXACT_WORDS:
+        return True
+
+    # Short message with no ITSM signal → off-topic
+    if len(raw) <= _MAX_CHITCHAT_LENGTH and not _has_itsm_signal(normalized):
+        return True
+
+    return False
+
+
 def extract_status_filter(text: str) -> str | None:
     """Extract a problem status filter value from a message using STATUS_KEYWORD_MAP.
 
@@ -560,6 +680,8 @@ def detect_intent_with_confidence(text: str) -> tuple[ChatIntent, IntentConfiden
         return ChatIntent.problem_listing, IntentConfidence.high
     if _is_recommendation_listing_request(normalized):
         return ChatIntent.recommendation_listing, IntentConfidence.high
+    if _is_ticket_thread_request(normalized):
+        return ChatIntent.ticket_thread, IntentConfidence.high
     # Existing checks below (unchanged)
     if _is_explicit_ticket_create_request(text or ""):
         return ChatIntent.create_ticket, IntentConfidence.high
@@ -581,6 +703,10 @@ def detect_intent_with_confidence(text: str) -> tuple[ChatIntent, IntentConfiden
         return ChatIntent.general, IntentConfidence.medium
     if _looks_like_data_query(normalized):
         return ChatIntent.data_query, IntentConfidence.medium
+    # Chitchat / off-topic — checked last so all specific shortcuts take priority.
+    # Returns high confidence to skip the LLM intent-classification call.
+    if is_chitchat_or_offtopic(text or ""):
+        return ChatIntent.chitchat, IntentConfidence.high
     return ChatIntent.general, IntentConfidence.low
 
 

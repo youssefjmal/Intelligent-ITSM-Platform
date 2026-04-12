@@ -318,14 +318,10 @@ Result counters:
 `/api/sla/run` can be called by:
 
 1. Authenticated `admin`/`agent` JWT user.
-2. Automation fallback user when request path is allowed and automation headers pass checks.
 
-Current implementation accepts either:
+Current implementation requires authenticated user access. `X-Automation-Secret` is reserved for explicit machine-auth endpoints such as `/api/notifications/system`, where it must match backend `N8N_INBOUND_SECRET`.
 
-1. `X-Automation-Secret` matching backend `AUTOMATION_SECRET`, or
-2. `X-Actor: system:n8n`
-
-For production hardening, send both headers and keep `AUTOMATION_SECRET` strong.
+For production hardening, keep `N8N_INBOUND_SECRET` and `N8N_OUTBOUND_SECRET` separate and do not use n8n secrets as a fallback for normal authenticated routes.
 
 Code reference:
 
@@ -401,8 +397,8 @@ Code references:
 Before enabling SLA automation in an environment:
 
 1. Set Jira credentials and project context in `backend/.env`.
-2. Set `AUTOMATION_SECRET` in backend and n8n environments.
-3. Confirm at least one admin user exists (automation fallback user resolution).
+2. Set `N8N_INBOUND_SECRET` and `N8N_OUTBOUND_SECRET` in backend and n8n environments where relevant.
+3. Confirm JWT-authenticated service access is used for `/api/sla/run` automation.
 4. Run migrations:
    - `python -m alembic -c alembic.ini upgrade head`
 5. Validate:

@@ -14,7 +14,6 @@ import {
   type NotificationItem,
 } from "@/lib/notifications-api"
 import { apiFetch } from "@/lib/api"
-import { globalSearch, type SearchResponse } from "@/lib/search-api"
 import { Bell, LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -45,14 +44,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [markingId, setMarkingId] = React.useState<string | null>(null)
   const [mediumLowExpanded, setMediumLowExpanded] = React.useState(false)
   const seenCriticalRef = React.useRef<Set<string>>(new Set())
-
-  // Feature 6: Global search state
-  const [searchQuery, setSearchQuery] = React.useState("")
-  const [searchResults, setSearchResults] = React.useState<SearchResponse | null>(null)
-  const [searchOpen, setSearchOpen] = React.useState(false)
-  const [searchLoading, setSearchLoading] = React.useState(false)
-  const searchRef = React.useRef<HTMLInputElement>(null)
-  const searchContainerRef = React.useRef<HTMLDivElement>(null)
 
   React.useEffect(() => {
     if (typeof window === "undefined") return
@@ -126,53 +117,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     window.addEventListener("notifications:changed", onNotificationsChanged as EventListener)
     return () => window.removeEventListener("notifications:changed", onNotificationsChanged as EventListener)
   }, [user, notifOpen, loadUnreadCount, loadNotifications])
-
-  // Feature 6: Cmd+K / Ctrl+K keyboard shortcut to open search
-  React.useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault()
-        setSearchOpen(true)
-        setTimeout(() => searchRef.current?.focus(), 50)
-      }
-      if (e.key === "Escape") {
-        setSearchOpen(false)
-        setSearchQuery("")
-        setSearchResults(null)
-      }
-    }
-    window.addEventListener("keydown", handler)
-    return () => window.removeEventListener("keydown", handler)
-  }, [])
-
-  // Feature 6: Debounced search effect (300ms)
-  React.useEffect(() => {
-    if (!searchQuery || searchQuery.length < 2) {
-      setSearchResults(null)
-      return
-    }
-    const timeout = setTimeout(async () => {
-      setSearchLoading(true)
-      try {
-        const r = await globalSearch(searchQuery, ["tickets", "problems"], 5)
-        setSearchResults(r)
-      } finally {
-        setSearchLoading(false)
-      }
-    }, 300)
-    return () => clearTimeout(timeout)
-  }, [searchQuery])
-
-  // Feature 6: Click outside to close search dropdown
-  React.useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target as Node)) {
-        setSearchOpen(false)
-      }
-    }
-    document.addEventListener("mousedown", handler)
-    return () => document.removeEventListener("mousedown", handler)
-  }, [])
 
   const severityClasses: Record<string, string> = {
     info: "bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-900/80 dark:text-slate-100 dark:border-slate-600",
@@ -341,8 +285,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <AppSidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((prev) => !prev)} />
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top Bar */}
-        <header className="relative z-20 flex h-[4.25rem] shrink-0 items-center justify-between border-b border-border/70 bg-card/85 px-4 backdrop-blur md:px-6">
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-primary/25 to-transparent" />
+        <header className="relative z-20 flex h-[4.25rem] shrink-0 items-center justify-between bg-card/85 px-4 backdrop-blur md:px-6">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-primary/30 to-transparent" />
           <div className="flex flex-1 items-center gap-4">
             <Button
               variant="ghost"
@@ -356,78 +300,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <h1 className="hidden text-sm font-semibold tracking-wide text-foreground/90 sm:block">
               {t("app.title")}
             </h1>
-            {/* Feature 6: Global search input */}
-            <div className="relative hidden md:block" ref={searchContainerRef}>
-              <input
-                ref={searchRef}
-                type="search"
-                value={searchQuery}
-                onChange={(e) => { setSearchQuery(e.target.value); setSearchOpen(true); }}
-                onFocus={() => setSearchOpen(true)}
-                placeholder={`Rechercher tickets, problèmes...`}
-                className="w-64 text-sm px-3 py-1.5 pr-16 rounded-lg border border-border bg-background/80 focus:outline-none focus:ring-2 focus:ring-ring"
-                aria-label="Recherche globale"
-              />
-              <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] px-1.5 py-0.5 rounded border border-[var(--color-border-secondary)] bg-[var(--color-background-secondary)] font-mono">⌘K</kbd>
-              {searchOpen && (searchResults || searchLoading) && (
-                <div
-                  className="absolute top-full left-0 mt-1 w-96 rounded-xl border border-border bg-background shadow-xl z-50 overflow-hidden"
-                  onMouseDown={(e) => e.preventDefault()}
-                >
-                  {searchLoading && (
-                    <div className="px-4 py-3 text-sm text-muted-foreground">Recherche en cours...</div>
-                  )}
-                  {searchResults && !searchLoading && searchResults.total_count === 0 && (
-                    <div className="px-4 py-3 text-sm text-muted-foreground">
-                      Aucun résultat pour « {searchQuery} »
-                    </div>
-                  )}
-                  {searchResults && !searchLoading && searchResults.total_count > 0 && (
-                    <>
-                      {searchResults.results.tickets.length > 0 && (
-                        <div>
-                          <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Tickets</div>
-                          {searchResults.results.tickets.map((r) => (
-                            <a
-                              key={r.id}
-                              href={r.url}
-                              onClick={() => { setSearchOpen(false); setSearchQuery(""); }}
-                              className="flex items-start gap-2 px-3 py-2 hover:bg-accent transition-colors"
-                            >
-                              <span className="mt-0.5 text-muted-foreground">🎫</span>
-                              <div className="min-w-0">
-                                <div className="text-sm font-medium truncate">{r.title}</div>
-                                <div className="text-xs text-muted-foreground truncate">{r.excerpt}</div>
-                                {r.status && <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground mt-0.5 inline-block">{r.status}</span>}
-                              </div>
-                            </a>
-                          ))}
-                        </div>
-                      )}
-                      {searchResults.results.problems.length > 0 && (
-                        <div className="border-t border-border">
-                          <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Problèmes</div>
-                          {searchResults.results.problems.map((r) => (
-                            <a
-                              key={r.id}
-                              href={r.url}
-                              onClick={() => { setSearchOpen(false); setSearchQuery(""); }}
-                              className="flex items-start gap-2 px-3 py-2 hover:bg-accent transition-colors"
-                            >
-                              <span className="mt-0.5 text-muted-foreground">⚠️</span>
-                              <div className="min-w-0">
-                                <div className="text-sm font-medium truncate">{r.title}</div>
-                                <div className="text-xs text-muted-foreground truncate">{r.excerpt}</div>
-                              </div>
-                            </a>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
           </div>
           <div className="flex items-center gap-3">
             <LanguageSwitcher />
@@ -672,7 +544,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         {/* Content */}
         <main className="flex-1 overflow-auto p-5 md:p-6">
-          <div className="mx-auto w-full max-w-[1480px]">{children}</div>
+          <div className="main-content mx-auto w-full max-w-[1480px]">{children}</div>
         </main>
       </div>
     </div>

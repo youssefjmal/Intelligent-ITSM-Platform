@@ -56,8 +56,15 @@ class AiClassificationLog(Base):
     recommendation_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
     reasoning: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
-    # Model version
+    # Model version (ISO 42001 — traceability of which model produced the decision)
     model_version: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+
+    # ISO 42001 human oversight (clause 6.1 / 9.1)
+    # Set when an admin or agent reviews and optionally overrides the AI decision.
+    human_reviewed_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False

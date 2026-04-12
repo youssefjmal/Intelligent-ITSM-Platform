@@ -14,7 +14,6 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.deps import get_current_user
 from app.core.exceptions import AuthenticationException, BadRequestError, ConflictError, NotFoundError
-from app.core.rate_limit import rate_limit
 from app.db.session import get_db
 from app.models.enums import EmailKind
 from app.models.user import User
@@ -37,7 +36,6 @@ from app.services.auth import (
     authenticate_user,
     create_password_reset_token,
     create_or_update_user_from_google,
-    create_user_from_email_password,
     create_user,
     create_verification_token,
     find_user_by_email,
@@ -50,7 +48,11 @@ from app.services.auth import (
 )
 from app.services.email import build_password_reset_email, build_verification_email, build_welcome_email, log_email
 
-router = APIRouter(dependencies=[Depends(rate_limit("auth"))])
+# Rate limiting is handled by the global middleware in core/rate_limit.py,
+# which already applies the "auth" scope to all /api/auth/* paths.
+# A router-level dependency would count each request twice against the same
+# Redis key, halving the effective limit unintentionally.
+router = APIRouter()
 logger = logging.getLogger(__name__)
 
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -61,11 +63,13 @@ GOOGLE_OAUTH_STATE_COOKIE = "tw_oauth_state"
 
 def _set_auth_cookies(response: Response, *, access_token: str, refresh_token: str) -> None:
     is_secure = settings.ENV != "development"
+    # SameSite=Strict: cookies are never sent on cross-site navigations,
+    # which eliminates CSRF risk for this SPA entirely.
     response.set_cookie(
         settings.COOKIE_NAME,
         access_token,
         httponly=True,
-        samesite="lax",
+        samesite="strict",
         secure=is_secure,
         path="/",
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
@@ -74,7 +78,7 @@ def _set_auth_cookies(response: Response, *, access_token: str, refresh_token: s
         settings.REFRESH_COOKIE_NAME,
         refresh_token,
         httponly=True,
-        samesite="lax",
+        samesite="strict",
         secure=is_secure,
         path="/api/auth",
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
@@ -86,8 +90,21 @@ def _clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(settings.REFRESH_COOKIE_NAME, path="/api/auth")
 
 
-def _validate_credentials(db: Session, payload: UserLogin) -> User:
-    user = authenticate_user(db, payload.email, payload.password)
+def _validate_credentials(db: Session, payload: UserLogin, request: Request) -> User:
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    try:
+        user = authenticate_user(db, payload.email, payload.password, ip_address=ip, user_agent=ua)
+    except ValueError as exc:
+        msg = str(exc)
+        if msg.startswith("account_locked:"):
+            minutes = msg.split(":")[1]
+            raise AuthenticationException(
+                f"account_locked_{minutes}min",
+                error_code="ACCOUNT_LOCKED",
+                status_code=423,
+            )
+        raise
     if not user:
         raise AuthenticationException("invalid_credentials", error_code="INVALID_CREDENTIALS", status_code=401)
     if not user.is_verified:
@@ -129,8 +146,8 @@ def register_user(payload: UserCreate, db: Session = Depends(get_db)) -> Registe
 
 
 @router.post("/login", response_model=UserOut)
-def login_user(payload: UserLogin, response: Response, db: Session = Depends(get_db)) -> UserOut:
-    user = _validate_credentials(db, payload)
+def login_user(payload: UserLogin, request: Request, response: Response, db: Session = Depends(get_db)) -> UserOut:
+    user = _validate_credentials(db, payload, request)
     tokens = issue_auth_tokens(db, user)
     _set_auth_cookies(
         response,
@@ -141,41 +158,43 @@ def login_user(payload: UserLogin, response: Response, db: Session = Depends(get
 
 
 @router.post("/email-login", response_model=EmailLoginResponse)
-def email_login(payload: UserLogin, response: Response, db: Session = Depends(get_db)) -> EmailLoginResponse:
+def email_login(payload: UserLogin, request: Request, response: Response, db: Session = Depends(get_db)) -> EmailLoginResponse:
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
     user = find_user_by_email(db, payload.email)
 
-    if user:
-        if not user.password_hash:
-            raise AuthenticationException("invalid_credentials", error_code="INVALID_CREDENTIALS", status_code=401)
+    if not user or not user.password_hash:
+        raise AuthenticationException("invalid_credentials", error_code="INVALID_CREDENTIALS", status_code=401)
 
-        authenticated_user = authenticate_user(db, payload.email, payload.password)
-        if not authenticated_user:
-            raise AuthenticationException("invalid_credentials", error_code="INVALID_CREDENTIALS", status_code=401)
-
-        if not authenticated_user.is_verified:
-            _send_verification_email(db, authenticated_user)
-            return EmailLoginResponse(
-                message="verification_sent",
-                requires_verification=True,
+    try:
+        authenticated_user = authenticate_user(db, payload.email, payload.password, ip_address=ip, user_agent=ua)
+    except ValueError as exc:
+        msg = str(exc)
+        if msg.startswith("account_locked:"):
+            minutes = msg.split(":")[1]
+            raise AuthenticationException(
+                f"account_locked_{minutes}min",
+                error_code="ACCOUNT_LOCKED",
+                status_code=423,
             )
+        raise
+    if not authenticated_user:
+        raise AuthenticationException("invalid_credentials", error_code="INVALID_CREDENTIALS", status_code=401)
 
-        tokens = issue_auth_tokens(db, authenticated_user)
-        _set_auth_cookies(
-            response,
-            access_token=tokens.access_token,
-            refresh_token=tokens.refresh_token,
+    if not authenticated_user.is_verified:
+        _send_verification_email(db, authenticated_user)
+        return EmailLoginResponse(
+            message="verification_sent",
+            requires_verification=True,
         )
-        return EmailLoginResponse(message="logged_in", user=UserOut.model_validate(authenticated_user))
 
-    if len(payload.password) < 8:
-        raise BadRequestError("password_too_short")
-
-    created_user = create_user_from_email_password(db, payload.email, payload.password)
-    _send_verification_email(db, created_user)
-    return EmailLoginResponse(
-        message="account_created_verification_sent",
-        requires_verification=True,
+    tokens = issue_auth_tokens(db, authenticated_user)
+    _set_auth_cookies(
+        response,
+        access_token=tokens.access_token,
+        refresh_token=tokens.refresh_token,
     )
+    return EmailLoginResponse(message="logged_in", user=UserOut.model_validate(authenticated_user))
 
 
 @router.get("/google/start")
@@ -304,8 +323,8 @@ async def google_oauth_callback(
 
 
 @router.post("/token", response_model=TokenResponse)
-def login_for_bearer_tokens(payload: UserLogin, db: Session = Depends(get_db)) -> TokenResponse:
-    user = _validate_credentials(db, payload)
+def login_for_bearer_tokens(payload: UserLogin, request: Request, db: Session = Depends(get_db)) -> TokenResponse:
+    user = _validate_credentials(db, payload, request)
     tokens = issue_auth_tokens(db, user)
     return TokenResponse(
         access_token=tokens.access_token,

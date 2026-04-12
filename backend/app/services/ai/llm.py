@@ -1,13 +1,14 @@
-"""LLM adapter helpers (Ollama).
+"""LLM adapter helpers (Groq).
 
 Role:
-    This module provides low-level communication with the Ollama inference
-    endpoint and JSON extraction utilities used throughout the AI service layer.
+    This module provides low-level communication with the Groq inference API
+    and JSON extraction utilities used throughout the AI service layer.
 
 LLM target:
-    Ollama-hosted models configured via ``settings.OLLAMA_MODEL``.
-    The module tries the ``/api/generate`` endpoint first; if the model only
-    supports the chat API it falls back automatically to ``/api/chat``.
+    Groq-hosted models configured via ``settings.GROQ_MODEL``.
+    Uses the OpenAI-compatible ``/openai/v1/chat/completions`` endpoint.
+    Embeddings are NOT handled here — they remain on Ollama/nomic-embed-text
+    via ``app.services.embeddings``.
 
 Output contract:
     All callers expect structured JSON back from the model.
@@ -37,57 +38,56 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+_GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+
 
 def ollama_generate(prompt: str, *, json_mode: bool = False) -> str:
-    model_name = str(settings.OLLAMA_MODEL or "").strip().lower()
-    disable_thinking = json_mode and model_name.startswith("qwen3")
-    with httpx.Client(timeout=60) as client:
-        generate_url = f"{settings.OLLAMA_BASE_URL}/api/generate"
-        generate_payload: dict[str, Any] = {
-            "model": settings.OLLAMA_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.1},
-        }
-        if json_mode:
-            generate_payload["format"] = "json"
-        if disable_thinking:
-            generate_payload["think"] = False
-        response = client.post(generate_url, json=generate_payload)
-        if response.status_code == 404:
-            chat_url = f"{settings.OLLAMA_BASE_URL}/api/chat"
-            chat_payload: dict[str, Any] = {
-                "model": settings.OLLAMA_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-                "options": {"temperature": 0.1},
-            }
-            if json_mode:
-                chat_payload["format"] = "json"
-            if disable_thinking:
-                chat_payload["think"] = False
-            chat_response = client.post(chat_url, json=chat_payload)
-            chat_response.raise_for_status()
-            data = chat_response.json()
-            message = data.get("message") if isinstance(data, dict) else None
-            if isinstance(message, dict):
-                content = str(message.get("content", "")).strip()
-                if content:
-                    return content
-            if isinstance(data, dict):
-                thinking = str(data.get("thinking", "")).strip()
-                if thinking:
-                    return thinking
-            return ""
-        response.raise_for_status()
-        data = response.json()
-        if isinstance(data, dict):
-            response_text = str(data.get("response", "")).strip()
-            if response_text:
-                return response_text
-            thinking = str(data.get("thinking", "")).strip()
-            if thinking:
-                return thinking
+    """Call Groq LLM API and return the raw text response.
+
+    The function name is kept as ``ollama_generate`` for backwards compatibility
+    with all existing callers and test mocks.
+    """
+    api_key = (settings.GROQ_API_KEY or "").strip()
+    if not api_key:
+        logger.error("GROQ_API_KEY is not configured — LLM call skipped")
+        return ""
+
+    messages: list[dict[str, str]] = []
+    if json_mode:
+        messages.append({
+            "role": "system",
+            "content": "You are a helpful assistant. Respond with valid JSON only.",
+        })
+    messages.append({"role": "user", "content": prompt})
+
+    payload: dict[str, Any] = {
+        "model": settings.GROQ_MODEL,
+        "messages": messages,
+        "temperature": 0.1,
+        "max_tokens": 4096,
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+
+    try:
+        with httpx.Client(timeout=60) as client:
+            response = client.post(
+                _GROQ_API_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            return str(content).strip()
+    except httpx.HTTPStatusError as exc:
+        logger.error("Groq API HTTP error %s: %s", exc.response.status_code, exc.response.text[:200])
+        return ""
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Groq API call failed: %s", exc)
         return ""
 
 

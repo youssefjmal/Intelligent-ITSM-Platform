@@ -287,6 +287,10 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
   const [resolutionSuggestion, setResolutionSuggestion] = useState<ResolutionSuggestionResult | null>(null)
   const [suggestionDismissed, setSuggestionDismissed] = useState(false)
 
+  // Duplicate detection state
+  const [duplicateCandidates, setDuplicateCandidates] = useState<Array<{ticket_id: string; title: string; status: string; similarity_score: number}>>([])
+  const [duplicatesDismissed, setDuplicatesDismissed] = useState(false)
+
   const assigneeOptions = (() => {
     if (!selectedAssignee) return assignees
     if (assignees.some((member) => member.name === selectedAssignee)) return assignees
@@ -697,6 +701,27 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
       .finally(() => setSummaryLoading(false))
   }, [ticketData?.id])
 
+  useEffect(() => {
+    if (!ticketData?.id || !ticketData?.title) return
+    apiFetch<{duplicates: Array<{ticket_id: string; title: string; status: string; similarity_score: number}>; has_duplicates: boolean}>(
+      "/tickets/check-duplicates",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          title: ticketData.title,
+          description: ticketData.description || "",
+          category: ticketData.category,
+        }),
+      }
+    )
+      .then((res) => {
+        if (res.has_duplicates) {
+          setDuplicateCandidates(res.duplicates.filter((d) => d.ticket_id !== ticketData.id))
+        }
+      })
+      .catch(() => {})
+  }, [ticketData?.id, ticketData?.title, ticketData?.description, ticketData?.category])
+
   function statusLabelForRow(value: TicketStatus): string {
     if (value === "open") return t("status.open")
     if (value === "in-progress") return t("status.inProgress")
@@ -985,17 +1010,78 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
               </div>
             </CardHeader>
             <CardContent className="space-y-5">
+              {/* Duplicate detection warning */}
+              {duplicateCandidates.length > 0 && !duplicatesDismissed && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-800/40 dark:bg-amber-950/20">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-2">
+                      <svg className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5C2.962 18.333 3.924 20 5.464 20z" />
+                      </svg>
+                      <div>
+                        <p className="text-[13px] font-semibold text-amber-800 dark:text-amber-200">
+                          {locale === "fr"
+                            ? `${duplicateCandidates.length} doublon${duplicateCandidates.length > 1 ? "s" : ""} potentiel${duplicateCandidates.length > 1 ? "s" : ""} détecté${duplicateCandidates.length > 1 ? "s" : ""}`
+                            : `${duplicateCandidates.length} potential duplicate${duplicateCandidates.length > 1 ? "s" : ""} detected`}
+                        </p>
+                        <div className="mt-1.5 space-y-1">
+                          {duplicateCandidates.slice(0, 3).map((d) => (
+                            <div key={d.ticket_id} className="flex items-center gap-2">
+                              <Link
+                                href={`/tickets/${d.ticket_id}`}
+                                className="text-[12px] font-medium text-amber-700 hover:underline dark:text-amber-300"
+                              >
+                                {d.ticket_id}
+                              </Link>
+                              <span className="text-[12px] text-amber-700 dark:text-amber-400 truncate max-w-xs">
+                                — {d.title}
+                              </span>
+                              <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                                {Math.round(d.similarity_score * 100)}%
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setDuplicatesDismissed(true)}
+                      className="shrink-0 rounded p-0.5 text-amber-500 hover:bg-amber-100 hover:text-amber-700 transition-colors dark:hover:bg-amber-900/30"
+                      title={locale === "fr" ? "Ignorer" : "Dismiss"}
+                    >
+                      <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* AI Summary Panel */}
-              <div className="rounded-lg border border-gray-200 bg-gray-50/50 p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[12px] font-medium text-gray-500 uppercase tracking-wide">Résumé IA</span>
+              <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
+                <div className="flex items-start justify-between gap-3 mb-3">
                   <div className="flex items-center gap-2">
-                    {summary && (
+                    <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10">
+                      <svg className="h-3.5 w-3.5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                      </svg>
+                    </div>
+                    <span className="text-[13px] font-semibold text-foreground">
+                      {locale === "fr" ? "Résumé IA" : "AI Summary"}
+                    </span>
+                    {summary && !summaryLoading && (
+                      <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                        {summary.is_cached ? (locale === "fr" ? "En cache" : "Cached") : (locale === "fr" ? "Nouveau" : "Fresh")}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {summary?.summary && !summaryLoading && (
                       <button
                         onClick={() => setSummaryPopupOpen(true)}
-                        className="text-[12px] text-blue-600 hover:text-blue-800 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-1"
+                        className="text-[12px] font-medium text-primary hover:underline transition-colors duration-150 focus-visible:outline-none"
                       >
-                        Voir le résumé complet
+                        {locale === "fr" ? "Voir en détail" : "View details"}
                       </button>
                     )}
                     <button
@@ -1006,8 +1092,8 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                           .catch(() => setSummary(null))
                           .finally(() => setSummaryLoading(false))
                       }}
-                      title="Régénérer"
-                      className="text-gray-400 hover:text-gray-600 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 focus-visible:ring-offset-1"
+                      title={locale === "fr" ? "Régénérer le résumé" : "Regenerate summary"}
+                      className="rounded-md p-1 text-muted-foreground hover:bg-primary/10 hover:text-primary transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
                     >
                       <svg className={`w-3.5 h-3.5 ${summaryLoading ? "animate-spin" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
@@ -1017,24 +1103,39 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                 </div>
                 {summaryLoading ? (
                   <div className="space-y-2">
-                    <div className="h-3 w-full rounded bg-gray-200 animate-skeleton" />
-                    <div className="h-3 w-[85%] rounded bg-gray-200 animate-skeleton-delay-1" />
-                    <div className="h-3 w-[70%] rounded bg-gray-200 animate-skeleton-delay-2" />
+                    <div className="h-3 w-full rounded bg-primary/10 animate-pulse" />
+                    <div className="h-3 w-[85%] rounded bg-primary/10 animate-pulse" />
+                    <div className="h-3 w-[70%] rounded bg-primary/10 animate-pulse" />
                   </div>
                 ) : summary?.summary ? (
-                  <p className="text-[13px] text-gray-600 leading-relaxed line-clamp-4">
+                  <p className="text-[13px] text-foreground leading-relaxed">
                     {summary.summary}
                   </p>
                 ) : (
-                  <p className="text-[13px] text-gray-400 italic">Résumé non disponible.</p>
-                )}
-                {summary && !summaryLoading && (
-                  <div className="flex items-center gap-2 mt-2">
-                    <span className="text-[11px] text-gray-400">
-                      {summary.is_cached ? "En cache" : "Nouveau"}
-                      {summary.similar_ticket_count > 0 && ` · ${summary.similar_ticket_count} ticket(s) similaire(s) utilisé(s)`}
-                    </span>
+                  <div className="flex flex-col items-start gap-2">
+                    <p className="text-[13px] text-muted-foreground italic">
+                      {locale === "fr" ? "Aucun résumé disponible pour ce ticket." : "No summary available for this ticket."}
+                    </p>
+                    <button
+                      onClick={() => {
+                        setSummaryLoading(true)
+                        fetchTicketSummary(ticketData.id, true)
+                          .then(setSummary)
+                          .catch(() => setSummary(null))
+                          .finally(() => setSummaryLoading(false))
+                      }}
+                      className="rounded-md border border-primary/30 bg-primary/10 px-3 py-1 text-[12px] font-medium text-primary hover:bg-primary/20 transition-colors duration-150"
+                    >
+                      {locale === "fr" ? "Générer un résumé IA" : "Generate AI summary"}
+                    </button>
                   </div>
+                )}
+                {summary?.similar_ticket_count !== undefined && summary.similar_ticket_count > 0 && !summaryLoading && (
+                  <p className="mt-2 text-[11px] text-muted-foreground">
+                    {locale === "fr"
+                      ? `Basé sur ${summary.similar_ticket_count} ticket(s) similaire(s)`
+                      : `Based on ${summary.similar_ticket_count} similar ticket(s)`}
+                  </p>
                 )}
               </div>
 

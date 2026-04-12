@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 from app.core.deps import get_current_user, require_roles
-from app.core.rate_limit import rate_limit
 from app.db.session import get_db
 from app.models.enums import UserRole
 from app.schemas.ai import (
@@ -35,9 +34,10 @@ from app.services.ai.feedback import (
 from app.services.embeddings import search_kb
 from app.services.ai.orchestrator import handle_chat, handle_classify, handle_suggest
 
+# Rate limiting for /api/ai/* is handled by the global middleware in
+# core/rate_limit.py — no router-level dependency needed.
 router = APIRouter(
     dependencies=[
-        Depends(rate_limit("ai")),
         Depends(get_current_user),
         Depends(require_roles(UserRole.admin, UserRole.agent)),
     ]
@@ -95,6 +95,7 @@ def submit_feedback(
             source_surface=str(payload.source_surface or ""),
             ticket_id=payload.ticket_id,
             recommendation_id=payload.recommendation_id,
+            answer_type=payload.answer_type,
             recommended_action=payload.recommended_action,
             display_mode=payload.display_mode,
             confidence=payload.confidence,
@@ -109,6 +110,7 @@ def submit_feedback(
             source_surface=str(payload.source_surface or ""),
             ticket_id=payload.ticket_id,
             recommendation_id=payload.recommendation_id,
+            answer_type=payload.answer_type,
         )
         return AIFeedbackResponse(
             status="recorded",
@@ -147,6 +149,7 @@ def submit_feedback(
 def feedback_summary(
     ticket_id: str | None = Query(default=None, max_length=20),
     recommendation_id: str | None = Query(default=None, max_length=64),
+    answer_type: str | None = Query(default=None, max_length=32),
     source_surface: str = Query(..., min_length=1, max_length=32),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
@@ -157,6 +160,7 @@ def feedback_summary(
         source_surface=source_surface,
         ticket_id=ticket_id,
         recommendation_id=recommendation_id,
+        answer_type=answer_type,
     )
     return AIFeedbackResponse(
         status="ok",
@@ -286,8 +290,56 @@ def get_classification_logs(
                 "recommendation_mode": r.recommendation_mode,
                 "reasoning": r.reasoning,
                 "model_version": r.model_version,
+                "human_reviewed_at": r.human_reviewed_at.isoformat() if r.human_reviewed_at else None,
+                "override_reason": r.override_reason,
                 "created_at": r.created_at.isoformat(),
             }
             for r in rows
         ],
+    }
+
+
+@router.post("/classification-logs/{log_id}/human-review")
+def mark_classification_reviewed(
+    log_id: str,
+    override_reason: str | None = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> dict[str, Any]:
+    """ISO 42001 human oversight — mark an AI classification decision as reviewed.
+
+    Optionally supply an override_reason if the human disagrees with the AI decision.
+    This creates a verifiable audit trail of human oversight over AI decisions,
+    as required by ISO 42001 clause 6.1 (risk treatment) and clause 9.1 (monitoring).
+    """
+    import datetime as dt
+    from app.models.ai_classification_log import AiClassificationLog
+    from app.core.exceptions import InsufficientPermissionsError, NotFoundError
+
+    if current_user.role.value not in ("admin", "agent"):
+        raise InsufficientPermissionsError("forbidden")
+
+    try:
+        from uuid import UUID
+        log_uuid = UUID(log_id)
+    except ValueError:
+        from app.core.exceptions import BadRequestError
+        raise BadRequestError("invalid_log_id")
+
+    log = db.get(AiClassificationLog, log_uuid)
+    if not log:
+        from app.core.exceptions import NotFoundError
+        raise NotFoundError("classification_log_not_found")
+
+    log.human_reviewed_at = dt.datetime.now(dt.timezone.utc)
+    log.override_reason = override_reason or None
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+
+    return {
+        "id": str(log.id),
+        "human_reviewed_at": log.human_reviewed_at.isoformat(),
+        "override_reason": log.override_reason,
+        "reviewed_by": str(current_user.id),
     }

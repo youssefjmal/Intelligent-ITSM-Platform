@@ -28,7 +28,7 @@ def test_get_similar_tickets_uses_shared_resolver_retrieval(monkeypatch) -> None
     source_ticket = _ticket("TW-MOCK-013", "Finance dashboard export fails after overnight patch")
     visible_match = _ticket("TW-MOCK-025", "Payroll export CSV writes broken date values")
     secondary_match = _ticket("TW-MOCK-032", "Prepare audit evidence export package")
-    current_user = SimpleNamespace(role=UserRole.agent)
+    current_user = SimpleNamespace(id="agent-1", role=UserRole.agent)
     captured: dict[str, object] = {}
 
     def fake_resolve_ticket_advice(db, ticket, **kwargs):
@@ -98,7 +98,7 @@ def test_get_similar_tickets_uses_cross_check_for_contextual_service_request_det
         updated_at=now,
     )
     incident_match = _ticket("TW-MOCK-001", "VPN login loops after MFA for finance users")
-    current_user = SimpleNamespace(role=UserRole.agent)
+    current_user = SimpleNamespace(id="agent-1", role=UserRole.agent)
 
     def fake_resolve_ticket_advice(db, ticket, **kwargs):
         return SimpleNamespace(

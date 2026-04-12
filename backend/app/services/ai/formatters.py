@@ -216,6 +216,40 @@ def _format_ticket_status_snapshot(ticket, lang: str) -> str:
     )
 
 
+def _format_ticket_comments_snapshot(ticket, lang: str, *, limit: int = 3) -> str:
+    comments = list(getattr(ticket, "comments", None) or [])
+    comments = sorted(
+        comments,
+        key=lambda comment: _format_created_at(getattr(comment, "created_at", None)),
+        reverse=True,
+    )
+    visible = comments[:limit]
+    total = len([comment for comment in comments if getattr(comment, "content", None) or getattr(comment, "body", None)])
+    if lang == "en":
+        if total == 0:
+            return f"Ticket {ticket.id} has no comments."
+        lines = [f"Ticket {ticket.id} has {total} comment{'s' if total != 1 else ''}."]
+        for comment in visible:
+            author = str(getattr(comment, "author", "") or "Unknown").strip() or "Unknown"
+            created = _format_created_at(getattr(comment, "created_at", None))
+            content = str(getattr(comment, "content", None) or getattr(comment, "body", None) or "").strip()
+            if not content:
+                continue
+            lines.append(f"- {author} ({created}): {content}")
+        return "\n".join(lines)
+    if total == 0:
+        return f"Le ticket {ticket.id} n'a aucun commentaire."
+    lines = [f"Le ticket {ticket.id} contient {total} commentaire{'s' if total > 1 else ''}."]
+    for comment in visible:
+        author = str(getattr(comment, "author", "") or "Inconnu").strip() or "Inconnu"
+        created = _format_created_at(getattr(comment, "created_at", None))
+        content = str(getattr(comment, "content", None) or getattr(comment, "body", None) or "").strip()
+        if not content:
+            continue
+        lines.append(f"- {author} ({created}) : {content}")
+    return "\n".join(lines)
+
+
 def _format_most_recent_ticket(ticket, lang: str, *, open_only: bool) -> str:
     if not ticket:
         if lang == "en":

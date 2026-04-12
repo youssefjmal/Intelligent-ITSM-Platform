@@ -31,7 +31,7 @@ def _post(path: str, payload: dict[str, Any]) -> bool:
         return False
     url = f"{base}/{path.lstrip('/')}"
     headers = {"Content-Type": "application/json"}
-    secret = str(settings.AUTOMATION_SECRET or "").strip()
+    secret = str(settings.N8N_OUTBOUND_SECRET or "").strip()
     if secret:
         headers["X-Automation-Secret"] = secret
     try:

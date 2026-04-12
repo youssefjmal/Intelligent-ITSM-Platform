@@ -525,6 +525,42 @@ def test_handle_chat_explicit_ticket_details_return_single_ticket(monkeypatch) -
     assert response.response_payload.ticket_id == "TW-MOCK-019"
 
 
+def test_handle_chat_comment_query_returns_ticket_details_with_recent_comments(monkeypatch) -> None:
+    now = dt.datetime.now(dt.timezone.utc)
+    tickets = [
+        _ticket(
+            ticket_id="TW-MOCK-019",
+            title="CRM sync job stalls after token rotation",
+            description="The CRM sync worker stops after token rotation.",
+            status=TicketStatus.in_progress,
+            priority=TicketPriority.high,
+            category=TicketCategory.application,
+            assignee="Nadia Boucher",
+            reporter="Karim Benali",
+            created_at=now - dt.timedelta(hours=1),
+        ),
+    ]
+    tickets[0].comments = [
+        SimpleNamespace(author="Ops Bot", content="Old note", created_at=now - dt.timedelta(minutes=30)),
+        SimpleNamespace(author="Nadia", content="Restarted worker and monitored one successful sync.", created_at=now - dt.timedelta(minutes=10)),
+        SimpleNamespace(author="Karim", content="Customer confirmed the backlog is clearing.", created_at=now - dt.timedelta(minutes=5)),
+    ]
+
+    monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: tickets)
+    monkeypatch.setattr(orchestrator, "list_assignees", lambda db: [SimpleNamespace(name="Nadia Boucher")])
+    monkeypatch.setattr(orchestrator, "compute_stats", lambda rows: {"total": len(rows)})
+
+    payload = ChatRequest(messages=[ChatMessage(role="user", content="Does TW-MOCK-019 have comments? Show them.")], locale="en")
+    current_user = SimpleNamespace(role=UserRole.agent, name="Agent One")
+    response = orchestrator.handle_chat(payload, db=None, current_user=current_user)
+
+    assert response.reply.startswith("Ticket TW-MOCK-019 has 3 comments.")
+    assert response.response_payload is not None
+    assert response.response_payload.type == "ticket_details"
+    assert len(response.response_payload.recent_comments) == 3
+    assert response.response_payload.recent_comments[0].content == "Customer confirmed the backlog is clearing."
+
+
 def test_handle_chat_status_of_this_ticket_uses_prior_ticket_context(monkeypatch) -> None:
     now = dt.datetime.now(dt.timezone.utc)
     tickets = [
@@ -1538,6 +1574,7 @@ def test_handle_chat_critical_shortcut_does_not_invoke_resolver(monkeypatch) -> 
     ]
 
     monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: tickets)
+    monkeypatch.setattr(orchestrator, "get_critical_tickets_for_user", lambda db, user, active_only=False: tickets)
     monkeypatch.setattr(orchestrator, "list_assignees", lambda db: [SimpleNamespace(name="Youssef")])
     monkeypatch.setattr(orchestrator, "compute_stats", lambda rows: {"total": len(rows)})
     monkeypatch.setattr(
@@ -1553,6 +1590,10 @@ def test_handle_chat_critical_shortcut_does_not_invoke_resolver(monkeypatch) -> 
     assert response.reply.startswith("Critical tickets:")
     assert response.ticket_results is not None
     assert response.ticket_results.total_count == 1
+    assert response.response_payload is not None
+    assert response.response_payload.type == "ticket_list"
+    assert response.response_payload.list_kind == "critical"
+    assert response.response_payload.total_count == 1
 
 
 def test_handle_chat_guidance_returns_structured_resolution_advice(monkeypatch) -> None:
@@ -1848,6 +1889,8 @@ def test_build_similar_tickets_payload_mentions_source_ticket_when_no_matches() 
 
     payload = build_similar_tickets_payload(
         source_ticket_id="TW-MOCK-025",
+        source_ticket=None,
+        visible_tickets=None,
         resolver_output=resolver_output,
         lang="en",
     )

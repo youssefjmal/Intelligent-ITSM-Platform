@@ -46,7 +46,7 @@
           "parameters": [
             {
               "name": "X-Automation-Secret",
-              "value": "={{$env.AUTOMATION_SECRET}}"
+              "value": "={{$env.N8N_INBOUND_SECRET}}"
             },
             {
               "name": "X-Actor",
@@ -105,7 +105,7 @@
           "parameters": [
             {
               "name": "X-Automation-Secret",
-              "value": "={{$env.AUTOMATION_SECRET}}"
+              "value": "={{$env.N8N_INBOUND_SECRET}}"
             },
             {
               "name": "X-Actor",
@@ -301,7 +301,7 @@
           "parameters": [
             {
               "name": "X-Automation-Secret",
-              "value": "={{ $env.AUTOMATION_SECRET }}"
+              "value": "={{ $env.N8N_INBOUND_SECRET }}"
             },
             {
               "name": "Content-Type",
@@ -467,3 +467,4 @@
   "id": "workflow_sla_breach_alerting",
   "tags": []
 }
+

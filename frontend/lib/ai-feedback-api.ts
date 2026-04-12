@@ -1,7 +1,7 @@
 import { apiFetch } from "@/lib/api"
 
 export type RecommendationFeedbackType = "useful" | "not_relevant" | "applied" | "rejected"
-export type RecommendationFeedbackSurface = "ticket_detail" | "recommendations_page"
+export type RecommendationFeedbackSurface = "ticket_detail" | "recommendations_page" | "ticket_chatbot"
 
 export type RecommendationCurrentFeedback = {
   feedbackType: RecommendationFeedbackType
@@ -74,6 +74,7 @@ type ApiRecommendationFeedbackResponse = {
 export type TicketDetailFeedbackPayload = {
   ticketId: string
   feedbackType: RecommendationFeedbackType
+  answerType?: "resolution_advice" | "cause_analysis" | "suggestion_resolution_advice" | null
   recommendedAction?: string | null
   displayMode?: string | null
   confidence?: number | null
@@ -163,6 +164,28 @@ export async function submitTicketRecommendationFeedback(
       ticket_id: payload.ticketId,
       feedback_type: payload.feedbackType,
       source_surface: "ticket_detail",
+      recommended_action: payload.recommendedAction ?? null,
+      display_mode: payload.displayMode ?? null,
+      confidence: clampUnit(payload.confidence),
+      reasoning: payload.reasoning ?? null,
+      match_summary: payload.matchSummary ?? null,
+      evidence_count: Number.isFinite(payload.evidenceCount) ? payload.evidenceCount : null,
+      metadata: payload.metadata ?? null,
+    }),
+  })
+  return mapFeedbackResponse(data)
+}
+
+export async function submitChatTicketRecommendationFeedback(
+  payload: TicketDetailFeedbackPayload,
+): Promise<RecommendationFeedbackResponse> {
+  const data = await apiFetch<ApiRecommendationFeedbackResponse>("/ai/feedback", {
+    method: "POST",
+    body: JSON.stringify({
+      ticket_id: payload.ticketId,
+      answer_type: payload.answerType ?? null,
+      feedback_type: payload.feedbackType,
+      source_surface: "ticket_chatbot",
       recommended_action: payload.recommendedAction ?? null,
       display_mode: payload.displayMode ?? null,
       confidence: clampUnit(payload.confidence),

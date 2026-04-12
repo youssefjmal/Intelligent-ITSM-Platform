@@ -328,6 +328,7 @@ const translations = {
   "seniority.junior": { fr: "Junior", en: "Junior" },
   "seniority.middle": { fr: "Intermediaire", en: "Middle" },
   "seniority.senior": { fr: "Senior", en: "Senior" },
+  "auth.accountLocked": { fr: "Compte temporairement verrouille apres plusieurs tentatives echouees. Reessayez dans {minutes} minute(s).", en: "Account temporarily locked after too many failed attempts. Try again in {minutes} minute(s)." },
   "auth.invalidCredentials": { fr: "Email ou mot de passe incorrect", en: "Invalid email or password" },
   "auth.emailExists": { fr: "Cet email est deja utilise", en: "This email is already in use" },
   "auth.emailNotVerified": { fr: "Veuillez verifier votre email avant de vous connecter", en: "Please verify your email before signing in" },
@@ -364,8 +365,8 @@ const translations = {
   },
   "auth.google_oauth_failed": { fr: "Connexion Google impossible.", en: "Google sign-in failed." },
   "auth.autoEmailSignupHint": {
-    fr: "Si votre email n'existe pas encore, un compte sera cree automatiquement et un email de verification sera envoye.",
-    en: "If your email does not exist yet, an account will be created automatically and a verification email will be sent.",
+    fr: "Si votre compte existe mais n'est pas encore verifie, un nouvel email de verification sera envoye apres connexion.",
+    en: "If your account exists but is not verified yet, signing in will resend a verification email.",
   },
   "auth.forgotPassword": { fr: "Mot de passe oublie ?", en: "Forgot password?" },
   "auth.forgotPasswordTitle": { fr: "Recuperer votre compte", en: "Recover your account" },

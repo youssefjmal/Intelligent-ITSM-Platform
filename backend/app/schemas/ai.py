@@ -756,6 +756,24 @@ class AIChatInsufficientEvidenceResponse(BaseModel):
     known_facts: list[str] = Field(default_factory=list)
     missing_signals: list[str] = Field(default_factory=list)
     recommended_next_checks: list[str] = Field(default_factory=list)
+
+
+class AIChatTicketCommentItem(BaseModel):
+    author: str
+    content: str
+    created_at: str | None = None
+    source: str | None = None  # "jira" | "local"
+
+
+class AIChatTicketThreadResponse(BaseModel):
+    type: Literal["ticket_thread"] = "ticket_thread"
+    ticket_id: str
+    title: str
+    status: str
+    is_resolved: bool = False
+    resolution: str | None = None
+    comment_count: int = 0
+    comments: list[AIChatTicketCommentItem] = Field(default_factory=list)
     confidence: AIChatConfidence
 
 
@@ -771,7 +789,8 @@ AIChatStructuredResponse = Annotated[
     | AIChatRecommendationListResponse
     | AIChatSimilarTicketsResponse
     | AIChatAssignmentRecommendationResponse
-    | AIChatInsufficientEvidenceResponse,
+    | AIChatInsufficientEvidenceResponse
+    | AIChatTicketThreadResponse,
     Field(discriminator="type"),
 ]
 
@@ -827,6 +846,7 @@ class SuggestResponse(BaseModel):
 class AIFeedbackRequest(BaseModel):
     ticket_id: str | None = Field(default=None, max_length=20)
     recommendation_id: str | None = Field(default=None, max_length=64)
+    answer_type: str | None = Field(default=None, max_length=32)
     feedback_type: str | None = Field(default=None, max_length=24)
     source_surface: str | None = Field(default=None, max_length=32)
     recommended_action: str | None = Field(default=None, max_length=MAX_CHAT_CONTENT_LEN)
@@ -856,7 +876,7 @@ class AIFeedbackRequest(BaseModel):
         cleaned = clean_multiline(value) if value is not None else None
         return cleaned or None
 
-    @field_validator("ticket_id", "recommendation_id", "source", "source_id", "source_surface", "display_mode", mode="before")
+    @field_validator("ticket_id", "recommendation_id", "answer_type", "source", "source_id", "source_surface", "display_mode", mode="before")
     @classmethod
     def normalize_feedback_identity_fields(cls, value: str | None) -> str | None:
         cleaned = clean_single_line(value) if value is not None else None
@@ -873,10 +893,16 @@ class AIFeedbackRequest(BaseModel):
         if self.feedback_type:
             if self.feedback_type not in {"useful", "not_relevant", "applied", "rejected"}:
                 raise ValueError("invalid_feedback_type")
-            if self.source_surface not in {"ticket_detail", "recommendations_page"}:
+            if self.source_surface not in {"ticket_detail", "recommendations_page", "ticket_chatbot"}:
                 raise ValueError("invalid_source_surface")
-            if self.source_surface == "ticket_detail" and not self.ticket_id:
+            if self.source_surface in {"ticket_detail", "ticket_chatbot"} and not self.ticket_id:
                 raise ValueError("ticket_id_required")
+            if self.source_surface == "ticket_chatbot" and self.answer_type not in {
+                "resolution_advice",
+                "cause_analysis",
+                "suggestion_resolution_advice",
+            }:
+                raise ValueError("invalid_chatbot_answer_type")
             if self.source_surface == "recommendations_page" and not self.recommendation_id:
                 raise ValueError("recommendation_id_required")
             return self

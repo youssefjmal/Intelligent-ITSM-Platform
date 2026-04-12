@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -20,6 +21,11 @@ from app.core.security import (
     verify_password,
 )
 from app.models.refresh_token import RefreshToken
+from app.models.security_event import (
+    SecurityEvent,
+    LOGIN_SUCCESS, LOGIN_FAILED, LOGIN_BLOCKED, ACCOUNT_LOCKED, ACCOUNT_UNLOCKED,
+    LOGOUT, PASSWORD_RESET_REQUESTED, PASSWORD_RESET_SUCCESS,
+)
 from app.models.user import User
 from app.models.enums import UserRole
 from app.models.password_reset_token import PasswordResetToken
@@ -46,6 +52,35 @@ def _refresh_expiry() -> dt.datetime:
 
 def _build_claims(user: User) -> dict[str, str]:
     return {"sub": str(user.id), "role": user.role.value}
+
+
+def log_security_event(
+    db: Session,
+    event_type: str,
+    *,
+    user_id: UUID | None = None,
+    actor_id: UUID | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+    metadata: dict | None = None,
+    note: str | None = None,
+) -> None:
+    """Append a security event row.  Never raises — audit logging must not block auth flows."""
+    try:
+        event = SecurityEvent(
+            event_type=event_type,
+            user_id=user_id,
+            actor_id=actor_id or user_id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            event_metadata=metadata or {},
+            note=note,
+        )
+        db.add(event)
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to write security event %s: %s", event_type, exc)
+        db.rollback()
 
 
 def find_user_by_email(db: Session, email: str) -> User | None:
@@ -122,6 +157,7 @@ def revoke_refresh_token(db: Session, refresh_token: str) -> bool:
     session_token.revoked_at = _utcnow()
     db.add(session_token)
     db.commit()
+    log_security_event(db, LOGOUT, user_id=session_token.user_id)
     return True
 
 
@@ -287,15 +323,112 @@ def create_or_update_user_from_google(
     return user
 
 
-def authenticate_user(db: Session, email: str, password: str) -> User | None:
+def authenticate_user(
+    db: Session,
+    email: str,
+    password: str,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> User | None:
     user = find_user_by_email(db, email)
     if not user or not user.password_hash:
-        logger.warning("Login failed: user not found (%s)", email)
+        logger.warning("Login failed: user not found for email")
+        # No security event — avoid leaking whether the email exists
         return None
+
+    # Check account lockout
+    now = _utcnow()
+    if user.locked_until:
+        if user.locked_until > now:
+            remaining = int((user.locked_until - now).total_seconds() // 60) + 1
+            logger.warning("Login blocked: account locked (user_id=%s, %d min remaining)", user.id, remaining)
+            log_security_event(
+                db, LOGIN_BLOCKED,
+                user_id=user.id, ip_address=ip_address, user_agent=user_agent,
+                metadata={"locked_until": user.locked_until.isoformat(), "remaining_minutes": remaining},
+            )
+            raise ValueError(f"account_locked:{remaining}")
+        else:
+            # Lock has naturally expired — clear it and log the unlock before proceeding
+            user.locked_until = None
+            user.failed_login_attempts = 0
+            db.add(user)
+            db.commit()
+            log_security_event(
+                db, ACCOUNT_UNLOCKED,
+                user_id=user.id, ip_address=ip_address, user_agent=user_agent,
+                note="Lockout period expired; cleared automatically on next login attempt",
+            )
+            logger.info("Account lock expired, cleared (user_id=%s)", user.id)
+
     if not verify_password(password, user.password_hash):
-        logger.warning("Login failed: invalid password (%s)", email)
+        # Use a single atomic UPDATE to increment the counter, avoiding a
+        # read-then-write race condition under concurrent login attempts.
+        lock_at = now + dt.timedelta(minutes=settings.LOGIN_LOCKOUT_MINUTES)
+        db.execute(
+            update(User)
+            .where(User.id == user.id)
+            .values(
+                failed_login_attempts=User.failed_login_attempts + 1,
+                locked_until=lock_at if (user.failed_login_attempts or 0) + 1 >= settings.LOGIN_MAX_ATTEMPTS else None,
+            )
+            .execution_options(synchronize_session="fetch")
+        )
+        db.commit()
+        db.refresh(user)
+        just_locked = user.locked_until is not None
+        if just_locked:
+            logger.warning(
+                "Account locked after %d failures (user_id=%s, until=%s)",
+                user.failed_login_attempts, user.id, user.locked_until.isoformat(),
+            )
+        event_type = ACCOUNT_LOCKED if just_locked else LOGIN_FAILED
+        log_security_event(
+            db, event_type,
+            user_id=user.id, ip_address=ip_address, user_agent=user_agent,
+            metadata={"attempts": user.failed_login_attempts},
+        )
+        logger.warning("Login failed: invalid password (user_id=%s, attempts=%d)", user.id, user.failed_login_attempts)
         return None
-    logger.info("User authenticated: %s", user.email)
+
+    # Successful login — reset failure counter and any lockout
+    if user.failed_login_attempts or user.locked_until:
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        db.add(user)
+        db.commit()
+
+    log_security_event(
+        db, LOGIN_SUCCESS,
+        user_id=user.id, ip_address=ip_address, user_agent=user_agent,
+    )
+    logger.info("User authenticated (user_id=%s)", user.id)
+    return user
+
+
+def unlock_user(
+    db: Session,
+    user: User,
+    *,
+    actor_id: UUID | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> User:
+    """Clear brute-force lockout fields and log the admin-initiated unlock."""
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    log_security_event(
+        db, ACCOUNT_UNLOCKED,
+        user_id=user.id,
+        actor_id=actor_id,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        note="Account unlocked by administrator",
+    )
+    logger.info("Account unlocked by admin (user_id=%s, actor_id=%s)", user.id, actor_id)
     return user
 
 
@@ -382,6 +515,7 @@ def create_password_reset_token(db: Session, user: User) -> PasswordResetToken:
     db.add(token)
     db.commit()
     db.refresh(token)
+    log_security_event(db, PASSWORD_RESET_REQUESTED, user_id=user.id)
     logger.info("Password reset token issued: %s", user.email)
     return token
 
@@ -413,5 +547,6 @@ def reset_password_with_token(db: Session, token_str: str, new_password: str) ->
     db.add(token)
     db.commit()
     db.refresh(user)
+    log_security_event(db, PASSWORD_RESET_SUCCESS, user_id=user.id)
     logger.info("Password reset success: %s", user.email)
     return user

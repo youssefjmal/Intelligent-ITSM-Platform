@@ -624,7 +624,7 @@ export function TicketTable({
                     return (
                       <TableRow
                         key={ticket.id}
-                        className={`group ${index % 2 === 0 ? "bg-background/65" : "bg-muted/20"} transition-colors duration-150 hover:bg-primary/10 ${slaStatus === "breached" ? "border-l-[3px] border-l-[#E24B4A]" : slaStatus === "at_risk" ? "border-l-[3px] border-l-[#EF9F27]" : ""}`}
+                        className={`group border-b border-border/30 ${index % 2 === 0 ? "bg-background/65" : "bg-muted/20"} transition-all duration-100 hover:shadow-[inset_3px_0_0_rgba(29,158,117,0.4)] ${slaStatus === "breached" ? "shadow-[inset_3px_0_0_#E24B4A]" : slaStatus === "at_risk" ? "border-l-[3px] border-l-[#EF9F27]" : ""}`}
                       >
                         <TableCell className="px-3 py-3">
                           <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-[var(--color-background-secondary)] border border-[var(--color-border-tertiary)] hover:border-[var(--color-border-primary)] cursor-pointer transition-all duration-150 font-semibold text-primary">
@@ -828,7 +828,7 @@ export function TicketTable({
                         </TableCell>
                         <TableCell className="overflow-hidden px-3 py-3">
                           <Badge
-                            className={`${PRIORITY_CONFIG[ticket.priority].color} max-w-full overflow-hidden text-ellipsis whitespace-nowrap border-0 text-xs font-semibold`}
+                            className={`${PRIORITY_CONFIG[ticket.priority].color} max-w-full overflow-hidden text-ellipsis whitespace-nowrap border-0 rounded-none text-[10px] font-semibold uppercase tracking-[0.04em]`}
                             title={PRIORITY_CONFIG[ticket.priority].label}
                           >
                             {PRIORITY_CONFIG[ticket.priority].label}

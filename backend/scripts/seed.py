@@ -948,6 +948,15 @@ def seed() -> None:
     detect_problems(db, window_days=30, min_count=5)
     db.close()
 
+    # Enrich seeded tickets with KB chunks so the AI retrieval pipeline works.
+    # --skip-classify keeps it fast when Ollama isn't running (KB only, no LLM).
+    try:
+        from scripts.enrich_local_tickets import enrich as _enrich  # noqa: PLC0415
+        _enrich(skip_classify=False)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[seed] KB enrichment failed (non-fatal): {exc}")
+        print("[seed] Run `python scripts/enrich_local_tickets.py` manually to retry.")
+
 
 if __name__ == "__main__":
     seed()

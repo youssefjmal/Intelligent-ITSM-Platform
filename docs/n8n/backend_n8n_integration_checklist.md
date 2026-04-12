@@ -57,7 +57,7 @@
 
 ## 7. Security hardening reminders
 
-- [ ] Never store secrets in workflow JSON directly; use `{{$env.AUTOMATION_SECRET}}`.
+- [ ] Never store secrets in workflow JSON directly; use `{{$env.N8N_INBOUND_SECRET}}` for n8n -> backend machine-auth calls.
 - [ ] Keep n8n env variables out of Git (`.env` excluded).
 - [ ] Restrict SMTP/Teams credentials to minimum required channels.
 - [ ] Review security headers and runtime guards in backend before production rollout.

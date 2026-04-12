@@ -75,6 +75,11 @@ type ApiTicket = {
   resolution?: string | null
   tags: string[]
   comments: ApiComment[]
+  change_risk?: string | null
+  change_scheduled_at?: string | null
+  change_approved?: boolean | null
+  change_approved_by?: string | null
+  change_approved_at?: string | null
 }
 
 export type TicketPerformancePayload = {

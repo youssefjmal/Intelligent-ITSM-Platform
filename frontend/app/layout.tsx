@@ -1,15 +1,15 @@
 import React from "react"
 import type { Metadata } from "next"
-import { Manrope, Space_Grotesk, Space_Mono } from "next/font/google"
+import { DM_Sans, DM_Mono, Space_Grotesk } from "next/font/google"
 import { Providers } from "@/components/providers"
 
 import "./globals.css"
 
-const _manrope = Manrope({ subsets: ["latin"], variable: "--font-manrope" })
+const _manrope = DM_Sans({ subsets: ["latin"], variable: "--font-manrope" })
 const _display = Space_Grotesk({ subsets: ["latin"], variable: "--font-display" })
-const _spaceMono = Space_Mono({
+const _spaceMono = DM_Mono({
   subsets: ["latin"],
-  weight: ["400", "700"],
+  weight: ["400", "500"],
   variable: "--font-space-mono",
 })
 

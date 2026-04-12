@@ -23,11 +23,11 @@ export interface User {
 interface AuthContextType {
   user: User | null
   loading: boolean
-  signIn: (email: string, password: string) => Promise<{ error?: string }>
+  signIn: (email: string, password: string) => Promise<{ error?: string; lockedMinutes?: number }>
   continueWithEmail: (
     email: string,
     password: string
-  ) => Promise<{ error?: string; requiresVerification?: boolean }>
+  ) => Promise<{ error?: string; requiresVerification?: boolean; lockedMinutes?: number }>
   signUp: (data: { email: string; password: string; name: string; specializations: string[] }) => Promise<{ error?: string }>
   signOut: () => Promise<void>
   getAllUsers: () => Promise<User[]>
@@ -129,18 +129,20 @@ function mapUser(data: {
 }
 
 function mapAuthError(detail: string): string {
+  if (detail.startsWith("account_locked_")) return "accountLocked"
   switch (detail) {
-    case "invalid_credentials":
-      return "invalidCredentials"
-    case "email_exists":
-      return "emailExists"
-    case "email_not_verified":
-      return "emailNotVerified"
-    case "password_too_short":
-      return "passwordTooShort"
-    default:
-      return "invalidCredentials"
+    case "ACCOUNT_LOCKED":    return "accountLocked"
+    case "invalid_credentials": return "invalidCredentials"
+    case "email_exists":        return "emailExists"
+    case "email_not_verified":  return "emailNotVerified"
+    case "password_too_short":  return "passwordTooShort"
+    default:                    return "invalidCredentials"
   }
+}
+
+function parseLockedMinutes(detail: string): number | undefined {
+  const m = detail.match(/account_locked_(\d+)min/)
+  return m ? parseInt(m[1], 10) : undefined
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -193,7 +195,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return {}
     } catch (err) {
       if (err instanceof ApiError) {
-        return { error: mapAuthError(err.detail) }
+        return { error: mapAuthError(err.detail), lockedMinutes: parseLockedMinutes(err.detail) }
       }
       return { error: "invalidCredentials" }
     }
@@ -301,7 +303,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     } catch (err) {
       if (err instanceof ApiError) {
-        return { error: mapAuthError(err.detail) }
+        return { error: mapAuthError(err.detail), lockedMinutes: parseLockedMinutes(err.detail) }
       }
       return { error: "invalidCredentials" }
     }

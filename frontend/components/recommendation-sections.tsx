@@ -249,7 +249,7 @@ function RecommendationSection({
 }: RecommendationSectionProps) {
   return (
     <div className={cn("rounded-md border border-border/60 bg-card/70 p-3", className)}>
-      <p className={cn("text-[11px] font-semibold uppercase tracking-wide text-muted-foreground", labelClassName)}>
+      <p className={cn("text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground", labelClassName)}>
         {label}
       </p>
       <div className={cn("mt-2 text-xs leading-relaxed text-muted-foreground", bodyClassName)}>
@@ -304,7 +304,7 @@ export function RecommendationActionBlock({
   const titleEl = (
     <p
       className={cn(
-        "text-[11px] font-semibold uppercase tracking-wide",
+        "text-[10px] font-semibold uppercase tracking-[0.08em]",
         displayMode === "no_strong_match"
           ? "text-slate-600"
           : displayMode === "service_request"
@@ -525,7 +525,7 @@ export function RecommendationClusterImpactBlock({
     <div className={cn("grid grid-cols-1 gap-2 md:grid-cols-2", className)}>
       {clusterInsight ? (
         <div className="rounded-md border border-amber-200 bg-amber-50/70 p-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-800">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-amber-800">
             {locale === "fr" ? "Signal de cluster" : "Cluster signal"}
           </p>
           <p className="mt-2 text-xs leading-relaxed text-amber-900">{clusterInsight.summary}</p>
@@ -533,7 +533,7 @@ export function RecommendationClusterImpactBlock({
       ) : null}
       {impactSummary ? (
         <div className="rounded-md border border-indigo-200 bg-indigo-50/70 p-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-indigo-800">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-indigo-800">
             {locale === "fr" ? "Impact potentiel" : "Potential impact"}
           </p>
           <p className="mt-2 text-xs leading-relaxed text-indigo-900">{impactSummary}</p>
@@ -588,7 +588,7 @@ export function RecommendationEvidenceAccordion({
     <details className={cn("rounded-md border border-border/60 bg-background/60 p-2.5", className)}>
       <summary className="cursor-pointer list-none">
         <div className="flex items-center justify-between gap-3">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
             {locale === "fr" ? "Evidence utilisee" : "Evidence used"}
           </span>
           {countBadge ? (
@@ -731,7 +731,7 @@ export function LLMAdvisoryBlock({
     <div className={cn("rounded-md border border-sky-200 bg-sky-50/80 p-3", className)}>
       {/* Header + confidence badge */}
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-sky-700">
           {locale === "fr" ? LLM_ADVISORY_STRINGS.headerFr : LLM_ADVISORY_STRINGS.headerEn}
         </p>
         <Badge variant="outline" className="border-sky-300 bg-sky-100 text-[10px] text-sky-700">
@@ -741,7 +741,7 @@ export function LLMAdvisoryBlock({
 
       {action ? (
         <div className="mt-3 rounded border border-sky-200 bg-background/70 p-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-sky-700">
             {locale === "fr" ? LLM_ADVISORY_STRINGS.actionTitleFr : LLM_ADVISORY_STRINGS.actionTitleEn}
           </p>
           <p className="mt-2 text-sm font-medium leading-relaxed text-foreground">{action}</p>
@@ -750,7 +750,7 @@ export function LLMAdvisoryBlock({
 
       {steps.length > 0 ? (
         <div className="mt-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-sky-700">
             {locale === "fr" ? LLM_ADVISORY_STRINGS.nextActionsTitleFr : LLM_ADVISORY_STRINGS.nextActionsTitleEn}
           </p>
           <ol className="mt-1.5 space-y-1.5 pl-0">
@@ -766,7 +766,7 @@ export function LLMAdvisoryBlock({
 
       {validations.length > 0 ? (
         <div className="mt-3 rounded border border-emerald-200 bg-emerald-50/80 p-2.5">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-emerald-700">
             {locale === "fr" ? LLM_ADVISORY_STRINGS.validationTitleFr : LLM_ADVISORY_STRINGS.validationTitleEn}
           </p>
           <ol className="mt-1.5 space-y-1.5 pl-0">
@@ -783,7 +783,7 @@ export function LLMAdvisoryBlock({
       {/* Probable causes */}
       {causes.length > 0 ? (
         <div className="mt-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-sky-700">
             {locale === "fr" ? LLM_ADVISORY_STRINGS.causesTitleFr : LLM_ADVISORY_STRINGS.causesTitleEn}
           </p>
           <ul className="mt-1.5 space-y-1.5 pl-0">
@@ -800,7 +800,7 @@ export function LLMAdvisoryBlock({
       {/* Suggested diagnostic steps */}
       {checks.length > 0 ? (
         <div className="mt-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-sky-700">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-sky-700">
             {locale === "fr" ? LLM_ADVISORY_STRINGS.checksTitleFr : LLM_ADVISORY_STRINGS.checksTitleEn}
           </p>
           <ol className="mt-1.5 space-y-1.5 pl-0">
@@ -817,7 +817,7 @@ export function LLMAdvisoryBlock({
       {/* Escalation callout — only rendered when the LLM provided a hint */}
       {escalationHint ? (
         <div className="mt-3 rounded border border-amber-200 bg-amber-50/80 p-2.5">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-700">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-amber-700">
             {locale === "fr" ? LLM_ADVISORY_STRINGS.escalationTitleFr : LLM_ADVISORY_STRINGS.escalationTitleEn}
           </p>
           <p className="mt-1 text-xs leading-relaxed text-amber-900">{escalationHint}</p>
@@ -841,7 +841,7 @@ export function LLMAdvisoryBlock({
             size="sm"
             onClick={() => onFeedback("useful")}
             className={cn(
-              "gap-1.5 rounded-full text-xs",
+              "gap-1.5 rounded-sm text-xs tracking-[0.03em]",
               currentFeedback === "useful"
                 ? "border-emerald-300 bg-emerald-100 text-emerald-800"
                 : "border-border/70 hover:border-primary/40 hover:bg-accent/50",
@@ -856,7 +856,7 @@ export function LLMAdvisoryBlock({
             size="sm"
             onClick={() => onFeedback("not_relevant")}
             className={cn(
-              "gap-1.5 rounded-full text-xs",
+              "gap-1.5 rounded-sm text-xs tracking-[0.03em]",
               currentFeedback === "not_relevant"
                 ? "border-amber-300 bg-amber-100 text-amber-800"
                 : "border-border/70 hover:border-primary/40 hover:bg-accent/50",

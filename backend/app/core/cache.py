@@ -17,6 +17,7 @@ from typing import Any
 import redis as _redis_lib
 
 from app.core.config import settings
+from app.core.metrics import cache_hits_total, cache_misses_total
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,8 @@ def get(key: str) -> Any | None:
         return None
     try:
         raw = c.get(key)
+        _resource = key.split(":")[1] if ":" in key else "unknown"
+        (cache_hits_total if raw is not None else cache_misses_total).labels(resource=_resource).inc()
         return json.loads(raw) if raw is not None else None
     except Exception as exc:  # noqa: BLE001
         logger.debug("cache.get failed key=%s: %s", key, exc)

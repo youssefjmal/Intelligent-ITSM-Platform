@@ -1,7 +1,7 @@
 // Simple chat UI that calls the backend AI endpoint.
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import React, { useEffect, useRef, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -16,6 +16,14 @@ import { useAuth } from "@/lib/auth"
 import { useRouter } from "next/navigation"
 import { getBadgeStyle } from "@/lib/badge-utils"
 import { ConfidenceBar } from "@/components/ui/confidence-bar"
+import { AssistantMascot } from "@/components/assistant-mascot"
+import { RecommendationFeedbackControls } from "@/components/recommendation-feedback-controls"
+import {
+  type RecommendationCurrentFeedback,
+  type RecommendationFeedbackSummary,
+  type RecommendationFeedbackType,
+  submitChatTicketRecommendationFeedback,
+} from "@/lib/ai-feedback-api"
 import {
   type ChatActionLink,
   type ChatCauseCandidate,
@@ -27,6 +35,7 @@ import {
   type ProblemLinkedTicketsPayload,
   type ProblemListPayload,
   type RecommendationListPayload,
+  type TicketThreadPayload,
   type TicketDigestRow,
   type TicketDraft,
   type TicketListPayload,
@@ -53,6 +62,9 @@ type ChatMessage = {
   actions?: string[]
   ticketResults?: TicketResultsPayload | null
   responsePayload?: ChatResponsePayload | null
+  currentFeedback?: RecommendationCurrentFeedback | null
+  feedbackSummary?: RecommendationFeedbackSummary | null
+  feedbackMessage?: string | null
 }
 
 type SuggestionTicket = {
@@ -570,7 +582,9 @@ function ProblemListMessage({
                 onClick={() => onOpenProblem(problem.id)}
               >
                 <td className="px-3 py-2 font-mono text-[10px] text-muted-foreground">{problem.id}</td>
-                <td className="px-3 py-2 max-w-[200px] line-clamp-1 text-foreground">{problem.title}</td>
+                <td className="px-3 py-2 max-w-[200px] text-foreground">
+                  <div className="truncate">{problem.title}</div>
+                </td>
                 <td className="px-3 py-2">
                   <span className={getBadgeStyle("problem_status", problem.status)}>{problem.status}</span>
                 </td>
@@ -935,6 +949,10 @@ export function TicketChatbot() {
   const [criticalOverflowLoaded, setCriticalOverflowLoaded] = useState(false)
   const [criticalOverflowLoading, setCriticalOverflowLoading] = useState(false)
   const [feedbackSubmitting, setFeedbackSubmitting] = useState<Record<string, boolean>>({})
+  const [cmdOpen, setCmdOpen] = useState(false)
+  const [cmdQuery, setCmdQuery] = useState("")
+  const [cmdIndex, setCmdIndex] = useState(0)
+  const inputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const endOfMessagesRef = useRef<HTMLDivElement>(null)
   const chatAbortRef = useRef<AbortController | null>(null)
@@ -1159,6 +1177,95 @@ export function TicketChatbot() {
     }
   }
 
+  function chatFeedbackTarget(message: ChatMessage): { ticketId: string; answerType: "resolution_advice" | "cause_analysis" } | null {
+    const payload = message.responsePayload
+    if (payload?.type === "resolution_advice" && payload.ticket_id) {
+      return { ticketId: payload.ticket_id, answerType: "resolution_advice" }
+    }
+    if (payload?.type === "cause_analysis" && payload.ticket_id) {
+      return { ticketId: payload.ticket_id, answerType: "cause_analysis" }
+    }
+    return null
+  }
+
+  async function submitChatAgentFeedback(message: ChatMessage, feedbackType: RecommendationFeedbackType) {
+    const target = chatFeedbackTarget(message)
+    if (!target) return
+    const key = `${message.id}-agent-feedback`
+    if (feedbackSubmitting[key]) return
+    const payload = message.responsePayload
+    const advice = message.suggestions?.resolution_advice
+    const recommendedAction =
+      advice?.recommended_action ||
+      advice?.fallback_action ||
+      (payload?.type === "resolution_advice" ? payload.recommended_actions[0]?.text : null) ||
+      (payload?.type === "cause_analysis" ? payload.recommended_checks[0] : null) ||
+      null
+    const reasoning =
+      advice?.reasoning ||
+      (payload?.type === "cause_analysis" ? payload.summary : payload?.type === "resolution_advice" ? payload.summary : null) ||
+      null
+    const displayMode =
+      advice?.display_mode ||
+      (payload?.type === "cause_analysis" ? "cause_analysis" : payload?.type === "resolution_advice" ? "resolution_advice" : null) ||
+      null
+    const confidence =
+      advice?.confidence ||
+      (payload?.type === "cause_analysis" || payload?.type === "resolution_advice" ? Math.max(0, Math.min(1, payload.confidence?.level === "high" ? 0.85 : payload.confidence?.level === "medium" ? 0.6 : 0.35)) : null)
+    const evidenceCount =
+      advice?.evidence_sources?.length ||
+      (payload?.type === "resolution_advice"
+        ? payload.recommended_actions.reduce((count, step) => count + step.evidence.length, 0)
+        : payload?.type === "cause_analysis"
+          ? payload.possible_causes.reduce((count, cause) => count + cause.evidence.length, 0)
+          : 0)
+
+    setFeedbackSubmitting((prev) => ({ ...prev, [key]: true }))
+    try {
+      const result = await submitChatTicketRecommendationFeedback({
+        ticketId: target.ticketId,
+        answerType: target.answerType,
+        feedbackType,
+        recommendedAction,
+        displayMode,
+        confidence,
+        reasoning,
+        matchSummary: payload?.type === "resolution_advice" || payload?.type === "cause_analysis" ? payload.summary : advice?.match_summary || null,
+        evidenceCount,
+        metadata: {
+          recommendation_mode: advice?.recommendation_mode || (payload?.type === "cause_analysis" ? "cause_analysis" : "resolution_advice"),
+          source_label: advice?.source_label || "ticket_chatbot",
+          confidence_band: advice?.confidence_band || (payload?.type === "resolution_advice" || payload?.type === "cause_analysis" ? payload.confidence?.level : "unknown"),
+        },
+      })
+      setMessages((prev) =>
+        prev.map((entry) =>
+          entry.id === message.id
+            ? {
+                ...entry,
+                currentFeedback: result.currentFeedback,
+                feedbackSummary: result.feedbackSummary,
+                feedbackMessage: locale === "fr" ? "Retour enregistre" : "Feedback saved",
+              }
+            : entry,
+        ),
+      )
+    } catch {
+      setMessages((prev) =>
+        prev.map((entry) =>
+          entry.id === message.id
+            ? {
+                ...entry,
+                feedbackMessage: locale === "fr" ? "Echec de l'enregistrement" : "Could not save feedback",
+              }
+            : entry,
+        ),
+      )
+    } finally {
+      setFeedbackSubmitting((prev) => ({ ...prev, [key]: false }))
+    }
+  }
+
   function renderAssistantMessage(message: ChatMessage) {
     const isUserMessage = message.role === "user"
     const payload = message.responsePayload
@@ -1320,6 +1427,7 @@ export function TicketChatbot() {
       }
 
       if (payload.type === "resolution_advice") {
+        const feedbackKey = `${message.id}-agent-feedback`
         return (
           <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
             {payload.ticket_id ? <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{payload.ticket_id}</p> : null}
@@ -1366,17 +1474,33 @@ export function TicketChatbot() {
                 <RelatedTicketChips tickets={payload.related_tickets} onOpenRoute={(route) => router.push(route)} />
               </div>
             ) : null}
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className={`text-[10px] ${confidenceBadgeClass(payload.confidence.level)}`}>
-                {locale === "fr" ? "Confiance" : "Confidence"}: {payload.confidence.level}
-              </Badge>
-              <p className="text-[12px] text-muted-foreground">{payload.confidence.reason}</p>
-            </div>
+            {payload.confidence?.level && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline" className={`text-[10px] ${confidenceBadgeClass(payload.confidence.level)}`}>
+                  {locale === "fr" ? "Confiance" : "Confidence"}: {payload.confidence.level}
+                </Badge>
+                {payload.confidence.reason && (
+                  <p className="text-[12px] text-muted-foreground">{payload.confidence.reason}</p>
+                )}
+              </div>
+            )}
+            {payload.ticket_id ? (
+              <RecommendationFeedbackControls
+                locale={locale}
+                compact
+                currentFeedback={message.currentFeedback}
+                feedbackSummary={message.feedbackSummary}
+                successMessage={message.feedbackMessage}
+                submitting={Boolean(feedbackSubmitting[feedbackKey])}
+                onSubmit={(feedbackType) => submitChatAgentFeedback(message, feedbackType)}
+              />
+            ) : null}
           </div>
         )
       }
 
       if (payload.type === "cause_analysis") {
+        const feedbackKey = `${message.id}-agent-feedback`
         return (
           <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
             {payload.ticket_id ? <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{payload.ticket_id}</p> : null}
@@ -1415,12 +1539,27 @@ export function TicketChatbot() {
             </div>
             <StructuredSection title={locale === "fr" ? "Controles recommandes" : "Recommended checks"} items={payload.recommended_checks} />
             <StructuredSection title={locale === "fr" ? "Validation" : "Validation"} items={payload.validation_steps} />
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className={`text-[10px] ${confidenceBadgeClass(payload.confidence.level)}`}>
-                {locale === "fr" ? "Confiance" : "Confidence"}: {payload.confidence.level}
-              </Badge>
-              <p className="text-[12px] text-muted-foreground">{payload.confidence.reason}</p>
-            </div>
+            {payload.confidence?.level && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline" className={`text-[10px] ${confidenceBadgeClass(payload.confidence.level)}`}>
+                  {locale === "fr" ? "Confiance" : "Confidence"}: {payload.confidence.level}
+                </Badge>
+                {payload.confidence.reason && (
+                  <p className="text-[12px] text-muted-foreground">{payload.confidence.reason}</p>
+                )}
+              </div>
+            )}
+            {payload.ticket_id ? (
+              <RecommendationFeedbackControls
+                locale={locale}
+                compact
+                currentFeedback={message.currentFeedback}
+                feedbackSummary={message.feedbackSummary}
+                successMessage={message.feedbackMessage}
+                submitting={Boolean(feedbackSubmitting[feedbackKey])}
+                onSubmit={(feedbackType) => submitChatAgentFeedback(message, feedbackType)}
+              />
+            ) : null}
           </div>
         )
       }
@@ -1480,12 +1619,16 @@ export function TicketChatbot() {
               ) : null}
             </div>
             <StructuredSection title={locale === "fr" ? "Raisonnement" : "Reasoning"} items={payload.reasoning} />
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className={`text-[10px] ${confidenceBadgeClass(payload.confidence.level)}`}>
-                {locale === "fr" ? "Confiance" : "Confidence"}: {payload.confidence.level}
-              </Badge>
-              <p className="text-[12px] text-muted-foreground">{payload.confidence.reason}</p>
-            </div>
+            {payload.confidence?.level && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline" className={`text-[10px] ${confidenceBadgeClass(payload.confidence.level)}`}>
+                  {locale === "fr" ? "Confiance" : "Confidence"}: {payload.confidence.level}
+                </Badge>
+                {payload.confidence.reason && (
+                  <p className="text-[12px] text-muted-foreground">{payload.confidence.reason}</p>
+                )}
+              </div>
+            )}
           </div>
         )
       }
@@ -1502,12 +1645,16 @@ export function TicketChatbot() {
             <StructuredSection title={locale === "fr" ? "Faits connus" : "Known facts"} items={payload.known_facts} />
             <StructuredSection title={locale === "fr" ? "Signaux manquants" : "Missing signals"} items={payload.missing_signals} />
             <StructuredSection title={locale === "fr" ? "Controles recommandes" : "Recommended next checks"} items={payload.recommended_next_checks} />
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className={`text-[10px] ${confidenceBadgeClass(payload.confidence.level)}`}>
-                {locale === "fr" ? "Confiance" : "Confidence"}: {payload.confidence.level}
-              </Badge>
-              <p className="text-[12px] text-muted-foreground">{payload.confidence.reason}</p>
-            </div>
+            {payload.confidence?.level && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline" className={`text-[10px] ${confidenceBadgeClass(payload.confidence.level)}`}>
+                  {locale === "fr" ? "Confiance" : "Confidence"}: {payload.confidence.level}
+                </Badge>
+                {payload.confidence.reason && (
+                  <p className="text-[12px] text-muted-foreground">{payload.confidence.reason}</p>
+                )}
+              </div>
+            )}
           </div>
         )
       }
@@ -1712,6 +1859,62 @@ export function TicketChatbot() {
             >
               {locale === "fr" ? "Voir toutes les recommandations" : "View all recommendations"} →
             </button>
+          </div>
+        )
+      }
+
+      if (payload.type === "ticket_thread") {
+        const tt = payload as TicketThreadPayload
+        return (
+          <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {tt.ticket_id}
+              </p>
+              <Badge variant="outline" className={`text-[10px] ${statusBadgeClass(tt.status)}`}>{tt.status}</Badge>
+              {tt.is_resolved && (
+                <Badge variant="outline" className="text-[10px] bg-green-50 text-green-700 border-green-200">
+                  {locale === "fr" ? "Résolu" : "Resolved"}
+                </Badge>
+              )}
+            </div>
+            <p className="text-[13px] font-semibold text-foreground">{tt.title}</p>
+            {tt.is_resolved && tt.resolution && (
+              <div className="rounded-lg border border-green-200 bg-green-50/60 p-3 space-y-1">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-green-700">
+                  {locale === "fr" ? "Résolution" : "Resolution"}
+                </p>
+                <p className="text-[12px] text-foreground whitespace-pre-wrap">{tt.resolution}</p>
+              </div>
+            )}
+            {tt.comments.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {locale === "fr"
+                    ? `${tt.comment_count} commentaire(s)`
+                    : `${tt.comment_count} comment(s)`}
+                </p>
+                {tt.comments.map((c, i) => (
+                  <div key={`thread-c-${i}`} className="rounded-lg border border-border bg-background/70 p-3 space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] font-semibold text-foreground">{c.author}</span>
+                      {c.created_at && (
+                        <span className="text-[10px] text-muted-foreground">{c.created_at}</span>
+                      )}
+                      {c.source === "jira" && (
+                        <Badge variant="outline" className="text-[9px] ml-auto">Jira</Badge>
+                      )}
+                    </div>
+                    <p className="text-[12px] text-muted-foreground whitespace-pre-wrap">{c.content}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!tt.is_resolved && tt.comments.length === 0 && (
+              <p className="text-[12px] text-muted-foreground italic">
+                {locale === "fr" ? "Aucun commentaire ni résolution." : "No comments or resolution yet."}
+              </p>
+            )}
           </div>
         )
       }
@@ -1994,6 +2197,119 @@ export function TicketChatbot() {
     sendMessage(prompt)
   }
 
+  // ── Command palette (/ and @ trigger) ────────────────────────────────────
+  const ALL_COMMANDS: { label: string; desc: string; msg: string; group: string }[] =
+    locale === "fr"
+      ? [
+          { group: "Tickets", label: "/critiques", desc: "Tickets critiques", msg: "Tickets critiques" },
+          { group: "Tickets", label: "/haute-priorite", desc: "Tickets haute priorité", msg: "Tickets haute priorité" },
+          { group: "Tickets", label: "/ouverts", desc: "Tickets ouverts", msg: "Tickets ouverts" },
+          { group: "Tickets", label: "/en-cours", desc: "Tickets en cours", msg: "Tickets en cours" },
+          { group: "Tickets", label: "/recents", desc: "Tickets récents", msg: "Tickets récents" },
+          { group: "Tickets", label: "/resolus", desc: "Tickets résolus", msg: "Tickets résolus" },
+          { group: "Catégories", label: "/reseau", desc: "Tickets réseau", msg: "Tickets réseau" },
+          { group: "Catégories", label: "/email", desc: "Tickets email", msg: "Tickets email" },
+          { group: "Catégories", label: "/securite", desc: "Tickets sécurité", msg: "Tickets sécurité" },
+          { group: "Catégories", label: "/materiel", desc: "Tickets matériel", msg: "Tickets matériel" },
+          { group: "Catégories", label: "/application", desc: "Tickets application", msg: "Tickets application" },
+          { group: "Catégories", label: "/infrastructure", desc: "Tickets infrastructure", msg: "Tickets infrastructure" },
+          { group: "SLA & Risques", label: "/sla-risque", desc: "Tickets SLA à risque", msg: "Tickets SLA à risque" },
+          { group: "SLA & Risques", label: "/sla-depasse", desc: "Tickets SLA dépassée", msg: "Tickets SLA dépassée" },
+          { group: "SLA & Risques", label: "/sla-resume", desc: "Résumé SLA", msg: "Résumé SLA" },
+          { group: "Problèmes & IA", label: "/problemes", desc: "Tous les problèmes", msg: "Quels sont les problèmes ?" },
+          { group: "Problèmes & IA", label: "/problemes-ouverts", desc: "Problèmes ouverts", msg: "Problèmes ouverts" },
+          { group: "Problèmes & IA", label: "/erreurs-connues", desc: "Erreurs connues", msg: "Erreurs connues" },
+          { group: "Problèmes & IA", label: "/recurrents", desc: "Solutions récurrentes", msg: "Solutions récurrentes" },
+          { group: "Problèmes & IA", label: "/recommandations", desc: "Mes recommandations", msg: "Mes recommandations" },
+          { group: "Analytiques", label: "/semaine", desc: "Résumé de la semaine", msg: "Résumé de la semaine" },
+          { group: "Analytiques", label: "/frequents", desc: "Types de tickets les plus fréquents", msg: "Tickets les plus fréquents" },
+          { group: "Analytiques", label: "/combien", desc: "Combien de tickets ouverts ?", msg: "Combien de tickets ouverts ?" },
+          { group: "Analytiques", label: "/creer", desc: "Créer un nouveau ticket", msg: "Créer un ticket" },
+        ]
+      : [
+          { group: "Tickets", label: "/critical", desc: "Critical tickets", msg: "Critical tickets" },
+          { group: "Tickets", label: "/high-priority", desc: "High priority tickets", msg: "High priority tickets" },
+          { group: "Tickets", label: "/open", desc: "Open tickets", msg: "Open tickets" },
+          { group: "Tickets", label: "/in-progress", desc: "In progress tickets", msg: "In progress tickets" },
+          { group: "Tickets", label: "/recent", desc: "Recent tickets", msg: "Recent tickets" },
+          { group: "Tickets", label: "/resolved", desc: "Resolved tickets", msg: "Resolved tickets" },
+          { group: "Categories", label: "/network", desc: "Network tickets", msg: "Network tickets" },
+          { group: "Categories", label: "/email", desc: "Email tickets", msg: "Email tickets" },
+          { group: "Categories", label: "/security", desc: "Security tickets", msg: "Security tickets" },
+          { group: "Categories", label: "/hardware", desc: "Hardware tickets", msg: "Hardware tickets" },
+          { group: "Categories", label: "/application", desc: "Application tickets", msg: "Application tickets" },
+          { group: "Categories", label: "/infrastructure", desc: "Infrastructure tickets", msg: "Infrastructure tickets" },
+          { group: "SLA & Risk", label: "/sla-risk", desc: "SLA at risk tickets", msg: "SLA at risk tickets" },
+          { group: "SLA & Risk", label: "/sla-breached", desc: "SLA breached tickets", msg: "SLA breached tickets" },
+          { group: "SLA & Risk", label: "/sla-summary", desc: "SLA summary", msg: "SLA summary" },
+          { group: "Problems & AI", label: "/problems", desc: "All problems", msg: "Show problems" },
+          { group: "Problems & AI", label: "/open-problems", desc: "Open problems", msg: "Open problems" },
+          { group: "Problems & AI", label: "/known-errors", desc: "Known errors", msg: "Known errors" },
+          { group: "Problems & AI", label: "/recurring", desc: "Recurring solutions", msg: "Recurring solutions" },
+          { group: "Problems & AI", label: "/recommendations", desc: "My recommendations", msg: "My recommendations" },
+          { group: "Analytics", label: "/weekly", desc: "Weekly summary", msg: "Weekly summary" },
+          { group: "Analytics", label: "/frequent", desc: "Most common ticket types", msg: "Most common ticket types" },
+          { group: "Analytics", label: "/count", desc: "How many open tickets?", msg: "How many open tickets?" },
+          { group: "Analytics", label: "/create", desc: "Create a new ticket", msg: "Create a ticket" },
+        ]
+
+  const filteredCommands = cmdOpen
+    ? ALL_COMMANDS.filter((c) => {
+        const q = cmdQuery.toLowerCase()
+        return !q || c.label.includes(q) || c.desc.toLowerCase().includes(q) || c.group.toLowerCase().includes(q)
+      })
+    : []
+
+  function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const val = e.target.value
+    setInput(val)
+    const trigger = val === "/" || val === "@" || val.startsWith("/") || val.startsWith("@")
+    if (trigger) {
+      setCmdOpen(true)
+      setCmdQuery(val.slice(1).toLowerCase())
+      setCmdIndex(0)
+    } else {
+      setCmdOpen(false)
+      setCmdQuery("")
+    }
+  }
+
+  function selectCommand(cmd: { msg: string }) {
+    setCmdOpen(false)
+    setCmdQuery("")
+    setInput("")
+    sendMessage(cmd.msg)
+  }
+
+  function handleInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (cmdOpen && filteredCommands.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault()
+        setCmdIndex((i) => Math.min(i + 1, filteredCommands.length - 1))
+        return
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault()
+        setCmdIndex((i) => Math.max(i - 1, 0))
+        return
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault()
+        selectCommand(filteredCommands[cmdIndex])
+        return
+      }
+      if (e.key === "Escape") {
+        e.preventDefault()
+        setCmdOpen(false)
+        return
+      }
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault()
+      handleSend()
+    }
+  }
+
   return (
     <Card className="surface-card flex h-[calc(100vh-13rem)] flex-col overflow-hidden rounded-2xl border border-border/60 shadow-sm">
       {/* Top accent bar */}
@@ -2003,9 +2319,9 @@ export function TicketChatbot() {
       <CardHeader className="shrink-0 border-b border-border/60 px-4 py-3">
         <div className="flex items-center justify-between gap-2">
           <CardTitle className="flex items-center gap-2.5 text-sm font-semibold text-foreground">
-            <div className="relative flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-primary/20 to-primary/5 ring-1 ring-primary/20">
-              <Bot className="h-4 w-4 text-primary" />
-              <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full bg-emerald-500 ring-1 ring-background" />
+            <div className="relative">
+              <AssistantMascot locale={locale} compact speaking={loading} />
+              <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-background" />
             </div>
             <div>
               <p className="leading-tight">{t("chat.title")}</p>
@@ -2074,143 +2390,83 @@ export function TicketChatbot() {
       <CardContent className="flex flex-1 flex-col overflow-hidden p-0">
         <ScrollArea className="flex-1 px-4 py-4 sm:px-5" ref={scrollRef}>
           {messages.length === 0 ? (
-            <div className="flex flex-col gap-5 py-6 px-2">
+            <div className="flex flex-col gap-6 py-5 px-1">
               {/* Welcome */}
-              <div className="flex flex-col items-center gap-2 text-center px-4">
-                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/20 to-emerald-500/10 ring-1 ring-primary/20">
+              <div className="flex flex-col items-center gap-2 text-center px-2">
+                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/20 to-emerald-500/10 ring-1 ring-primary/20 shadow-sm">
                   <Sparkles className="h-5 w-5 text-primary" />
                 </div>
                 <p className="text-[15px] font-semibold text-foreground">
                   {locale === "fr" ? "Bonjour, que puis-je faire pour vous ?" : "Hi, what can I help you with?"}
                 </p>
-                <p className="text-[12px] text-muted-foreground">
-                  {locale === "fr" ? "Choisissez un raccourci ou posez votre question directement." : "Pick a shortcut below or type your question."}
+                <p className="text-[11px] text-muted-foreground">
+                  {locale === "fr"
+                    ? "Choisissez un raccourci ou tapez / dans la zone de saisie"
+                    : "Pick a shortcut below or type / in the input"}
                 </p>
               </div>
 
-              {/* Grouped shortcuts */}
-              {(locale === "fr" ? [
-                {
-                  group: "🎫 Tickets",
-                  items: [
-                    { label: "Critiques", msg: "Tickets critiques" },
-                    { label: "Haute priorité", msg: "Tickets haute priorité" },
-                    { label: "Ouverts", msg: "Tickets ouverts" },
-                    { label: "En cours", msg: "Tickets en cours" },
-                    { label: "Récents", msg: "Tickets récents" },
-                    { label: "Résolus", msg: "Tickets résolus" },
-                  ],
-                },
-                {
-                  group: "📂 Catégories",
-                  items: [
-                    { label: "Réseau", msg: "Tickets réseau" },
-                    { label: "Email", msg: "Tickets email" },
-                    { label: "Sécurité", msg: "Tickets sécurité" },
-                    { label: "Matériel", msg: "Tickets matériel" },
-                    { label: "Application", msg: "Tickets application" },
-                    { label: "Infrastructure", msg: "Tickets infrastructure" },
-                  ],
-                },
-                {
-                  group: "⚠️ SLA & Risques",
-                  items: [
-                    { label: "SLA à risque", msg: "Tickets SLA à risque" },
-                    { label: "SLA dépassée", msg: "Tickets SLA dépassée" },
-                    { label: "Résumé SLA", msg: "Résumé SLA" },
-                  ],
-                },
-                {
-                  group: "🔁 Problèmes & IA",
-                  items: [
-                    { label: "Tous les problèmes", msg: "Quels sont les problèmes ?" },
-                    { label: "Problèmes ouverts", msg: "Problèmes ouverts" },
-                    { label: "Erreurs connues", msg: "Erreurs connues" },
-                    { label: "Solutions récurrentes", msg: "Solutions récurrentes" },
-                    { label: "Mes recommandations", msg: "Mes recommandations" },
-                  ],
-                },
-                {
-                  group: "📊 Analytiques",
-                  items: [
-                    { label: "Résumé de la semaine", msg: "Résumé de la semaine" },
-                    { label: "Plus fréquents", msg: "Tickets les plus fréquents" },
-                    { label: "Combien de tickets ?", msg: "Combien de tickets ouverts ?" },
-                    { label: "Créer un ticket", msg: "Créer un ticket" },
-                  ],
-                },
-              ] : [
-                {
-                  group: "🎫 Tickets",
-                  items: [
-                    { label: "Critical", msg: "Critical tickets" },
-                    { label: "High priority", msg: "High priority tickets" },
-                    { label: "Open", msg: "Open tickets" },
-                    { label: "In progress", msg: "In progress tickets" },
-                    { label: "Recent", msg: "Recent tickets" },
-                    { label: "Resolved", msg: "Resolved tickets" },
-                  ],
-                },
-                {
-                  group: "📂 Categories",
-                  items: [
-                    { label: "Network", msg: "Network tickets" },
-                    { label: "Email", msg: "Email tickets" },
-                    { label: "Security", msg: "Security tickets" },
-                    { label: "Hardware", msg: "Hardware tickets" },
-                    { label: "Application", msg: "Application tickets" },
-                    { label: "Infrastructure", msg: "Infrastructure tickets" },
-                  ],
-                },
-                {
-                  group: "⚠️ SLA & Risk",
-                  items: [
-                    { label: "SLA at risk", msg: "SLA at risk tickets" },
-                    { label: "SLA breached", msg: "SLA breached tickets" },
-                    { label: "SLA summary", msg: "SLA summary" },
-                  ],
-                },
-                {
-                  group: "🔁 Problems & AI",
-                  items: [
-                    { label: "All problems", msg: "Show problems" },
-                    { label: "Open problems", msg: "Open problems" },
-                    { label: "Known errors", msg: "Known errors" },
-                    { label: "Recurring solutions", msg: "Recurring solutions" },
-                    { label: "My recommendations", msg: "My recommendations" },
-                  ],
-                },
-                {
-                  group: "📊 Analytics",
-                  items: [
-                    { label: "Weekly summary", msg: "Weekly summary" },
-                    { label: "Most frequent", msg: "Most common ticket types" },
-                    { label: "How many tickets?", msg: "How many open tickets?" },
-                    { label: "Create a ticket", msg: "Create a ticket" },
-                  ],
-                },
-              ]).map(({ group, items }) => (
-                <div key={group} className="px-1">
-                  <p className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/70">
-                    {group}
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {items.map(({ label, msg }) => (
-                      <button
-                        key={label}
-                        type="button"
-                        onClick={() => sendMessage(msg)}
-                        className="rounded-lg border border-border/60 bg-card px-2.5 py-1.5 text-[12px] text-foreground/80 shadow-sm transition-all hover:-translate-y-px hover:border-primary/40 hover:bg-accent hover:text-foreground hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
+              {/* Quick shortcuts */}
+              <div className="flex flex-wrap justify-center gap-2 px-1">
+                {(locale === "fr" ? [
+                  { label: "Tickets critiques",  msg: "Tickets critiques" },
+                  { label: "SLA à risque",       msg: "Tickets SLA à risque" },
+                  { label: "Problèmes",          msg: "Quels sont les problèmes ?" },
+                  { label: "Recommandations",    msg: "Mes recommandations" },
+                  { label: "Résumé semaine",     msg: "Résumé de la semaine" },
+                ] : [
+                  { label: "Critical tickets",  msg: "Critical tickets" },
+                  { label: "SLA at risk",       msg: "SLA at risk tickets" },
+                  { label: "Problems",          msg: "Show problems" },
+                  { label: "Recommendations",   msg: "My recommendations" },
+                  { label: "Weekly summary",    msg: "Weekly summary" },
+                ]).map(({ label, msg }) => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => sendMessage(msg)}
+                    className="rounded-full border border-border/60 bg-card px-4 py-2 text-[12px] font-medium text-foreground/75 shadow-sm transition-all hover:-translate-y-px hover:border-primary/30 hover:bg-primary/5 hover:text-foreground hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
           ) : (
             <div className="space-y-4">
+              {messages.length === 0 && (
+                <div className="rounded-3xl border border-border/70 bg-background/70 px-5 py-5 shadow-sm">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                    <AssistantMascot locale={locale} speaking className="shrink-0" />
+                    <div className="space-y-2">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-primary/80">
+                        {locale === "fr" ? "Assistant guide" : "Assistant guide"}
+                      </p>
+                      <p className="text-sm text-foreground">
+                        {locale === "fr"
+                          ? "Demandez le statut, les details, les commentaires recents ou les tickets critiques. Les reponses structurees s'affichent directement dans le chat."
+                          : "Ask for status, details, recent comments, or critical tickets. Structured answers render directly inside the chat."}
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {[
+                          locale === "fr" ? "Montre les commentaires de TW-1001" : "Show comments for TW-1001",
+                          locale === "fr" ? "Quels tickets critiques sont ouverts ?" : "Which critical tickets are open?",
+                          locale === "fr" ? "Details de TW-1001" : "Details for TW-1001",
+                        ].map((prompt) => (
+                          <button
+                            key={prompt}
+                            type="button"
+                            onClick={() => setInput(prompt)}
+                            className="rounded-full border border-border bg-card px-3 py-1.5 text-xs text-foreground transition-colors hover:border-primary/40 hover:bg-accent/50"
+                          >
+                            {prompt}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
               {messages.map((message) => {
                 const isUser = message.role === "user"
                 const parsedDigest = !isUser && message.ticketAction === "show_ticket"
@@ -2223,9 +2479,7 @@ export function TicketChatbot() {
                   <div key={message.id} className="space-y-2">
                     <div className={`flex gap-2.5 ${isUser ? "justify-end" : "justify-start"}`}>
                       {!isUser && (
-                        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 ring-1 ring-primary/10">
-                          <Bot className="h-3.5 w-3.5 text-primary" />
-                        </div>
+                        <AssistantMascot locale={locale} compact className="mt-0.5 shrink-0" />
                       )}
 
                       <div className={`flex max-w-[88%] flex-col sm:max-w-[82%] ${isUser ? "items-end" : "items-start"}`}>
@@ -2418,7 +2672,6 @@ export function TicketChatbot() {
                                 </div>
                               )
                             ) : null}
-
                             {message.suggestions?.tickets?.slice(0, 2).map((row) => (
                               <div key={`ticket-sug-${message.id}-${row.id}`} className="rounded-lg border border-border bg-background/70 p-2.5">
                                 <div className="flex items-center justify-between gap-2">
@@ -2549,9 +2802,7 @@ export function TicketChatbot() {
 
               {loading && (
                 <div className="flex items-start gap-2.5">
-                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 ring-1 ring-primary/10">
-                    <Bot className="h-3.5 w-3.5 text-primary" />
-                  </div>
+                  <AssistantMascot locale={locale} compact speaking className="mt-0.5 shrink-0" />
                   <div className="rounded-2xl rounded-tl-sm border border-border/60 bg-card px-4 py-3 shadow-sm flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-primary/60 animate-dot-bounce" />
                     <span className="w-1.5 h-1.5 rounded-full bg-primary/60 animate-dot-bounce-delay-1" />
@@ -2609,71 +2860,71 @@ export function TicketChatbot() {
           </div>
         ) : null}
 
-        {/* Persistent shortcut strip — scrollable, shown when conversation is active */}
-        {messages.length > 0 && (
-          <div className="shrink-0 border-t border-border/40 bg-muted/20 px-3 py-2 overflow-x-auto scrollbar-hide">
-            <div className="flex gap-1.5 min-w-max">
-              {(locale === "fr" ? [
-                { label: "🔴 Critiques", msg: "Tickets critiques" },
-                { label: "🔥 Haute priorité", msg: "Tickets haute priorité" },
-                { label: "📂 Ouverts", msg: "Tickets ouverts" },
-                { label: "🌐 Réseau", msg: "Tickets réseau" },
-                { label: "📧 Email", msg: "Tickets email" },
-                { label: "🔒 Sécurité", msg: "Tickets sécurité" },
-                { label: "🖥️ Matériel", msg: "Tickets matériel" },
-                { label: "⚙️ Application", msg: "Tickets application" },
-                { label: "⚠️ SLA à risque", msg: "Tickets SLA à risque" },
-                { label: "🚨 SLA dépassée", msg: "Tickets SLA dépassée" },
-                { label: "🔁 Problèmes", msg: "Quels sont les problèmes ?" },
-                { label: "⚡ Erreurs connues", msg: "Erreurs connues" },
-                { label: "💡 Recommandations", msg: "Mes recommandations" },
-                { label: "📊 Semaine", msg: "Résumé de la semaine" },
-                { label: "➕ Créer", msg: "Créer un ticket" },
-              ] : [
-                { label: "🔴 Critical", msg: "Critical tickets" },
-                { label: "🔥 High priority", msg: "High priority tickets" },
-                { label: "📂 Open", msg: "Open tickets" },
-                { label: "🌐 Network", msg: "Network tickets" },
-                { label: "📧 Email", msg: "Email tickets" },
-                { label: "🔒 Security", msg: "Security tickets" },
-                { label: "🖥️ Hardware", msg: "Hardware tickets" },
-                { label: "⚙️ Application", msg: "Application tickets" },
-                { label: "⚠️ SLA at risk", msg: "SLA at risk tickets" },
-                { label: "🚨 SLA breached", msg: "SLA breached tickets" },
-                { label: "🔁 Problems", msg: "Show problems" },
-                { label: "⚡ Known errors", msg: "Known errors" },
-                { label: "💡 Recommendations", msg: "My recommendations" },
-                { label: "📊 Weekly", msg: "Weekly summary" },
-                { label: "➕ Create", msg: "Create a ticket" },
-              ]).map(({ label, msg }) => (
-                <button
-                  key={label}
-                  type="button"
-                  disabled={loading}
-                  onClick={() => sendMessage(msg)}
-                  className="whitespace-nowrap rounded-full border border-border/50 bg-background/80 px-2.5 py-1 text-[11px] text-muted-foreground transition-all hover:border-primary/50 hover:bg-primary/5 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Input area */}
+        {/* Input area + command palette */}
         <div className="shrink-0 border-t border-border/60 bg-card/80 px-3 py-2.5">
+          {/* Command palette dropdown — renders above the input */}
+          {cmdOpen && filteredCommands.length > 0 && (
+            <div className="mb-2 overflow-hidden rounded-xl border border-border/70 bg-background shadow-lg">
+              {/* Header hint */}
+              <div className="flex items-center justify-between border-b border-border/50 px-3 py-1.5">
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  {locale === "fr" ? "Raccourcis" : "Shortcuts"}
+                </p>
+                <p className="text-[10px] text-muted-foreground/60">
+                  {locale === "fr" ? "↑↓ naviguer · ↵ sélectionner · Esc fermer" : "↑↓ navigate · ↵ select · Esc close"}
+                </p>
+              </div>
+              <div className="max-h-56 overflow-y-auto scrollbar-hide">
+                {(() => {
+                  let lastGroup = ""
+                  return filteredCommands.map((cmd, idx) => {
+                    const showGroup = cmd.group !== lastGroup
+                    lastGroup = cmd.group
+                    return (
+                      <div key={cmd.label}>
+                        {showGroup && (
+                          <p className="px-3 pt-2 pb-0.5 text-[9px] font-semibold uppercase tracking-widest text-muted-foreground/50">
+                            {cmd.group}
+                          </p>
+                        )}
+                        <button
+                          type="button"
+                          onMouseDown={(e) => { e.preventDefault(); selectCommand(cmd) }}
+                          onMouseEnter={() => setCmdIndex(idx)}
+                          className={`flex w-full items-center gap-3 px-3 py-2 text-left transition-colors ${
+                            idx === cmdIndex
+                              ? "bg-primary/10 text-foreground"
+                              : "text-foreground/80 hover:bg-muted/60"
+                          }`}
+                        >
+                          <span className="w-32 shrink-0 font-mono text-[11px] font-semibold text-primary">
+                            {cmd.label}
+                          </span>
+                          <span className="truncate text-[12px]">{cmd.desc}</span>
+                        </button>
+                      </div>
+                    )
+                  })
+                })()}
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
               <Input
+                ref={inputRef}
                 placeholder={loading
                   ? (locale === "fr" ? "Traitement en cours…" : "Processing…")
-                  : (locale === "fr" ? "Posez une question ou choisissez un raccourci…" : "Ask a question or pick a shortcut…")}
+                  : (locale === "fr" ? "Posez une question, tapez / ou @ pour les raccourcis…" : "Ask a question, or type / or @ for shortcuts…")}
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault()
-                    handleSend()
+                onChange={handleInputChange}
+                onKeyDown={handleInputKeyDown}
+                onBlur={() => setTimeout(() => setCmdOpen(false), 150)}
+                onFocus={() => {
+                  if (input === "/" || input === "@") {
+                    setCmdOpen(true)
+                    setCmdIndex(0)
                   }
                 }}
                 disabled={loading}
@@ -2682,7 +2933,7 @@ export function TicketChatbot() {
               {input.trim() && !loading && (
                 <button
                   type="button"
-                  onClick={() => setInput("")}
+                  onClick={() => { setInput(""); setCmdOpen(false) }}
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/50 hover:text-muted-foreground transition-colors"
                   tabIndex={-1}
                 >
@@ -2695,7 +2946,7 @@ export function TicketChatbot() {
             <Button
               type="button"
               onClick={handleSend}
-              disabled={!input.trim() || loading}
+              disabled={(!input.trim() && !cmdOpen) || loading}
               size="sm"
               className="h-9 w-9 shrink-0 rounded-xl bg-primary p-0 text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 LEGACY_FEEDBACK_TYPES = {"helpful", "not_helpful"}
 AGENT_FEEDBACK_TYPES = {"useful", "not_relevant", "applied", "rejected"}
-AGENT_FEEDBACK_SURFACES = {"ticket_detail", "recommendations_page"}
+AGENT_FEEDBACK_SURFACES = {"ticket_detail", "recommendations_page", "ticket_chatbot"}
 
 
 def _utcnow() -> dt.datetime:
@@ -50,9 +50,12 @@ def _target_key(
     source_surface: str,
     ticket_id: str | None = None,
     recommendation_id: str | None = None,
+    answer_type: str | None = None,
 ) -> str | None:
     if source_surface == "ticket_detail" and ticket_id:
         return f"ticket:{ticket_id}"
+    if source_surface == "ticket_chatbot" and ticket_id and answer_type:
+        return f"ticket_chatbot:{ticket_id}:{answer_type}"
     if source_surface == "recommendations_page" and recommendation_id:
         return f"recommendation:{recommendation_id}"
     return None
@@ -175,6 +178,7 @@ def _apply_agent_feedback_snapshot(
     source_surface: str,
     ticket_id: str | None,
     recommendation_id: str | None,
+    answer_type: str | None,
     recommended_action: str | None,
     display_mode: str | None,
     confidence: float | None,
@@ -187,13 +191,14 @@ def _apply_agent_feedback_snapshot(
         source_surface=source_surface,
         ticket_id=ticket_id,
         recommendation_id=recommendation_id,
+        answer_type=answer_type,
     )
     recommendation_text = _normalize_line(recommended_action) or _normalize_line(reasoning) or "feedback-captured"
     row.ticket_id = ticket_id
     row.recommendation_id = recommendation_id
     row.recommendation_text = recommendation_text
     row.source = source_surface
-    row.source_id = recommendation_id or ticket_id
+    row.source_id = recommendation_id or answer_type or ticket_id
     row.vote = feedback_type
     row.feedback_type = feedback_type
     row.source_surface = source_surface
@@ -255,6 +260,7 @@ def upsert_agent_feedback(
     source_surface: str,
     ticket_id: str | None = None,
     recommendation_id: str | None = None,
+    answer_type: str | None = None,
     recommended_action: str | None = None,
     display_mode: str | None = None,
     confidence: float | None = None,
@@ -265,10 +271,17 @@ def upsert_agent_feedback(
 ) -> AiSolutionFeedback:
     normalized_type = _normalize_feedback_type(feedback_type)
     normalized_surface = _normalize_feedback_type(source_surface)
+    normalized_answer_type = _normalize_feedback_type(answer_type)
     if normalized_type not in AGENT_FEEDBACK_TYPES:
         raise ValueError("invalid_feedback_type")
     if normalized_surface not in AGENT_FEEDBACK_SURFACES:
         raise ValueError("invalid_source_surface")
+    if normalized_surface == "ticket_chatbot" and normalized_answer_type not in {
+        "resolution_advice",
+        "cause_analysis",
+        "suggestion_resolution_advice",
+    }:
+        raise ValueError("invalid_chatbot_answer_type")
 
     normalized_ticket_id = _normalize_line(ticket_id)
     normalized_recommendation_id = _normalize_line(recommendation_id)
@@ -276,6 +289,7 @@ def upsert_agent_feedback(
         source_surface=normalized_surface,
         ticket_id=normalized_ticket_id,
         recommendation_id=normalized_recommendation_id,
+        answer_type=normalized_answer_type,
     )
     if not target_key:
         raise ValueError("missing_feedback_target")
@@ -303,6 +317,7 @@ def upsert_agent_feedback(
         source_surface=normalized_surface,
         ticket_id=normalized_ticket_id,
         recommendation_id=normalized_recommendation_id,
+        answer_type=normalized_answer_type,
         recommended_action=recommended_action,
         display_mode=display_mode,
         confidence=confidence,
@@ -391,12 +406,27 @@ def get_feedback_bundle_for_target(
     source_surface: str,
     ticket_id: str | None = None,
     recommendation_id: str | None = None,
+    answer_type: str | None = None,
 ) -> dict[str, Any]:
     normalized_surface = _normalize_feedback_type(source_surface)
+    normalized_answer_type = _normalize_feedback_type(answer_type)
     try:
         query = db.query(AiSolutionFeedback).filter(AiSolutionFeedback.source_surface == normalized_surface)
-        if normalized_surface == "ticket_detail" and ticket_id:
-            query = query.filter(AiSolutionFeedback.ticket_id == ticket_id)
+        if normalized_surface in {"ticket_detail", "ticket_chatbot"} and ticket_id:
+            if normalized_surface == "ticket_chatbot":
+                target_key = _target_key(
+                    source_surface=normalized_surface,
+                    ticket_id=_normalize_line(ticket_id),
+                    answer_type=normalized_answer_type,
+                )
+                if not target_key:
+                    return {
+                        "current_feedback": None,
+                        "feedback_summary": _empty_feedback_summary(),
+                    }
+                query = query.filter(AiSolutionFeedback.target_key == target_key)
+            else:
+                query = query.filter(AiSolutionFeedback.ticket_id == ticket_id)
         elif normalized_surface == "recommendations_page" and recommendation_id:
             query = query.filter(AiSolutionFeedback.recommendation_id == recommendation_id)
         else:

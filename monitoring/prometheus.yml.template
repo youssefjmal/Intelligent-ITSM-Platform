@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: itsm_backend
+    authorization:
+      type: Bearer
+      credentials_file: /tmp/prometheus_metrics_token
+    static_configs:
+      - targets: ["__PROMETHEUS_SCRAPE_TARGET__"]
+    metrics_path: /metrics
