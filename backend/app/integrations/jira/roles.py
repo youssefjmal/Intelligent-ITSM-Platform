@@ -8,6 +8,7 @@ import re
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.rbac import effective_role
 from app.db.session import SessionLocal
 from app.integrations.jira.client import JiraClient
 from app.models.enums import UserRole
@@ -24,7 +25,6 @@ PROJECT_ROLE_NAMES_BY_LOCAL_ROLE: dict[UserRole, tuple[str, ...]] = {
     UserRole.admin: ("Administrators", "Service Desk Team"),
     UserRole.agent: ("Service Desk Team",),
     UserRole.user: ("Service Desk Customers",),
-    UserRole.viewer: ("Service Desk Customers",),
 }
 
 
@@ -162,7 +162,12 @@ def sync_jira_project_roles_for_user(
         logger.warning("Jira project role fetch failed for %s: %s", resolved_project_key, exc)
         return account_id
 
-    desired_roles = set(PROJECT_ROLE_NAMES_BY_LOCAL_ROLE.get(user.role, ("Service Desk Customers",)))
+    desired_roles = set(
+        PROJECT_ROLE_NAMES_BY_LOCAL_ROLE.get(
+            effective_role(user.role),
+            ("Service Desk Customers",),
+        )
+    )
     for role_name in MANAGED_PROJECT_ROLE_NAMES:
         role_url = role_urls.get(role_name)
         role_id = _role_id_from_url(role_url)

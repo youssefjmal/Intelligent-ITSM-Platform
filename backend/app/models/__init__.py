@@ -15,6 +15,8 @@ from app.models.notification_delivery_event import NotificationDeliveryEvent
 from app.models.ai_solution_feedback import AiSolutionFeedback
 from app.models.ai_sla_risk_evaluation import AiSlaRiskEvaluation
 from app.models.automation_event import AutomationEvent
+from app.models.chat_conversation import ChatConversation, ChatConversationMessage  # noqa: F401
+from app.models.knowledge_draft import KnowledgeDraft  # noqa: F401
 
 try:
     from app.models.kb_chunk import KBChunk  # noqa: F401

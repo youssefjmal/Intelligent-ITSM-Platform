@@ -16,6 +16,10 @@ MAX_SPECIALIZATIONS = 12
 MAX_SPECIALIZATION_LEN = 32
 
 
+def _normalize_role(value: UserRole) -> UserRole:
+    return UserRole.user if value == UserRole.viewer else value
+
+
 class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
@@ -82,12 +86,22 @@ class UserOut(BaseModel):
     is_available: bool
     max_concurrent_tickets: int
 
+    @field_validator("role", mode="before")
+    @classmethod
+    def normalize_role(cls, value: UserRole) -> UserRole:
+        return _normalize_role(value)
+
     class Config:
         from_attributes = True
 
 
 class UserRoleUpdate(BaseModel):
     role: UserRole
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def normalize_role(cls, value: UserRole) -> UserRole:
+        return _normalize_role(value)
 
 
 class UserSeniorityUpdate(BaseModel):
@@ -115,6 +129,11 @@ class UserAssigneeOut(BaseModel):
     seniority_level: SeniorityLevel
     is_available: bool
     max_concurrent_tickets: int
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def normalize_role(cls, value: UserRole) -> UserRole:
+        return _normalize_role(value)
 
     class Config:
         from_attributes = True

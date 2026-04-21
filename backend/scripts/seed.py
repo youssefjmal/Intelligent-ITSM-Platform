@@ -55,10 +55,10 @@ USERS = [
         "max_concurrent_tickets": 10,
     },
     {
-        "email": "viewer@teamwill.com",
-        "password": "viewer123",
+        "email": "requester@teamwill.com",
+        "password": "requester123",
         "name": "Sophie Leclerc",
-        "role": UserRole.viewer,
+        "role": UserRole.user,
         "specializations": [],
         "seniority": SeniorityLevel.junior,
         "is_available": True,

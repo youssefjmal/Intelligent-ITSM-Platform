@@ -238,6 +238,7 @@ export interface ProblemListPayload {
     occurrences_count: number
     active_count: number
     last_seen_at?: string | null
+    root_cause?: string | null
     workaround?: string | null
   }>
   status_filter?: string | null
@@ -337,7 +338,20 @@ export function ticketListPayloadToResults(payload: TicketListPayload): TicketRe
 }
 
 export function normalizeResponsePayload(payload: unknown): ChatResponsePayload | null {
-  if (!payload || typeof payload !== "object") return null
+  if (!payload) return null
+
+  if (typeof payload === "string") {
+    const text = payload.trim()
+    if (!text) return null
+    try {
+      return normalizeResponsePayload(JSON.parse(text))
+    } catch {
+      return null
+    }
+  }
+
+  if (typeof payload !== "object") return null
+
   const candidate = payload as Record<string, unknown>
   if (typeof candidate.type === "string") {
     return candidate as ChatResponsePayload
@@ -348,6 +362,19 @@ export function normalizeResponsePayload(payload: unknown): ChatResponsePayload 
       type: candidate.response_type,
     } as ChatResponsePayload
   }
+
+  // Be tolerant to wrappers from API/client/persistence layers so structured
+  // chat bubbles still render even if the payload is nested one level deeper.
+  if ("response_payload" in candidate) {
+    return normalizeResponsePayload(candidate.response_payload)
+  }
+  if ("responsePayload" in candidate) {
+    return normalizeResponsePayload(candidate.responsePayload)
+  }
+  if ("payload" in candidate) {
+    return normalizeResponsePayload(candidate.payload)
+  }
+
   return null
 }
 
@@ -369,6 +396,8 @@ export function payloadEntityId(payload: ChatResponsePayload | null): string | n
 export function payloadInventoryKind(payload: ChatResponsePayload | null): string | null {
   if (!payload) return null
   if (payload.type === "ticket_list") return "tickets"
+  if (payload.type === "problem_linked_tickets") return "tickets"
+  if (payload.type === "similar_tickets") return "tickets"
   if (payload.type === "problem_list") return "problems"
   if (payload.type === "recommendation_list") return "recommendations"
   return null
@@ -379,5 +408,6 @@ export function payloadListedEntityIds(payload: ChatResponsePayload | null): str
   if (payload.type === "ticket_list") return payload.tickets.map((ticket) => ticket.ticket_id).filter(Boolean)
   if (payload.type === "problem_list") return payload.problems.map((problem) => problem.id).filter(Boolean)
   if (payload.type === "problem_linked_tickets") return payload.tickets.map((ticket) => ticket.id).filter(Boolean)
+  if (payload.type === "similar_tickets") return payload.matches.map((ticket) => ticket.ticket_id).filter(Boolean)
   return []
 }

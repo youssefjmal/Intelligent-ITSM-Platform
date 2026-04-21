@@ -121,6 +121,7 @@ def test_handle_classify_returns_no_strong_match_when_retrieval_is_empty(monkeyp
     assert response.display_mode == "no_strong_match"
     assert response.resolution_advice is not None
     assert response.recommended_action is None
+    assert response.resolution_advice.fallback_action is not None
     assert response.recommendations == []
     assert response.source_label == "fallback_rules"
     assert response.guidance_contract is not None
@@ -275,6 +276,7 @@ def test_handle_classify_short_circuits_unresolved_routing_to_manual_triage(monk
     assert response.guidance_contract.display_mode.value == "manual_triage"
     assert response.display_mode == "no_strong_match"
     assert response.recommended_action is None
+    assert response.resolution_advice is not None
 
 
 def test_handle_classify_uses_low_trust_llm_actions_only_for_no_strong_match(monkeypatch) -> None:
@@ -937,6 +939,7 @@ def test_handle_classify_returns_ticket_specific_tentative_step_for_irrelevant_r
     )
 
     assert response.recommended_action is None
+    assert response.resolution_advice is not None
     assert response.display_mode == "no_strong_match"
     assert response.recommendation_mode == "fallback_diagnostic"
     assert response.confidence_band == "low"
@@ -1143,6 +1146,7 @@ def test_handle_classify_filters_cross_domain_mail_recommendation_for_crm_ticket
     assert response.display_mode == "no_strong_match"
     assert response.filtered_weak_match is False
     assert response.recommended_action is None
+    assert response.resolution_advice is not None
     assert response.confidence_band == "low"
 
 

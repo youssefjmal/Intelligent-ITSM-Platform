@@ -36,7 +36,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Shield, Users, Trash2, Mail, History, RefreshCw } from "lucide-react"
 import Link from "next/link"
-import { apiFetch } from "@/lib/api"
+import { apiFetch, buildApiUrl } from "@/lib/api"
 import { fetchTicketHistory, type TicketHistoryEvent } from "@/lib/tickets-api"
 
 const SENIORITY_OPTIONS: UserSeniority[] = ["intern", "junior", "middle", "senior"]
@@ -107,6 +107,26 @@ function dateRangeEndMs(value: string): number | null {
   if (!value) return null
   const parsed = new Date(`${value}T23:59:59.999`).getTime()
   return Number.isNaN(parsed) ? null : parsed
+}
+
+function GrafanaMark({ className = "h-3.5 w-3.5" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 64 64" aria-hidden="true" className={className} fill="none">
+      <defs>
+        <linearGradient id="grafana-mark-gradient" x1="14" y1="10" x2="52" y2="54" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#F59E0B" />
+          <stop offset="1" stopColor="#F97316" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M31.8 10c4.5 0 8.3 3.2 9.2 7.5 1.1-.5 2.3-.8 3.6-.8 4.9 0 8.9 4 8.9 8.9 0 .9-.1 1.8-.4 2.6 3.5 1.5 5.9 5 5.9 9 0 5.4-4.4 9.8-9.8 9.8H17.5c-4.7 0-8.5-3.8-8.5-8.5 0-4.1 2.9-7.6 6.9-8.3-.2-.7-.2-1.4-.2-2.1 0-5.5 4.5-10 10-10 .8 0 1.5.1 2.2.2C28.8 13.4 30.1 10 31.8 10Z"
+        fill="url(#grafana-mark-gradient)"
+      />
+      <circle cx="32" cy="38" r="11" fill="#fff" />
+      <circle cx="32" cy="38" r="5.5" fill="#F97316" />
+      <circle cx="22.5" cy="24" r="3.4" fill="#F59E0B" />
+    </svg>
+  )
 }
 
 export default function AdminPage() {
@@ -290,6 +310,15 @@ export default function AdminPage() {
             <Button asChild variant="outline" size="sm">
               <Link href="/admin/notifications-debug">Notifications debug</Link>
             </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => window.open(buildApiUrl("/admin/monitoring/grafana"), "_blank", "noopener,noreferrer")}
+            >
+              <GrafanaMark className="mr-1.5 h-3.5 w-3.5" />
+              {locale === "fr" ? "Ouvrir Grafana" : "Open Grafana"}
+            </Button>
           </div>
           {actionError && <p className="mt-2 text-sm text-destructive">{actionError}</p>}
         </div>
@@ -415,7 +444,6 @@ export default function AdminPage() {
                   <SelectItem value="admin">{t("auth.admin")}</SelectItem>
                   <SelectItem value="agent">{t("auth.agent")}</SelectItem>
                   <SelectItem value="user">{t("auth.user")}</SelectItem>
-                  <SelectItem value="viewer">{t("auth.viewer")}</SelectItem>
                 </SelectContent>
               </Select>
               <Select
@@ -508,7 +536,6 @@ export default function AdminPage() {
                               <SelectItem value="admin">{t("auth.admin")}</SelectItem>
                               <SelectItem value="agent">{t("auth.agent")}</SelectItem>
                               <SelectItem value="user">{t("auth.user")}</SelectItem>
-                              <SelectItem value="viewer">{t("auth.viewer")}</SelectItem>
                             </SelectContent>
                           </Select>
                         </TableCell>
@@ -530,7 +557,7 @@ export default function AdminPage() {
                           </Select>
                         </TableCell>
                         <TableCell className="text-xs text-muted-foreground">
-                          {u.role === "viewer" || u.specializations.length === 0 ? (
+                          {u.specializations.length === 0 ? (
                             "-"
                           ) : (
                             <div className="flex flex-wrap gap-1">

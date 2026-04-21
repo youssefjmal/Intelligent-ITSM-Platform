@@ -21,7 +21,10 @@ def _jira_ready() -> bool:
 
 def _run_once() -> None:
     if not _jira_ready():
-        logger.warning("Skipping Jira auto reconcile: Jira credentials are not configured (check JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN in .env)")
+        logger.warning(
+            "Skipping Jira auto reconcile: Jira credentials are not configured "
+            "(check JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN in backend/.env)"
+        )
         return
 
     db = SessionLocal()

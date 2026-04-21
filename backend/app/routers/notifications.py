@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
+import json
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Path, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.core.deps import get_current_user, require_n8n_inbound_auth, require_roles
 from app.core.exceptions import NotFoundError
 from app.core.rate_limit import rate_limit
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.models.enums import UserRole
 from app.models.notification import Notification
 from app.models.problem import Problem
@@ -48,6 +51,45 @@ from app.services.notifications_service import (
 )
 
 router = APIRouter(dependencies=[Depends(rate_limit())])
+
+_SSE_POLL_SECONDS = 5  # how often the stream re-checks unread count
+
+
+def _count_unread_notifications_for_stream(user_id: str) -> int:
+    with SessionLocal() as db:
+        return count_unread_notifications(db, user_id=user_id)
+
+
+async def _stream_unread_count_events(user_id: str):
+    try:
+        while True:
+            count = await asyncio.to_thread(_count_unread_notifications_for_stream, user_id)
+            yield f"data: {json.dumps({'unread_count': count})}\n\n"
+            await asyncio.sleep(_SSE_POLL_SECONDS)
+    except asyncio.CancelledError:
+        return
+
+
+@router.get("/stream")
+async def stream_unread_count(
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    """Server-Sent Events stream that pushes unread notification count every 5 s.
+
+    The frontend connects once and receives live updates without polling.
+    The connection is kept alive by the browser's EventSource API.
+    """
+    user_id = str(current_user.id)
+
+    return StreamingResponse(
+        _stream_unread_count_events(user_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/", response_model=list[NotificationOut])

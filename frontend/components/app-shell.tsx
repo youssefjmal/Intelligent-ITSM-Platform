@@ -13,7 +13,8 @@ import {
   markNotificationRead,
   type NotificationItem,
 } from "@/lib/notifications-api"
-import { apiFetch } from "@/lib/api"
+import { startUnreadCountSubscription } from "@/lib/notifications-stream"
+import { apiFetch, API_BASE } from "@/lib/api"
 import { Bell, LogOut, PanelLeftClose, PanelLeftOpen } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -22,18 +23,18 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useRouter } from "next/navigation"
 import { cn } from "@/lib/utils"
 import Link from "next/link"
+import { toast } from "@/hooks/use-toast"
 
 const ROLE_BADGE: Record<string, string> = {
   admin: "bg-red-100 text-red-800 border border-red-200",
   agent: "bg-sky-100 text-sky-800 border border-sky-200",
   user: "bg-emerald-100 text-emerald-800 border border-emerald-200",
-  viewer: "bg-slate-100 text-slate-700 border border-slate-200",
 }
 const SIDEBAR_COLLAPSE_STORAGE_KEY = "teamwil.sidebar.collapsed"
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { user, signOut } = useAuth()
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const router = useRouter()
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false)
   const [notifOpen, setNotifOpen] = React.useState(false)
@@ -44,6 +45,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [markingId, setMarkingId] = React.useState<string | null>(null)
   const [mediumLowExpanded, setMediumLowExpanded] = React.useState(false)
   const seenCriticalRef = React.useRef<Set<string>>(new Set())
+  const seenAssignmentToastRef = React.useRef<Set<string>>(new Set())
+  const lastUnreadCountRef = React.useRef(0)
 
   React.useEffect(() => {
     if (typeof window === "undefined") return
@@ -78,13 +81,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [user])
 
   const loadNotifications = React.useCallback(async () => {
-    if (!user) return
+    if (!user) return []
     setLoadingNotifications(true)
     try {
       const data = await getNotifications({ limit: 10 })
       setNotifications(data)
+      return data
     } catch {
       setNotifications([])
+      return []
     } finally {
       setLoadingNotifications(false)
     }
@@ -93,8 +98,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     if (!user) return
     loadUnreadCount()
-    const timer = window.setInterval(loadUnreadCount, 30_000)
-    return () => window.clearInterval(timer)
+    return startUnreadCountSubscription({
+      apiBase: API_BASE,
+      eventSourceSupported: typeof EventSource !== "undefined",
+      createEventSource: (url) => new EventSource(url, { withCredentials: true }),
+      loadUnreadCount,
+      onCount: setUnreadCount,
+      setIntervalFn: (callback, ms) => window.setInterval(callback, ms),
+      clearIntervalFn: (id) => window.clearInterval(id),
+    })
   }, [user, loadUnreadCount])
 
   React.useEffect(() => {
@@ -117,6 +129,52 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     window.addEventListener("notifications:changed", onNotificationsChanged as EventListener)
     return () => window.removeEventListener("notifications:changed", onNotificationsChanged as EventListener)
   }, [user, notifOpen, loadUnreadCount, loadNotifications])
+
+  React.useEffect(() => {
+    if (!user) {
+      lastUnreadCountRef.current = 0
+      return
+    }
+
+    const previousCount = lastUnreadCountRef.current
+    lastUnreadCountRef.current = unreadCount
+
+    if (unreadCount <= previousCount) return
+
+    loadNotifications()
+      .then((items) => {
+        const assignmentNotifications = items.filter(
+          (item) =>
+            !item.read_at &&
+            (item.event_type === "ticket_assigned" || item.event_type === "ticket_reassigned"),
+        )
+
+        for (const item of assignmentNotifications) {
+          if (seenAssignmentToastRef.current.has(item.id)) continue
+          seenAssignmentToastRef.current.add(item.id)
+          toast({
+            title:
+              item.event_type === "ticket_reassigned"
+                ? locale === "fr"
+                  ? "Ticket reassigne"
+                  : "Ticket reassigned"
+                : locale === "fr"
+                  ? "Nouveau ticket assigne"
+                  : "New assigned ticket",
+            description:
+              item.body ||
+              (item.event_type === "ticket_reassigned"
+                ? locale === "fr"
+                  ? "Un ticket vient d'etre reattribue a votre file."
+                  : "A ticket has just been reassigned to you."
+                : locale === "fr"
+                  ? "Un ticket vient d'etre assigne a votre file."
+                  : "A ticket has just been assigned to you."),
+          })
+        }
+      })
+      .catch(() => {})
+  }, [unreadCount, user, loadNotifications, locale])
 
   const severityClasses: Record<string, string> = {
     info: "bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-900/80 dark:text-slate-100 dark:border-slate-600",
@@ -165,6 +223,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       new Notification(item.title, {
         body: item.body || "Critical alert",
       })
+    }
+  }, [notifications])
+
+  React.useEffect(() => {
+    for (const item of notifications) {
+      if (item.read_at) {
+        seenAssignmentToastRef.current.add(item.id)
+      }
     }
   }, [notifications])
 
@@ -266,7 +332,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       }
       await markNotificationReadSilently(item)
     } catch {
-      // no-op; keep item visible if action endpoint is unavailable
+      toast({
+        title: locale === "fr" ? "Action indisponible" : "Action unavailable",
+        description:
+          locale === "fr"
+            ? "La notification est conservee. Reessayez depuis le ticket si necessaire."
+            : "The notification was kept visible. Please retry from the ticket if needed.",
+        variant: "destructive",
+      })
     }
   }
 
@@ -309,10 +382,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="sm" className="relative h-9 w-9 rounded-full p-0 hover:bg-primary/10 focus-visible:ring-2 focus-visible:ring-primary/40">
                   <Bell className="h-4 w-4 text-muted-foreground" />
-                  {unreadCount > 0 && (
+                  {unreadCount > 0 ? (
                     <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-bold text-primary-foreground ring-2 ring-card/80">
                       {unreadCount > 9 ? "9+" : unreadCount}
                     </span>
+                  ) : (
+                    <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-muted-foreground/30 ring-2 ring-card/80" />
                   )}
                   <span className="sr-only">{t("app.notifications")}</span>
                 </Button>

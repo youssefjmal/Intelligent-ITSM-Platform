@@ -144,127 +144,13 @@ def get_recommendation_analytics(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """
-    Return aggregated feedback analytics for AI recommendations.
-
-    Requires admin or agent role.
-
-    Computes: total feedback count, counts by feedback_type, useful_rate,
-    applied_rate, breakdown by display_mode_snapshot, and daily trend.
-
-    Args:
-        period_days: Look-back window in days (1-365, default 30).
-        db: Database session.
-        current_user: Authenticated user.
-
-    Returns:
-        Dict with analytics fields. All rates are floats 0.0-1.0.
-        Returns zeroed response on any DB error.
-
-    Edge cases:
-        - No feedback in period: returns all zeros and empty lists.
-        - Division by zero: rates return 0.0.
-    """
-    import datetime as dt
-
     if current_user.role.value not in ("admin", "agent"):
         from app.core.exceptions import InsufficientPermissionsError
 
         raise InsufficientPermissionsError("forbidden")
-
-    try:
-        from app.models.ai_solution_feedback import AiSolutionFeedback
-
-        now = dt.datetime.now(dt.timezone.utc)
-        since = now - dt.timedelta(days=period_days)
-
-        # Base query
-        feedback_rows = (
-            db.query(AiSolutionFeedback)
-            .filter(AiSolutionFeedback.created_at >= since)
-            .all()
-        )
-
-        total = len(feedback_rows)
-        by_type: dict[str, int] = {}
-        by_mode: dict[str, dict[str, int]] = {}
-
-        for row in feedback_rows:
-            ftype = (
-                str(getattr(row, "feedback_type", None) or "unknown").strip().lower()
-            )
-            # display_mode is stored in display_mode_snapshot on the model
-            mode = (
-                str(getattr(row, "display_mode_snapshot", None) or "unknown")
-                .strip()
-                .lower()
-            )
-
-            by_type[ftype] = by_type.get(ftype, 0) + 1
-
-            if mode not in by_mode:
-                by_mode[mode] = {}
-            by_mode[mode][ftype] = by_mode[mode].get(ftype, 0) + 1
-
-        useful_count = by_type.get("useful", 0) + by_type.get("applied", 0)
-        applied_count = by_type.get("applied", 0)
-        useful_rate = round(useful_count / total, 4) if total else 0.0
-        applied_rate = round(applied_count / total, 4) if total else 0.0
-
-        # Trend: daily count over period
-        from collections import defaultdict
-
-        daily: dict[str, dict[str, int]] = defaultdict(
-            lambda: {"useful_count": 0, "applied_count": 0}
-        )
-        for row in feedback_rows:
-            created = getattr(row, "created_at", None)
-            if created:
-                day_str = (
-                    created.strftime("%Y-%m-%d")
-                    if hasattr(created, "strftime")
-                    else str(created)[:10]
-                )
-                ftype = str(getattr(row, "feedback_type", None) or "").lower()
-                if ftype in ("useful", "applied"):
-                    daily[day_str]["useful_count"] += 1
-                if ftype == "applied":
-                    daily[day_str]["applied_count"] += 1
-        trend = [{"date": d, **v} for d, v in sorted(daily.items())]
-
-        return {
-            "period_days": period_days,
-            "total_feedback_count": total,
-            "by_feedback_type": {
-                "useful": by_type.get("useful", 0),
-                "not_relevant": by_type.get("not_relevant", 0),
-                "applied": by_type.get("applied", 0),
-                "rejected": by_type.get("rejected", 0),
-            },
-            "useful_rate": useful_rate,
-            "applied_rate": applied_rate,
-            "by_display_mode": by_mode,
-            "by_category": {},
-            "top_useful_recommendations": [],
-            "top_rejected_recommendations": [],
-            "trend": trend,
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("get_recommendation_analytics failed: %s", exc)
-        return {
-            "period_days": period_days,
-            "total_feedback_count": 0,
-            "by_feedback_type": {
-                "useful": 0,
-                "not_relevant": 0,
-                "applied": 0,
-                "rejected": 0,
-            },
-            "useful_rate": 0.0,
-            "applied_rate": 0.0,
-            "by_display_mode": {},
-            "by_category": {},
-            "top_useful_recommendations": [],
-            "top_rejected_recommendations": [],
-            "trend": [],
-        }
+    payload = aggregate_agent_feedback_analytics(db)
+    return {
+        "period_days": period_days,
+        "useful_rate": payload.get("usefulness_rate", 0.0),
+        **payload,
+    }

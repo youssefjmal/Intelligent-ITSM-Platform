@@ -1,14 +1,7 @@
 "use client";
 
-/**
- * Agent performance dashboard page.
- *
- * Shows per-agent MTTR, resolution rate, and SLA breach rate.
- * Sortable table with color coding by performance tier.
- * Period selector: 7 / 30 / 90 days. Category filter.
- */
-
 import { useState, useEffect, useCallback } from "react";
+import { apiFetch } from "@/lib/api";
 
 interface AgentRecord {
   agent_name: string;
@@ -70,9 +63,8 @@ export default function AgentPerformancePage() {
     try {
       const params = new URLSearchParams({ period_days: String(period) });
       if (category) params.set("category", category);
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api"}/tickets/agent-performance?${params}`, { credentials: "include" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setData(await res.json());
+      const result = await apiFetch<PerformanceResponse>(`/tickets/agent-performance?${params}`);
+      setData(result);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Erreur de chargement");
     } finally {
@@ -84,12 +76,17 @@ export default function AgentPerformancePage() {
 
   const sorted = data
     ? [...data.agents].sort((a, b) => {
-        const av = a[sortKey] as number | null;
-        const bv = b[sortKey] as number | null;
+        const av = a[sortKey];
+        const bv = b[sortKey];
         if (av === null && bv === null) return 0;
         if (av === null) return 1;
         if (bv === null) return -1;
-        return sortAsc ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+        if (typeof av === "number" && typeof bv === "number") {
+          return sortAsc ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1);
+        }
+        const left = String(av).toLowerCase();
+        const right = String(bv).toLowerCase();
+        return sortAsc ? left.localeCompare(right) : right.localeCompare(left);
       })
     : [];
 

@@ -41,13 +41,24 @@ import { fetchTicketSlaAdvisory, type TicketSlaAdvisory } from "@/lib/tickets-ap
 
 interface TicketTableProps {
   tickets: Ticket[]
+  loadState?: "loading" | "ready" | "auth" | "error"
   initialStatusFilter?: string
   initialPriorityFilter?: string
   initialTicketTypeFilter?: string
   initialCategoryFilter?: string
+  initialAssignedToMe?: boolean
   initialSearch?: string
   minInactiveDays?: number
+  currentUser?: {
+    name?: string | null
+    email?: string | null
+  } | null
 }
+
+const TABLE_COLUMN_COUNT = 12
+const UNIFORM_COLUMN_CLASS = "w-[10rem]"
+const TABLE_HEAD_CLASS = "px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground"
+const TABLE_CELL_CLASS = "px-3 py-3 align-middle"
 
 const ACTIVE_STATUSES: TicketStatus[] = [
   "open",
@@ -163,12 +174,15 @@ function advisorySnippet(text: string | null | undefined, maxLength = 220): stri
 
 export function TicketTable({
   tickets,
+  loadState = "ready",
   initialStatusFilter = "all",
   initialPriorityFilter = "all",
   initialTicketTypeFilter = "all",
   initialCategoryFilter = "all",
+  initialAssignedToMe = false,
   initialSearch = "",
   minInactiveDays = 0,
+  currentUser = null,
 }: TicketTableProps) {
   const { t, locale } = useI18n()
   const [search, setSearch] = useState(initialSearch)
@@ -176,6 +190,7 @@ export function TicketTable({
   const [priorityFilter, setPriorityFilter] = useState<string>(initialPriorityFilter)
   const [ticketTypeFilter, setTicketTypeFilter] = useState<string>(initialTicketTypeFilter)
   const [categoryFilter, setCategoryFilter] = useState<string>(initialCategoryFilter)
+  const [assignedToMeOnly, setAssignedToMeOnly] = useState(initialAssignedToMe)
   const [sortField, setSortField] = useState<"createdAt" | "priority">("createdAt")
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc")
   const [pageSize, setPageSize] = useState(10)
@@ -204,6 +219,10 @@ export function TicketTable({
   useEffect(() => {
     setCategoryFilter(initialCategoryFilter)
   }, [initialCategoryFilter])
+
+  useEffect(() => {
+    setAssignedToMeOnly(initialAssignedToMe)
+  }, [initialAssignedToMe])
 
   useEffect(() => {
     setSearch(initialSearch)
@@ -266,6 +285,7 @@ export function TicketTable({
         .trim()
 
     const ticketTypeAliases: Record<Ticket["ticketType"], string[]> = {
+      change: ["change", "changes", "change request", "change requests", "changement", "changements"],
       incident: ["incident", "incidents"],
       service_request: ["service request", "service requests", "request", "requests", "demande de service", "demandes de service"],
     }
@@ -327,6 +347,17 @@ export function TicketTable({
       result = result.filter((t) => t.category === categoryFilter)
     }
 
+    if (assignedToMeOnly) {
+      const candidates = [currentUser?.name, currentUser?.email]
+        .map((value) => (value || "").trim().toLowerCase())
+        .filter(Boolean)
+      if (candidates.length > 0) {
+        result = result.filter((ticket) => candidates.includes((ticket.assignee || "").trim().toLowerCase()))
+      } else {
+        result = []
+      }
+    }
+
     if (minInactiveDays > 0) {
       result = result.filter(
         (t) =>
@@ -346,7 +377,7 @@ export function TicketTable({
     })
 
     return result
-  }, [tickets, search, statusFilter, priorityFilter, ticketTypeFilter, categoryFilter, minInactiveDays, sortField, sortOrder])
+  }, [tickets, search, statusFilter, priorityFilter, ticketTypeFilter, categoryFilter, assignedToMeOnly, currentUser?.name, currentUser?.email, minInactiveDays, sortField, sortOrder])
 
   function toggleSort(field: "createdAt" | "priority") {
     if (sortField === field) {
@@ -420,6 +451,14 @@ export function TicketTable({
       dismissible: true,
     })
   }
+  if (assignedToMeOnly) {
+    activeFilters.push({
+      key: "assigned-to-me",
+      label: isFr ? "Assignes a moi" : "Assigned to me",
+      clear: () => setAssignedToMeOnly(false),
+      dismissible: true,
+    })
+  }
   if (minInactiveDays > 0) {
     activeFilters.push({
       key: `stale-${minInactiveDays}`,
@@ -449,6 +488,7 @@ export function TicketTable({
                 setPriorityFilter("all")
                 setTicketTypeFilter("all")
                 setCategoryFilter("all")
+                setAssignedToMeOnly(false)
               }}
               disabled={!activeFilters.some((item) => item.dismissible)}
             >
@@ -515,6 +555,16 @@ export function TicketTable({
                 ))}
               </SelectContent>
             </Select>
+            {currentUser?.name || currentUser?.email ? (
+              <Button
+                type="button"
+                variant={assignedToMeOnly ? "default" : "outline"}
+                className="h-10 rounded-xl"
+                onClick={() => setAssignedToMeOnly((value) => !value)}
+              >
+                {isFr ? "Assignes a moi" : "Assigned to me"}
+              </Button>
+            ) : null}
           </div>
 
           {activeFilters.length > 0 && (
@@ -545,17 +595,22 @@ export function TicketTable({
         {/* Table */}
         <Card className="surface-card overflow-hidden rounded-2xl">
           <div className="max-h-[66vh] overflow-auto">
-            <Table className="table-fixed min-w-[1450px]">
+            <Table className="table-fixed min-w-[120rem]">
+              <colgroup>
+                {Array.from({ length: TABLE_COLUMN_COUNT }, (_, index) => (
+                  <col key={index} className={UNIFORM_COLUMN_CLASS} />
+                ))}
+              </colgroup>
               <TableHeader className="sticky top-0 z-20 bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/85">
                 <TableRow className="border-b border-border/80 bg-muted/55 hover:bg-muted/55">
-                  <TableHead className="w-24 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.id")}</TableHead>
-                  <TableHead className="w-44 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">
+                  <TableHead className={TABLE_HEAD_CLASS}>{t("tickets.id")}</TableHead>
+                  <TableHead className={TABLE_HEAD_CLASS}>
                     {isFr ? "Lien probleme" : "Problem link"}
                   </TableHead>
-                  <TableHead className="w-[24rem] px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.titleCol")}</TableHead>
-                  <TableHead className="w-44 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.status")}</TableHead>
-                  <TableHead className="w-32 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">SLA</TableHead>
-                  <TableHead className="w-28 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">
+                  <TableHead className={TABLE_HEAD_CLASS}>{t("tickets.titleCol")}</TableHead>
+                  <TableHead className={TABLE_HEAD_CLASS}>{t("tickets.status")}</TableHead>
+                  <TableHead className={TABLE_HEAD_CLASS}>SLA</TableHead>
+                  <TableHead className={TABLE_HEAD_CLASS}>
                     <button
                       type="button"
                       className="flex items-center gap-1.5 transition-colors hover:text-primary"
@@ -565,11 +620,11 @@ export function TicketTable({
                       <ArrowUpDown className="h-3.5 w-3.5" />
                     </button>
                   </TableHead>
-                  <TableHead className="w-32 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.type")}</TableHead>
-                  <TableHead className="w-32 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.category")}</TableHead>
-                  <TableHead className="w-36 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.assignee")}</TableHead>
-                  <TableHead className="w-36 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">{t("tickets.reporter")}</TableHead>
-                  <TableHead className="w-28 px-3 py-3 text-xs font-semibold uppercase tracking-wide text-foreground">
+                  <TableHead className={TABLE_HEAD_CLASS}>{t("tickets.type")}</TableHead>
+                  <TableHead className={TABLE_HEAD_CLASS}>{t("tickets.category")}</TableHead>
+                  <TableHead className={TABLE_HEAD_CLASS}>{t("tickets.assignee")}</TableHead>
+                  <TableHead className={TABLE_HEAD_CLASS}>{t("tickets.reporter")}</TableHead>
+                  <TableHead className={TABLE_HEAD_CLASS}>
                     <button
                       type="button"
                       className="flex items-center gap-1.5 transition-colors hover:text-primary"
@@ -579,7 +634,7 @@ export function TicketTable({
                       <ArrowUpDown className="h-3.5 w-3.5" />
                     </button>
                   </TableHead>
-                  <TableHead className="w-12 px-3 py-3" />
+                  <TableHead className={TABLE_HEAD_CLASS} />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -587,9 +642,23 @@ export function TicketTable({
                   <TableRow>
                     <TableCell colSpan={12} className="py-14 text-center">
                       <div className="mx-auto max-w-md rounded-xl border border-dashed border-border/70 bg-muted/20 p-6">
-                        <p className="text-sm font-medium text-foreground">{t("tickets.noResults")}</p>
+                        <p className="text-sm font-medium text-foreground">
+                          {loadState === "loading"
+                            ? t("tickets.loading")
+                            : loadState === "auth"
+                              ? t("tickets.authRequired")
+                              : loadState === "error"
+                                ? t("tickets.loadError")
+                                : t("tickets.noResults")}
+                        </p>
                         <p className="mt-1 text-xs text-muted-foreground">
-                          {isFr ? "Essayez de modifier les filtres ou la recherche." : "Try adjusting filters or search terms."}
+                          {loadState === "loading"
+                            ? t("tickets.loadingHint")
+                            : loadState === "auth"
+                              ? t("tickets.authRequiredHint")
+                              : loadState === "error"
+                                ? t("tickets.loadErrorHint")
+                                : t("tickets.filterHint")}
                         </p>
                       </div>
                     </TableCell>
@@ -624,14 +693,19 @@ export function TicketTable({
                     return (
                       <TableRow
                         key={ticket.id}
-                        className={`group border-b border-border/30 ${index % 2 === 0 ? "bg-background/65" : "bg-muted/20"} transition-all duration-100 hover:shadow-[inset_3px_0_0_rgba(29,158,117,0.4)] ${slaStatus === "breached" ? "shadow-[inset_3px_0_0_#E24B4A]" : slaStatus === "at_risk" ? "border-l-[3px] border-l-[#EF9F27]" : ""}`}
+                        className={`group h-20 border-b border-border/30 ${index % 2 === 0 ? "bg-background/65" : "bg-muted/20"} transition-all duration-100 hover:shadow-[inset_3px_0_0_rgba(29,158,117,0.4)] ${slaStatus === "breached" ? "shadow-[inset_3px_0_0_#E24B4A]" : slaStatus === "at_risk" ? "border-l-[3px] border-l-[#EF9F27]" : ""}`}
                       >
-                        <TableCell className="px-3 py-3">
-                          <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-[var(--color-background-secondary)] border border-[var(--color-border-tertiary)] hover:border-[var(--color-border-primary)] cursor-pointer transition-all duration-150 font-semibold text-primary">
-                            {ticket.id}
-                          </span>
+                        <TableCell className={TABLE_CELL_CLASS}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="block truncate rounded border border-[var(--color-border-tertiary)] bg-[var(--color-background-secondary)] px-2 py-0.5 font-mono text-[11px] font-semibold text-primary transition-all duration-150 hover:border-[var(--color-border-primary)]">
+                                {ticket.id}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-xs text-xs">{ticket.id}</TooltipContent>
+                          </Tooltip>
                         </TableCell>
-                        <TableCell className="px-3 py-3">
+                        <TableCell className={TABLE_CELL_CLASS}>
                           {ticket.problemId ? (
                             <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-red-200/70 bg-red-50/70 px-2 py-1 dark:border-red-500/30 dark:bg-red-950/30">
                               <Link2 className="h-3 w-3 text-red-700 dark:text-red-200" />
@@ -646,7 +720,7 @@ export function TicketTable({
                             <span className="text-xs text-muted-foreground">-</span>
                           )}
                         </TableCell>
-                        <TableCell className="px-3 py-3">
+                        <TableCell className={TABLE_CELL_CLASS}>
                           {ticket.problemId ? (
                             <HoverCard openDelay={120} closeDelay={80}>
                               <HoverCardTrigger asChild>
@@ -751,7 +825,7 @@ export function TicketTable({
                             </HoverCard>
                           )}
                         </TableCell>
-                        <TableCell className="overflow-hidden px-3 py-3">
+                        <TableCell className={`${TABLE_CELL_CLASS} overflow-hidden`}>
                           <Badge
                             className={`${STATUS_CONFIG[ticket.status].color} max-w-full overflow-hidden text-ellipsis whitespace-nowrap border-0 text-xs font-semibold`}
                             title={STATUS_CONFIG[ticket.status].label}
@@ -759,7 +833,7 @@ export function TicketTable({
                             {STATUS_CONFIG[ticket.status].label}
                           </Badge>
                         </TableCell>
-                        <TableCell className="overflow-hidden px-3 py-3">
+                        <TableCell className={`${TABLE_CELL_CLASS} overflow-hidden`}>
                           {slaStatus && slaConfig ? (
                             hasSlaPopup ? (
                               <Popover onOpenChange={(open) => onSlaPopoverOpenChange(ticket.id, open)}>
@@ -826,7 +900,7 @@ export function TicketTable({
                             <span className="text-xs text-muted-foreground">-</span>
                           )}
                         </TableCell>
-                        <TableCell className="overflow-hidden px-3 py-3">
+                        <TableCell className={`${TABLE_CELL_CLASS} overflow-hidden`}>
                           <Badge
                             className={`${PRIORITY_CONFIG[ticket.priority].color} max-w-full overflow-hidden text-ellipsis whitespace-nowrap border-0 rounded-none text-[10px] font-semibold uppercase tracking-[0.04em]`}
                             title={PRIORITY_CONFIG[ticket.priority].label}
@@ -834,7 +908,7 @@ export function TicketTable({
                             {PRIORITY_CONFIG[ticket.priority].label}
                           </Badge>
                         </TableCell>
-                        <TableCell className="overflow-hidden px-3 py-3">
+                        <TableCell className={`${TABLE_CELL_CLASS} overflow-hidden`}>
                           <Badge
                             variant="outline"
                             className="max-w-full overflow-hidden text-ellipsis whitespace-nowrap border-border bg-background/70 text-muted-foreground"
@@ -843,7 +917,7 @@ export function TicketTable({
                             {t(`type.${ticket.ticketType}` as "type.incident")}
                           </Badge>
                         </TableCell>
-                        <TableCell className="overflow-hidden px-3 py-3">
+                        <TableCell className={`${TABLE_CELL_CLASS} overflow-hidden`}>
                           <Badge
                             variant="outline"
                             className={
@@ -856,20 +930,20 @@ export function TicketTable({
                             {CATEGORY_CONFIG[ticket.category].label}
                           </Badge>
                         </TableCell>
-                        <TableCell className="px-3 py-3 text-sm text-foreground">
+                        <TableCell className={`${TABLE_CELL_CLASS} text-sm text-foreground`}>
                           <TruncatedText value={ticket.assignee} />
                         </TableCell>
-                        <TableCell className="px-3 py-3 text-sm text-foreground">
+                        <TableCell className={`${TABLE_CELL_CLASS} text-sm text-foreground`}>
                           <TruncatedText value={ticket.reporter} />
                         </TableCell>
-                        <TableCell className="px-3 py-3 text-xs text-muted-foreground">
+                        <TableCell className={`${TABLE_CELL_CLASS} text-xs text-muted-foreground`}>
                           {new Date(ticket.createdAt).toLocaleDateString(locale === "fr" ? "fr-FR" : "en-US", {
                             day: "2-digit",
                             month: "short",
                             year: "numeric",
                           })}
                         </TableCell>
-                        <TableCell className="px-3 py-3">
+                        <TableCell className={TABLE_CELL_CLASS}>
                           <div className="flex items-center justify-end gap-1">
                             <div className="pointer-events-none flex items-center gap-1 opacity-0 transition-opacity duration-150 group-hover:pointer-events-auto group-hover:opacity-100">
                               <Link href={`/tickets/${ticket.id}?focus=assignee`}>

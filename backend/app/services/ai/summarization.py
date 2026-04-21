@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 from dataclasses import dataclass, field
 
 from app.schemas.ai import RetrievalResult
@@ -127,6 +128,96 @@ def _build_summary_prompt(
     return system_prompt, user_prompt
 
 
+def _clean_summary_text(text: str, *, max_length: int) -> str:
+    cleaned = " ".join(str(text or "").strip().split())
+    if len(cleaned) > max_length:
+        cleaned = cleaned[: max_length - 3].rstrip() + "..."
+    return cleaned
+
+
+def _truncate_words(text: str, *, max_words: int) -> str:
+    words = [word for word in str(text or "").strip().split() if word]
+    if not words:
+        return ""
+    if len(words) <= max_words:
+        return " ".join(words)
+    return " ".join(words[:max_words]).rstrip(" ,;:-") + "..."
+
+
+def _deterministic_summary(
+    ticket: dict,
+    similar_tickets: list[dict],
+    *,
+    language: str,
+    max_length: int,
+) -> str:
+    title = str(ticket.get("title") or "").strip()
+    description = _truncate_words(str(ticket.get("description") or "").strip(), max_words=24)
+    status = str(ticket.get("status") or "").strip()
+    assignee = str(ticket.get("assignee") or "").strip()
+    reporter = str(ticket.get("reporter") or "").strip()
+
+    if language == "fr":
+        sentence_1 = (
+            f"Le ticket concerne {title.lower()}."
+            if title
+            else "Le ticket concerne un incident en cours d'analyse."
+        )
+        sentence_2_parts: list[str] = []
+        if description:
+            sentence_2_parts.append(description)
+        if status:
+            sentence_2_parts.append(f"Statut actuel : {status}.")
+        if assignee:
+            sentence_2_parts.append(f"Assigne a {assignee}.")
+        elif reporter:
+            sentence_2_parts.append(f"Signale par {reporter}.")
+        sentence_2 = " ".join(part for part in sentence_2_parts if part).strip()
+        if similar_tickets:
+            resolution_hint = _truncate_words(str(similar_tickets[0].get("resolution") or ""), max_words=18)
+            if resolution_hint:
+                sentence_3 = f"Des tickets similaires resolus indiquent souvent : {resolution_hint}"
+            else:
+                sentence_3 = "Des tickets similaires resolus existent et peuvent orienter le diagnostic."
+            summary = " ".join(part for part in [sentence_1, sentence_2, sentence_3] if part)
+        else:
+            summary = " ".join(part for part in [sentence_1, sentence_2] if part)
+    else:
+        sentence_1 = (
+            f"This ticket concerns {title.lower()}."
+            if title
+            else "This ticket concerns an issue still under review."
+        )
+        sentence_2_parts = []
+        if description:
+            sentence_2_parts.append(description)
+        if status:
+            sentence_2_parts.append(f"Current status: {status}.")
+        if assignee:
+            sentence_2_parts.append(f"Assigned to {assignee}.")
+        elif reporter:
+            sentence_2_parts.append(f"Reported by {reporter}.")
+        sentence_2 = " ".join(part for part in sentence_2_parts if part).strip()
+        if similar_tickets:
+            resolution_hint = _truncate_words(str(similar_tickets[0].get("resolution") or ""), max_words=18)
+            if resolution_hint:
+                sentence_3 = f"Similar resolved tickets suggest this is often addressed by {resolution_hint}"
+            else:
+                sentence_3 = "Similar resolved tickets exist and can help guide the diagnosis."
+            summary = " ".join(part for part in [sentence_1, sentence_2, sentence_3] if part)
+        else:
+            summary = " ".join(part for part in [sentence_1, sentence_2] if part)
+    return _clean_summary_text(summary, max_length=max_length)
+
+
+def _looks_like_usable_summary(summary: str) -> bool:
+    cleaned = str(summary or "").strip()
+    if len(cleaned) < 24:
+        return False
+    sentence_parts = [part for part in re.split(r"(?<=[.!?])\s+", cleaned) if part.strip()]
+    return len(sentence_parts) >= 1
+
+
 async def generate_ticket_summary(
     ticket: dict,
     db=None,
@@ -208,14 +299,20 @@ async def generate_ticket_summary(
 
     # Call LLM
     summary_text = ""
+    deterministic_fallback = _deterministic_summary(
+        ticket,
+        similar_tickets,
+        language=language,
+        max_length=SUMMARY_MAX_LENGTH_CHARS,
+    )
     try:
         from app.services.ai.llm import ollama_generate
         system_prompt, user_prompt = _build_summary_prompt(ticket, similar_tickets, language)
         full_prompt = f"{system_prompt}\n\n{user_prompt}"
         raw = ollama_generate(full_prompt, json_mode=False)
-        summary_text = " ".join(str(raw or "").strip().split())
-        if len(summary_text) > SUMMARY_MAX_LENGTH_CHARS:
-            summary_text = summary_text[:SUMMARY_MAX_LENGTH_CHARS - 3].rstrip() + "..."
+        summary_text = _clean_summary_text(str(raw or ""), max_length=SUMMARY_MAX_LENGTH_CHARS)
+        if not _looks_like_usable_summary(summary_text):
+            raise RuntimeError("summary_llm_empty_or_too_short")
     except Exception as exc:  # noqa: BLE001
         log.warning("summarization: LLM call failed for %s: %s", ticket_id, exc)
         # Return stale cache as fallback if available
@@ -231,10 +328,7 @@ async def generate_ticket_summary(
                     )
             except Exception:  # noqa: BLE001
                 pass
-        return SummaryResult(
-            summary="", similar_ticket_count=0, used_ticket_ids=[],
-            generated_at=dt.datetime.now(dt.timezone.utc), is_cached=False, language=language,
-        )
+        summary_text = deterministic_fallback
 
     now = dt.datetime.now(dt.timezone.utc)
 

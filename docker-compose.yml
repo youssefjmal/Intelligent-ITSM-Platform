@@ -2,6 +2,8 @@ services:
   db:
     image: pgvector/pgvector:pg18
     container_name: jira_pgvector
+    env_file:
+      - ./backend/.env
     environment:
       POSTGRES_DB: jira_tickets
       POSTGRES_USER: postgres
@@ -34,6 +36,8 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: jira_backend
+    env_file:
+      - ./backend/.env
     depends_on:
       db:
         condition: service_healthy
@@ -45,18 +49,7 @@ services:
       && python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
     environment:
       ENV: development
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/jira_tickets?connect_timeout=10&sslmode=prefer}
-      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in your local .env}
-      PROMETHEUS_METRICS_ENABLED: ${PROMETHEUS_METRICS_ENABLED:-true}
-      PROMETHEUS_METRICS_TOKEN: ${PROMETHEUS_METRICS_TOKEN:?Set PROMETHEUS_METRICS_TOKEN in your local .env}
-      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:3000}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,backend}
-      N8N_INBOUND_SECRET: ${N8N_INBOUND_SECRET:-}
-      N8N_OUTBOUND_SECRET: ${N8N_OUTBOUND_SECRET:-}
-      N8N_WEBHOOK_BASE_URL: ${N8N_WEBHOOK_BASE_URL:-http://n8n:5678/webhook}
-      GROQ_API_KEY: ${GROQ_API_KEY:-}
-      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+      DATABASE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/jira_tickets?connect_timeout=10&sslmode=prefer
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
       REDIS_URL: redis://redis:6379/0
@@ -87,6 +80,8 @@ services:
   prometheus:
     image: prom/prometheus:v2.52.0
     container_name: jira_prometheus
+    env_file:
+      - ./backend/.env
     ports:
       - "9090:9090"
     volumes:
@@ -95,7 +90,6 @@ services:
     entrypoint: []
     command: ["sh", "/prometheus-init.sh"]
     environment:
-      PROMETHEUS_METRICS_TOKEN: ${PROMETHEUS_METRICS_TOKEN:?Set PROMETHEUS_METRICS_TOKEN in your local .env}
       PROMETHEUS_SCRAPE_TARGET: ${PROMETHEUS_SCRAPE_TARGET:-host.docker.internal:8000}
     depends_on:
       - backend
@@ -122,11 +116,11 @@ services:
   n8n:
     image: n8nio/n8n:latest
     container_name: jira_n8n
+    env_file:
+      - ./backend/.env
     ports:
       - "5670:5678"
     environment:
-      # Core n8n settings
-      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?Set N8N_ENCRYPTION_KEY in your local .env}
       N8N_PORT: 5678
       # Public webhook URL so n8n self-references work inside the container network
       WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5670/}
@@ -134,18 +128,16 @@ services:
       N8N_LOG_LEVEL: ${N8N_LOG_LEVEL:-info}
       # Variables consumed by ITSM workflows
       ITSM_BASE_URL: http://backend:8000
-      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:3000}
-      # Secret n8n sends to the backend (must match backend N8N_INBOUND_SECRET)
-      N8N_INBOUND_SECRET: ${N8N_INBOUND_SECRET:-}
     volumes:
       - n8n_data:/home/node/.n8n
       - ./docs/n8n/all_workflows.json:/home/node/workflows/all_workflows.json:ro
+    entrypoint: ["/bin/sh", "-lc"]
     # Import workflows on every start (n8n import is idempotent — safe to re-run).
     # The import may fail on the very first run if the DB is not yet initialised;
     # the "|| true" ensures n8n still starts so the next restart succeeds cleanly.
     command: >
-      sh -c "n8n import:workflow --input=/home/node/workflows/all_workflows.json || true
-      && n8n start"
+      n8n import:workflow --input=/home/node/workflows/all_workflows.json || true
+      && n8n start
     depends_on:
       - backend
     restart: unless-stopped

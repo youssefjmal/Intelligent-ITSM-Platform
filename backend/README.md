@@ -47,12 +47,12 @@ python -m venv .venv
 pip install -r requirements.txt
 python -m alembic -c alembic.ini upgrade head
 python scripts\seed.py
-python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8052
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 API docs after startup:
-- Swagger: `http://127.0.0.1:8052/docs`
-- OpenAPI: `http://127.0.0.1:8052/openapi.json`
+- Swagger: `http://127.0.0.1:8000/docs`
+- OpenAPI: `http://127.0.0.1:8000/openapi.json`
 
 ## 5. Environment Configuration
 Source file: `backend/.env` (template: `backend/.env.example`)
@@ -69,6 +69,8 @@ Source file: `backend/.env` (template: `backend/.env.example`)
 - `REFRESH_COOKIE_NAME`
 - `REFRESH_TOKEN_EXPIRE_DAYS`
 - `ALLOWED_HOSTS`
+- `PROMETHEUS_METRICS_ENABLED`
+- `PROMETHEUS_METRICS_TOKEN`
 
 ### Email
 - `SMTP_HOST`
@@ -101,12 +103,13 @@ Source file: `backend/.env` (template: `backend/.env.example`)
 - `JIRA_AUTO_RECONCILE_STARTUP_DELAY_SECONDS`
 
 ### Automation
-- `AUTOMATION_SECRET`
+- `N8N_INBOUND_SECRET`
+- `N8N_OUTBOUND_SECRET`
 - `N8N_WEBHOOK_BASE_URL`
 
 ## 6. Security Model
 - JWT auth supports cookie and bearer token flows.
-- RBAC roles: `admin`, `agent`, `viewer`, `user`.
+- RBAC roles: `admin`, `agent`, `user` (with legacy `viewer` rows normalized to `user`).
 - Production guardrails enforce strong JWT secret and restrictive CORS/hosts.
 - Secrets are env-only and must never be hardcoded in source or docs.
 

@@ -1209,6 +1209,8 @@ def action_is_too_generic(action_text: str, query_context: dict[str, Any]) -> bo
         return True
     if generic_hits >= 2 and strong_hits < 2:
         return True
+    if generic_hits and strong_hits < 2 and len(tokens) <= 8:
+        return True
     return False
 
 
@@ -1832,7 +1834,18 @@ def build_fallback_action(
             if lang == "fr"
             else f"If the issue persists, check this surrounding context next: {_truncate(supporting_context, limit=120)}."
         )
-    return None
+    subject = _subject_label(query_context)
+    if subject:
+        return (
+            f"Capturez un signal d'echec actuel sur un cas affecte representatif du perimetre {subject}, puis verifiez ce cas avant toute correction plus large."
+            if lang == "fr"
+            else f"Capture one current failure signal on a representative affected {subject} path, then verify that case before broader remediation."
+        )
+    return (
+        "Capturez un journal, une erreur ou un exemple d'echec actuel sur un cas affecte avant toute correction plus large."
+        if lang == "fr"
+        else "Capture one current log, error, or failing example on an affected case before broader remediation."
+    )
 
 
 def _next_best_actions(
@@ -2746,6 +2759,38 @@ def _safe_diagnostic_action(query_context: dict[str, Any], *, lang: str) -> str 
     return topic_safe_diagnostic_action(preferred_topic, lang=lang)
 
 
+def _tentative_diagnostic_next_step(
+    query_context: dict[str, Any],
+    *,
+    candidate_action: str | None,
+    candidate_reference: str | None,
+    lang: str,
+) -> str | None:
+    safe_action = _safe_diagnostic_action(query_context, lang=lang)
+    if safe_action:
+        return safe_action
+
+    action_text = _action_step_text(candidate_action or "")
+    if not action_text:
+        return None
+
+    reference = _normalize_text(candidate_reference or "")
+    subject = _subject_label(query_context) or (
+        "the affected path" if lang == "en" else "le perimetre affecte"
+    )
+    if reference:
+        return (
+            f"Validate on one affected case that the current symptoms still match {reference} before applying '{_truncate(action_text, limit=88)}' more broadly."
+            if lang == "en"
+            else f"Validez d'abord sur un cas affecte que les symptomes actuels correspondent encore a {reference} avant d'appliquer '{_truncate(action_text, limit=88)}' plus largement."
+        )
+    return (
+        f"Check one representative affected {subject} path and capture the current failure signal before applying '{_truncate(action_text, limit=88)}' more broadly."
+        if lang == "en"
+        else f"Controlez un cas representatif sur {subject} et capturez le signal d'echec actuel avant d'appliquer '{_truncate(action_text, limit=88)}' plus largement."
+    )
+
+
 def _build_response_text(
     *,
     recommended_action: str | None,
@@ -2756,13 +2801,18 @@ def _build_response_text(
     display_mode: str,
 ) -> str:
     if display_mode == _NO_STRONG_MATCH_DISPLAY:
+        action_text = recommended_action or (
+            "Aucune solution forte disponible pour l'instant."
+            if lang == "fr"
+            else "No strong evidence-backed solution available yet."
+        )
         if lang == "fr":
             return (
-                "Action recommandee:\nAucune solution forte disponible pour l'instant.\n\n"
+                f"Action recommandee:\n{action_text}\n\n"
                 f"Justification:\n{reasoning}\n\nConfiance:\n{round(confidence * 100)}%\n\nSources:\n"
             ).strip()
         return (
-            "Recommended action:\nNo strong evidence-backed solution available yet.\n\n"
+            f"Recommended action:\n{action_text}\n\n"
             f"Reasoning:\n{reasoning}\n\nConfidence:\n{round(confidence * 100)}%\n\nEvidence sources:\n"
         ).strip()
 
@@ -2895,7 +2945,14 @@ def _fallback_diagnostic_payload(
     action_steps: list[GroundedActionStep] | None = None,
 ) -> dict[str, Any] | None:
     grounded_steps = list(action_steps or [])
-    recommended_action = grounded_steps[0].text if grounded_steps else _safe_diagnostic_action(query_context, lang=lang)
+    grounded_primary_action = grounded_steps[0].text if grounded_steps else None
+    grounded_reference = grounded_steps[0].evidence[0] if grounded_steps and grounded_steps[0].evidence else None
+    recommended_action = _tentative_diagnostic_next_step(
+        query_context,
+        candidate_action=grounded_primary_action,
+        candidate_reference=grounded_reference,
+        lang=lang,
+    ) or _safe_diagnostic_action(query_context, lang=lang)
     if not recommended_action:
         return _no_strong_match_payload(
             retrieval,
@@ -2911,25 +2968,42 @@ def _fallback_diagnostic_payload(
         if filtered_weak_match
         else ADVISOR_FALLBACK_CONFIDENCE["fallback_diagnostic"]
     )
-    next_best_actions = [step.text for step in grounded_steps[1:]] if grounded_steps else _next_best_actions(
-        recommended_action=recommended_action,
-        probable_root_cause=probable_root_cause,
-        tentative=True,
-        query_context=query_context,
-        support=[],
-        lang=lang,
-    )
+    next_best_actions: list[str] = []
+    if grounded_primary_action:
+        normalized_primary = _action_step_text(grounded_primary_action)
+        if normalized_primary and normalized_primary.casefold() != recommended_action.casefold():
+            next_best_actions.append(normalized_primary)
+    if grounded_steps:
+        next_best_actions.extend(step.text for step in grounded_steps[1:])
+    else:
+        next_best_actions.extend(
+            _next_best_actions(
+                recommended_action=recommended_action,
+                probable_root_cause=probable_root_cause,
+                tentative=True,
+                query_context=query_context,
+                support=[],
+                lang=lang,
+            )
+        )
+    deduped_next_actions: list[str] = []
+    seen_next: set[str] = set()
+    for item in next_best_actions:
+        normalized_item = _normalize_text(item)
+        key = normalized_item.casefold()
+        if not normalized_item or key in seen_next or key == recommended_action.casefold():
+            continue
+        seen_next.add(key)
+        deduped_next_actions.append(normalized_item)
+        if len(deduped_next_actions) >= 4:
+            break
     normalized_evidence = evidence_sources or []
     display_mode = _TENTATIVE_DIAGNOSTIC_DISPLAY
-    validation_steps = (
-        build_validation_from_actions(query_context, action_steps=grounded_steps, lang=lang)
-        if grounded_steps
-        else build_validation_steps(
-            query_context,
-            recommended_action=recommended_action,
-            supporting_context=supporting_context,
-            lang=lang,
-        )
+    validation_steps = build_validation_steps(
+        query_context,
+        recommended_action=recommended_action,
+        supporting_context=supporting_context,
+        lang=lang,
     )
     fallback_action = build_fallback_action(
         query_context,
@@ -2959,7 +3033,7 @@ def _fallback_diagnostic_payload(
         "recommendation_mode": "fallback_diagnostic",
         "mode": display_mode,
         "match_summary": match_summary or fallback_match_summary,
-        "next_best_actions": next_best_actions,
+        "next_best_actions": deduped_next_actions,
         "incident_cluster": incident_cluster,
         "impact_summary": impact_summary,
         "filtered_weak_match": filtered_weak_match,
@@ -2988,6 +3062,7 @@ def _no_strong_match_payload(
     reasoning: str | None = None,
     filtered_weak_match: bool = False,
     action_relevance_score: float = 0.0,
+    _skip_llm: bool = False,
 ) -> dict[str, Any] | None:
     subject = ", ".join(_subject_terms(query_context))
     if not reasoning:
@@ -3000,15 +3075,58 @@ def _no_strong_match_payload(
     elif lang == "en" and subject:
         reasoning = f"{reasoning} Detected scope: {subject}."
     confidence = ADVISOR_FALLBACK_CONFIDENCE["cause_insufficient"]
-    display_mode = _NO_STRONG_MATCH_DISPLAY
     fallback_action = build_fallback_action(
         query_context,
         probable_root_cause=None,
         supporting_context=None,
         lang=lang,
     )
+
+    # When not called as an internal base (e.g. from _low_trust_incident_fallback_payload),
+    # always ask the LLM for a best-effort recommendation so the user never sees a blank card.
+    llm_action_pkg = None
+    if not _skip_llm:
+        try:
+            llm_action_pkg = generate_low_trust_incident_actions(
+                ticket_title=str(query_context.get("title") or ""),
+                ticket_description=str(query_context.get("description") or ""),
+                ticket_category=str((query_context.get("metadata") or {}).get("category") or ""),
+                ticket_priority=str((query_context.get("metadata") or {}).get("priority") or ""),
+                attempted_steps=list((query_context.get("metadata") or {}).get("attempted_steps") or []),
+                concurrent_families=[],
+                deterministic_fallback=str(fallback_action or "") or None,
+                language=lang,
+            )
+        except Exception:
+            llm_action_pkg = None
+
+    if llm_action_pkg is not None:
+        display_mode = _DISPLAY_MODE_LLM_GENERAL
+        recommended_action = llm_action_pkg.recommended_action
+        next_best_actions = list(llm_action_pkg.next_best_actions)
+        validation_steps = list(llm_action_pkg.validation_steps)
+        ai_only_warning = True
+        reasoning_note = str(llm_action_pkg.reasoning_note or "").strip()
+        if reasoning_note:
+            reasoning = reasoning_note
+    else:
+        display_mode = _NO_STRONG_MATCH_DISPLAY
+        recommended_action = fallback_action
+        next_best_actions = []
+        validation_steps = (
+            build_validation_steps(
+                query_context,
+                recommended_action=recommended_action,
+                supporting_context=None,
+                lang=lang,
+            )
+            if recommended_action
+            else []
+        )
+        ai_only_warning = False
+
     return {
-        "recommended_action": None,
+        "recommended_action": recommended_action,
         "reasoning": reasoning,
         "probable_root_cause": None,
         "root_cause": None,
@@ -3027,16 +3145,17 @@ def _no_strong_match_payload(
             if lang == "fr" and subject
             else (f"Matched on {subject}." if subject else None)
         ),
-        "next_best_actions": [],
+        "next_best_actions": next_best_actions,
         "incident_cluster": None,
         "impact_summary": _impact_summary(query_context, lang=lang, cluster=None),
         "filtered_weak_match": filtered_weak_match,
         "action_relevance_score": round(max(0.0, min(1.0, action_relevance_score)), 4),
-        "validation_steps": [],
+        "validation_steps": validation_steps,
         "fallback_action": fallback_action,
         "display_mode": display_mode,
+        "ai_only_warning": ai_only_warning,
         "response_text": _build_response_text(
-            recommended_action=None,
+            recommended_action=recommended_action,
             reasoning=reasoning,
             confidence=confidence,
             evidence_sources=[],
@@ -3066,6 +3185,7 @@ def _low_trust_incident_fallback_payload(
         reasoning=reasoning,
         filtered_weak_match=filtered_weak_match,
         action_relevance_score=action_relevance_score,
+        _skip_llm=True,
     )
     if next_best_actions is not None:
         payload["next_best_actions"] = [
@@ -3122,6 +3242,7 @@ def _low_trust_incident_fallback_payload(
     payload["base_next_best_actions"] = list(payload.get("next_best_actions") or [])
     payload["base_validation_steps"] = list(payload.get("validation_steps") or [])
     payload["action_refinement_source"] = "none"
+    payload["ai_only_warning"] = True
     if low_trust_action_package is not None:
         payload["display_mode"] = _DISPLAY_MODE_LLM_GENERAL
         payload["mode"] = _DISPLAY_MODE_LLM_GENERAL
@@ -3186,12 +3307,12 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
             if lang == "fr"
             else "Evidence is split across different incident families, so no single remediation path can be recommended safely."
         )
-        return _low_trust_incident_fallback_payload(
+        return _insufficient_evidence_payload(
             retrieval,
             query_context=query_context,
             lang=lang,
             reasoning=reasoning,
-            concurrent_families=_extract_concurrent_families(candidate_clusters),
+            conflicting_clusters=candidate_clusters,
         )
     if len(candidate_clusters) >= 2 and selected_cluster is None:
         reasoning = (
@@ -3199,12 +3320,12 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
             if lang == "fr"
             else "No incident family provides enough coherent support to recommend a fix."
         )
-        return _low_trust_incident_fallback_payload(
+        return _insufficient_evidence_payload(
             retrieval,
             query_context=query_context,
             lang=lang,
             reasoning=reasoning,
-            concurrent_families=_extract_concurrent_families(candidate_clusters),
+            conflicting_clusters=candidate_clusters,
         )
 
     _query_has_signals = bool(
@@ -3212,6 +3333,17 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
         or (query_context.get("strong_terms") or [])
         or (query_context.get("topics") or [])
         or (query_context.get("domains") or [])
+    )
+    low_signal_query = not any(query_context.get(key) for key in ("strong_terms", "topics", "domains"))
+    preferred_query_topic = _preferred_query_topic(query_context)
+    query_category = str((query_context.get("metadata") or {}).get("category") or "").strip().lower()
+    aligned_raw_evidence_present = any(
+        not bool(row.get("domain_mismatch")) and not bool(row.get("topic_mismatch"))
+        for row in [
+            *list(retrieval.get("similar_tickets") or []),
+            *list(retrieval.get("kb_articles") or []),
+            *list(retrieval.get("solution_recommendations") or []),
+        ]
     )
 
     # Compute incident_cluster early so it can be included in no-primary early returns.
@@ -3232,7 +3364,27 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
         query_context=query_context,
     )
     if primary is None:
-        if _has_specific_guidance_context(query_context) and list(query_context.get("topics") or []):
+        if any(
+            not bool(row.get("domain_mismatch")) and not bool(row.get("topic_mismatch"))
+            for row in list(retrieval.get("related_problems") or [])
+        ) and _has_specific_guidance_context(query_context):
+            reasoning = (
+                "Problem evidence suggests a likely incident family, so a cautious ticket-specific diagnostic is returned."
+                if lang == "en"
+                else "La preuve issue des problemes suggere une famille d'incident probable, donc un diagnostic prudent et specifique au ticket est renvoye."
+            )
+            return _fallback_diagnostic_payload(
+                retrieval,
+                query_context=query_context,
+                lang=lang,
+                reasoning=reasoning,
+                filtered_weak_match=False,
+                action_relevance_score=0.0,
+                probable_root_cause=_early_probable_root_cause,
+                incident_cluster=incident_cluster,
+                impact_summary=impact_summary,
+            )
+        if aligned_raw_evidence_present and _has_specific_guidance_context(query_context) and not low_signal_query:
             reasoning = (
                 "The historical evidence is too generic to reuse directly, so a safe ticket-specific diagnostic is returned."
                 if lang == "en"
@@ -3249,17 +3401,49 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
                 incident_cluster=incident_cluster,
                 impact_summary=impact_summary,
             )
+        if (
+            not aligned_raw_evidence_present
+            and (
+                preferred_query_topic in {"network_access", "auth_path", "database_data", "mail_transport"}
+                or query_category in {"network", "security", "email"}
+            )
+            and _has_specific_guidance_context(query_context)
+        ):
+            reasoning = (
+                "No aligned historical fix was found, so only low-trust general diagnostic guidance is available."
+                if lang == "en"
+                else "Aucun correctif historique aligne n'a ete trouve, donc seule une guidance diagnostique generale a faible confiance est disponible."
+            )
+            return _low_trust_incident_fallback_payload(
+                retrieval,
+                query_context=query_context,
+                lang=lang,
+                reasoning=reasoning,
+                concurrent_families=_extract_concurrent_families(candidate_clusters),
+            )
+        if low_signal_query:
+            return _insufficient_evidence_payload(
+                retrieval,
+                query_context=query_context,
+                lang=lang,
+                reasoning=(
+                    "The retrieved signals stay too generic to recommend a safe next step."
+                    if lang == "en"
+                    else "Les signaux recuperes restent trop generiques pour recommander une prochaine etape sure."
+                ),
+            )
         reasoning = (
             "Les signaux recuperes restent trop generiques pour proposer un diagnostic exploitable."
             if lang == "fr"
             else "The retrieved signals stay too generic to propose a useful diagnostic."
         )
-        return _low_trust_incident_fallback_payload(
+        return _no_strong_match_payload(
             retrieval,
             query_context=query_context,
             lang=lang,
             reasoning=reasoning,
-            concurrent_families=_extract_concurrent_families(candidate_clusters),
+            filtered_weak_match=False,
+            action_relevance_score=0.0,
         )
 
     support = _supporting_evidence(primary, buckets, selected_cluster_id=selected_cluster_id)
@@ -3359,6 +3543,53 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
         agreement_count=agreement_count,
     )
     action_relevance_score = alignment["action_relevance_score"]
+    weak_family_support = (
+        primary.relevance < ADVISOR_CAUSE_CONFIRMATION["supported_excerpt_relevance"]
+        and primary.context_score < 0.24
+        and primary.strong_overlap < ADVISOR_CAUSE_CONFIRMATION["supported_excerpt_overlap"]
+        and primary.exact_strong_hits == 0
+        and agreement_count < 2
+    )
+    generic_action_without_anchor = (
+        action_is_too_generic(candidate_action or "", query_context)
+        and primary.exact_focus_hits == 0
+        and primary.exact_strong_hits == 0
+        and primary.context_score < 0.2
+        and primary.relevance < ADVISOR_ALIGNMENT_THRESHOLDS["action_relevance"]
+    )
+    weak_service_request_match = (
+        query_category == "service_request"
+        and weak_family_support
+        and primary.exact_focus_hits == 0
+        and primary.exact_strong_hits == 0
+    )
+    if low_signal_query and (
+        weak_family_support
+        or (not grounded_action_steps and action_is_too_generic(candidate_action or "", query_context))
+    ):
+        return _insufficient_evidence_payload(
+            retrieval,
+            query_context=query_context,
+            lang=lang,
+            reasoning=(
+                "The selected evidence stays too generic to recommend a safe next step."
+                if lang == "en"
+                else "Les preuves retenues restent trop generiques pour recommander une prochaine etape sure."
+            ),
+            conflicting_clusters=candidate_clusters if len(candidate_clusters) >= 2 else None,
+        )
+    if generic_action_without_anchor or weak_service_request_match:
+        return _insufficient_evidence_payload(
+            retrieval,
+            query_context=query_context,
+            lang=lang,
+            reasoning=(
+                "The retrieved historical action is too generic and weakly aligned to reuse safely."
+                if lang == "en"
+                else "L'action historique recuperee est trop generique et trop faiblement alignee pour etre reutilisee en securite."
+            ),
+            conflicting_clusters=candidate_clusters if len(candidate_clusters) >= 2 else None,
+        )
     hard_mismatch = action_relevance_score < ADVISOR_ALIGNMENT_THRESHOLDS["hard_action_relevance"] and (
         primary.domain_mismatch
         or primary.topic_mismatch
@@ -3368,15 +3599,27 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
         confidence < ADVISOR_ALIGNMENT_THRESHOLDS["low_confidence"]
         and action_relevance_score < ADVISOR_ALIGNMENT_THRESHOLDS["action_relevance"]
     )
-    low_signal_query = not any(query_context.get(key) for key in ("strong_terms", "topics", "domains"))
     if not grounded_action_steps and (
         low_signal_query
         or candidate_action is None
         or action_is_too_generic(candidate_action or "", query_context)
         or tentative
+        or weak_family_support
         or alignment["downgrade_to_tentative"]
         or not alignment["resolution_pattern_match"]
     ):
+        if low_signal_query or weak_family_support:
+            return _insufficient_evidence_payload(
+                retrieval,
+                query_context=query_context,
+                lang=lang,
+                reasoning=(
+                    "The selected incident family stays too weak or generic to recommend a safe next step."
+                    if lang == "en"
+                    else "La famille d'incident retenue reste trop faible ou trop generique pour recommander une prochaine etape sure."
+                ),
+                conflicting_clusters=candidate_clusters if len(candidate_clusters) >= 2 else None,
+            )
         reasoning = (
             "The selected incident family is coherent, but the evidence does not support one concrete action strongly enough yet."
             if lang == "en"
@@ -3400,6 +3643,20 @@ def build_resolution_advice(retrieval: dict[str, Any], *, lang: str = "en") -> d
         )
 
     if not alignment["symptom_match"] or not alignment["component_match"]:
+        if filtered_weak_match and (primary.domain_mismatch or primary.topic_mismatch):
+            reasoning = (
+                "Les preuves recuperees pointent vers une autre famille ou une autre couche systeme; aucune action sure n'est affichee."
+                if lang == "fr"
+                else "The retrieved evidence points to a different incident family or system layer, so no safe action is shown."
+            )
+            return _no_strong_match_payload(
+                retrieval,
+                query_context=query_context,
+                lang=lang,
+                reasoning=reasoning,
+                filtered_weak_match=True,
+                action_relevance_score=action_relevance_score,
+            )
         if filtered_weak_match:
             reasoning = (
                 "L'action historique a ete rejetee parce qu'elle ne correspond pas au bon symptome ou a la bonne couche systeme; une verification sure, derivee du ticket, est renvoyee."

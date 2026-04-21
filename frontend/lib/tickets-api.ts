@@ -440,6 +440,7 @@ export type TicketAIRecommendationsPayload = {
       confidence?: number
       language?: string
     } | null
+    aiOnlyWarning: boolean
   } | null
 }
 
@@ -678,6 +679,7 @@ export async function fetchTicketAIRecommendations(
       fallback_action?: string | null
       missing_information?: string[]
       response_text: string
+      ai_only_warning?: boolean
       llm_general_advisory?: {
         probable_causes?: string[]
         suggested_checks?: string[]
@@ -917,6 +919,7 @@ export async function fetchTicketAIRecommendations(
                   language: data.resolution_advice.llm_general_advisory.language,
                 }
               : null,
+          aiOnlyWarning: Boolean(data.resolution_advice.ai_only_warning),
         }
       : null,
   }
@@ -1105,6 +1108,33 @@ export interface ResolutionSuggestionResult {
   based_on_feedback: boolean;
 }
 
+export interface TicketKnowledgeDraftResult {
+  id?: string | null
+  ticketId: string
+  title: string
+  summary: string
+  symptoms: string[]
+  rootCause?: string | null
+  workaround?: string | null
+  resolutionSteps: string[]
+  tags: string[]
+  reviewNote: string
+  confidence: number
+  source: string
+  generatedAt: string
+  publishedAt?: string | null
+  jiraIssueKey?: string | null
+  status?: "draft" | "published"
+}
+
+export interface KnowledgeDraftPublishResult {
+  id: string
+  ticketId: string
+  jiraIssueKey: string | null
+  publishedAt: string
+  kbChunkId: number | null
+}
+
 /**
  * Fetch an AI-suggested resolution text for a ticket being closed.
  * Call when the agent opens the resolve dialog and the resolution is empty.
@@ -1124,5 +1154,87 @@ export async function fetchResolutionSuggestion(
     return res.json();
   } catch {
     return { suggestion: "", confidence: 0, based_on_comments: false, based_on_feedback: false };
+  }
+}
+
+function _mapKnowledgeDraft(data: {
+  id?: string | null
+  ticket_id: string
+  title: string
+  summary: string
+  symptoms?: string[]
+  root_cause?: string | null
+  workaround?: string | null
+  resolution_steps?: string[]
+  tags?: string[]
+  review_note: string
+  confidence: number
+  source: string
+  generated_at: string
+  published_at?: string | null
+  jira_issue_key?: string | null
+  status?: string
+}): TicketKnowledgeDraftResult {
+  return {
+    id: data.id ?? null,
+    ticketId: data.ticket_id,
+    title: data.title,
+    summary: data.summary,
+    symptoms: data.symptoms || [],
+    rootCause: data.root_cause ?? null,
+    workaround: data.workaround ?? null,
+    resolutionSteps: data.resolution_steps || [],
+    tags: data.tags || [],
+    reviewNote: data.review_note,
+    confidence: data.confidence,
+    source: data.source,
+    generatedAt: data.generated_at,
+    publishedAt: data.published_at ?? null,
+    jiraIssueKey: data.jira_issue_key ?? null,
+    status: (data.status === "published" ? "published" : "draft") as "draft" | "published",
+  }
+}
+
+export async function fetchTicketKnowledgeDraft(
+  ticketId: string,
+  language = "fr",
+): Promise<TicketKnowledgeDraftResult> {
+  const params = new URLSearchParams({ language })
+  const data = await apiFetch<Parameters<typeof _mapKnowledgeDraft>[0]>(
+    `/tickets/${ticketId}/knowledge-draft?${params.toString()}`,
+    { method: "POST" },
+  )
+  return _mapKnowledgeDraft(data)
+}
+
+export async function fetchExistingKnowledgeDraft(
+  ticketId: string,
+): Promise<TicketKnowledgeDraftResult | null> {
+  try {
+    const data = await apiFetch<Parameters<typeof _mapKnowledgeDraft>[0]>(
+      `/tickets/${ticketId}/knowledge-draft`,
+    )
+    return _mapKnowledgeDraft(data)
+  } catch {
+    return null
+  }
+}
+
+export async function publishKnowledgeDraft(
+  ticketId: string,
+): Promise<KnowledgeDraftPublishResult> {
+  const data = await apiFetch<{
+    id: string
+    ticket_id: string
+    jira_issue_key: string | null
+    published_at: string
+    kb_chunk_id: number | null
+  }>(`/tickets/${ticketId}/knowledge-draft/publish`, { method: "POST" })
+  return {
+    id: data.id,
+    ticketId: data.ticket_id,
+    jiraIssueKey: data.jira_issue_key ?? null,
+    publishedAt: data.published_at,
+    kbChunkId: data.kb_chunk_id ?? null,
   }
 }

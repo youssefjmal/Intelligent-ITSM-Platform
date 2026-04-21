@@ -14,23 +14,29 @@ import json
 import logging
 from typing import Any
 
-import redis as _redis_lib
+try:
+    import redis as _redis_lib
+except ModuleNotFoundError:  # pragma: no cover - depends on local optional dependency
+    _redis_lib = None
 
 from app.core.config import settings
 from app.core.metrics import cache_hits_total, cache_misses_total
 
 logger = logging.getLogger(__name__)
 
-_client: _redis_lib.Redis | None = None
+_client: Any | None = None
 _client_initialised = False  # True once we have attempted a connection
 
 
-def _get_client() -> _redis_lib.Redis | None:
+def _get_client() -> Any | None:
     global _client, _client_initialised
     if _client_initialised:
         return _client
     _client_initialised = True
     if not settings.CACHE_ENABLED:
+        return None
+    if _redis_lib is None:
+        logger.warning("Redis client library not installed; caching disabled.")
         return None
     try:
         c = _redis_lib.Redis.from_url(

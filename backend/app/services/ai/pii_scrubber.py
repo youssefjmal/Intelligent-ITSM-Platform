@@ -57,9 +57,9 @@ _PHONE_FR_RE = re.compile(
 
 _REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
     (_EMAIL_RE, "[EMAIL]"),
-    (_IPV4_RE, "[IP_ADDRESS]"),
-    (_PHONE_INTL_RE, "[PHONE]"),
-    (_PHONE_FR_RE, "[PHONE]"),
+    (_PHONE_INTL_RE, "[PHONE]"),   # run before IPv4 — French dot-format phones
+    (_PHONE_FR_RE, "[PHONE]"),     # (e.g. 06.12.34.56.78) would otherwise be
+    (_IPV4_RE, "[IP_ADDRESS]"),    # partially consumed by the IPv4 pattern first
 ]
 
 # ---------------------------------------------------------------------------

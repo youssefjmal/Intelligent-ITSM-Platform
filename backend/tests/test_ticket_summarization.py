@@ -6,7 +6,7 @@ Coverage:
   2. Summary returned from cache (within TTL)
   3. Summary regenerated when stale (outside TTL)
   4. Summary invalidated on comment — summary_generated_at cleared
-  5. Summary fallback on LLM failure — SummaryResult(summary=""), no exception
+  5. Summary fallback on LLM failure — deterministic non-empty summary, no exception
   6. Similar tickets used in context — similar_ticket_count populated
   7. Summary max length enforced — truncated to SUMMARY_MAX_LENGTH_CHARS
   8. force_regenerate bypasses cache
@@ -149,7 +149,7 @@ def test_summary_invalidated_on_comment():
 
 
 def test_summary_fallback_on_llm_failure():
-    """When LLM raises, SummaryResult(summary='') is returned, no exception."""
+    """When LLM raises, a deterministic summary is returned, no exception."""
     mock_db_ticket = MagicMock()
     mock_db_ticket.ai_summary = None
     mock_db_ticket.summary_generated_at = None
@@ -162,8 +162,27 @@ def test_summary_fallback_on_llm_failure():
     ):
         result = asyncio.run(generate_ticket_summary(_TICKET, db=mock_db))
 
-    assert result.summary == ""
+    assert result.summary != ""
+    assert "vpn" in result.summary.lower()
     assert result.is_cached is False
+
+
+def test_summary_fallback_on_blank_llm_response():
+    """Blank LLM output falls back to a deterministic summary."""
+    mock_db_ticket = MagicMock()
+    mock_db_ticket.ai_summary = None
+    mock_db_ticket.summary_generated_at = None
+    mock_db = MagicMock()
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_db_ticket
+
+    with (
+        patch("app.services.ai.summarization.unified_retrieve", return_value={"similar_tickets": []}, create=True),
+        patch("app.services.ai.llm.ollama_generate", return_value="   "),
+    ):
+        result = asyncio.run(generate_ticket_summary(_TICKET, db=mock_db))
+
+    assert result.summary != ""
+    assert "statut" in result.summary.lower() or "status" in result.summary.lower()
 
 
 # ---------------------------------------------------------------------------

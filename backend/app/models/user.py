@@ -25,7 +25,7 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[UserRole] = mapped_column(
         Enum(UserRole, name="user_role", values_callable=lambda x: [e.value for e in x]),
-        default=UserRole.viewer,
+        default=UserRole.user,
     )
     specializations: Mapped[list[str]] = mapped_column(JSONB, default=list)
     seniority_level: Mapped[SeniorityLevel] = mapped_column(

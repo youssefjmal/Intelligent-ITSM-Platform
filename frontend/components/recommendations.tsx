@@ -58,6 +58,7 @@ import {
   confidenceBandLabel,
   evidenceTypeLabel,
   formatConfidencePercent,
+  isLowTrustFallbackMode,
   primaryEvidenceType,
   recommendationModeLabel,
   recommendationStatusLabel,
@@ -898,9 +899,9 @@ export function RecommendationsPanel() {
                                   {evidenceTypeLabel(primaryEvidence, locale)}
                                 </Badge>
                               ) : null}
-                              {rec.displayMode === "no_strong_match" ? (
+                              {isLowTrustFallbackMode(rec.displayMode) ? (
                                 <Badge className="border border-slate-300 bg-slate-100 text-[10px] text-slate-700">
-                                  {locale === "fr" ? "Sans match fort" : "No strong match"}
+                                  {recommendationStatusLabel(rec.tentative, locale, rec.displayMode)}
                                 </Badge>
                               ) : rec.displayMode === "service_request" ? (
                                 <Badge className="border border-sky-300 bg-sky-100 text-[10px] text-sky-800">
@@ -1028,15 +1029,11 @@ export function RecommendationsPanel() {
                       {evidenceTypeLabel(primaryEvidence, locale)}
                     </Badge>
                   ) : null}
-                  {selectedRec.displayMode === "no_strong_match" ? (
+                  {isLowTrustFallbackMode(selectedRec.displayMode) ? (
                     <Badge className="border border-slate-300 bg-slate-100 text-[10px] text-slate-700">
-                      {locale === "fr" ? "Sans match fort" : "No strong match"}
-                    </Badge>
-                  ) : selectedRec.displayMode === "service_request" ? (
-                    <Badge className="border border-sky-300 bg-sky-100 text-[10px] text-sky-800">
                       {recommendationStatusLabel(selectedRec.tentative, locale, selectedRec.displayMode)}
                     </Badge>
-                  ) : selectedRec.displayMode === "llm_general_knowledge" ? (
+                  ) : selectedRec.displayMode === "service_request" ? (
                     <Badge className="border border-sky-300 bg-sky-100 text-[10px] text-sky-800">
                       {recommendationStatusLabel(selectedRec.tentative, locale, selectedRec.displayMode)}
                     </Badge>
@@ -1081,8 +1078,8 @@ export function RecommendationsPanel() {
                 <div className="rounded-xl border border-border/70 bg-muted/30 p-3">
                   <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{locale === "fr" ? "Statut" : "Status"}</p>
                   <p className="mt-1 text-sm font-semibold text-foreground">
-                    {selectedRec.displayMode === "no_strong_match"
-                      ? (locale === "fr" ? "Sans match fort" : "No strong match")
+                    {isLowTrustFallbackMode(selectedRec.displayMode)
+                      ? recommendationStatusLabel(selectedRec.tentative, locale, selectedRec.displayMode)
                       : recommendationStatusLabel(selectedRec.tentative, locale, selectedRec.displayMode)}
                   </p>
                 </div>

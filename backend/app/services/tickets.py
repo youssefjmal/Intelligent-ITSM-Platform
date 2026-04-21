@@ -7,11 +7,11 @@ import logging
 import re
 from collections import Counter
 from typing import Any, Literal
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.integrations.jira.client import JiraClient
-from app.core.rbac import can_view_ticket, filter_tickets_for_user
+from app.core.rbac import can_view_ticket, effective_role, filter_tickets_for_user
 from app.integrations.jira.mapper import JIRA_SOURCE, map_status
 from app.integrations.jira.outbound import (
     add_jira_comment_for_ticket,
@@ -264,14 +264,18 @@ def get_recent_ticket_for_user(db: Session, user: User, *, open_only: bool = Fal
     """Return the single most recent ticket visible to the user.
 
     Uses a DB-side LIMIT 1 instead of loading the full ticket list.
-    Admins/agents see all tickets; viewers see only their own.
+    Admins/agents see all tickets; customers see only the tickets they reported.
     """
     q = db.query(Ticket).order_by(Ticket.created_at.desc())
     if open_only:
         q = q.filter(Ticket.status == TicketStatus.open)
-    if user.role not in {UserRole.admin, UserRole.agent}:
+    if effective_role(user.role) not in {UserRole.admin, UserRole.agent}:
         q = q.filter(
-            (Ticket.reporter_id == user.id) | (Ticket.reporter == user.email) | (Ticket.assignee == user.email)
+            or_(
+                Ticket.reporter_id == str(user.id),
+                Ticket.reporter.ilike(user.email),
+                Ticket.reporter.ilike(user.name),
+            )
         )
     return q.first()
 
@@ -284,9 +288,13 @@ def get_critical_tickets_for_user(db: Session, user: User, *, active_only: bool 
     q = db.query(Ticket).filter(Ticket.priority == TicketPriority.critical).order_by(Ticket.created_at.desc())
     if active_only:
         q = q.filter(Ticket.status.in_([TicketStatus.open, TicketStatus.in_progress]))
-    if user.role not in {UserRole.admin, UserRole.agent}:
+    if effective_role(user.role) not in {UserRole.admin, UserRole.agent}:
         q = q.filter(
-            (Ticket.reporter_id == user.id) | (Ticket.reporter == user.email) | (Ticket.assignee == user.email)
+            or_(
+                Ticket.reporter_id == str(user.id),
+                Ticket.reporter.ilike(user.email),
+                Ticket.reporter.ilike(user.name),
+            )
         )
     return q.limit(50).all()
 
@@ -297,9 +305,13 @@ def get_tickets_by_category_for_user(db: Session, user: User) -> list[Ticket]:
     Loads only id and category columns to compute the most-used-categories stats.
     """
     q = db.query(Ticket.id, Ticket.category).order_by(Ticket.created_at.desc())
-    if user.role not in {UserRole.admin, UserRole.agent}:
+    if effective_role(user.role) not in {UserRole.admin, UserRole.agent}:
         q = q.filter(
-            (Ticket.reporter_id == user.id) | (Ticket.reporter == user.email) | (Ticket.assignee == user.email)
+            or_(
+                Ticket.reporter_id == str(user.id),
+                Ticket.reporter.ilike(user.email),
+                Ticket.reporter.ilike(user.name),
+            )
         )
     rows = q.all()
     # Return lightweight namespace objects so formatters can access .category.value

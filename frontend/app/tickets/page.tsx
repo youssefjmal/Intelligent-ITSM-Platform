@@ -11,15 +11,36 @@ import { type Ticket } from "@/lib/ticket-data"
 import { useAuth } from "@/lib/auth"
 import { useI18n } from "@/lib/i18n"
 import { fetchTickets } from "@/lib/tickets-api"
+import { ApiError } from "@/lib/api"
 
 export default function TicketsPage() {
-  const { hasPermission } = useAuth()
-  const { t } = useI18n()
+  const { user } = useAuth()
+  const { t, locale } = useI18n()
   const searchParams = useSearchParams()
   const [tickets, setTickets] = useState<Ticket[]>([])
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "auth" | "error">("loading")
 
   useEffect(() => {
-    fetchTickets().then(setTickets).catch(() => {})
+    let mounted = true
+    setLoadState("loading")
+    fetchTickets()
+      .then((rows) => {
+        if (!mounted) return
+        setTickets(rows)
+        setLoadState("ready")
+      })
+      .catch((error) => {
+        if (!mounted) return
+        setTickets([])
+        if (error instanceof ApiError && error.status === 401) {
+          setLoadState("auth")
+          return
+        }
+        setLoadState("error")
+      })
+    return () => {
+      mounted = false
+    }
   }, [])
 
   const view = (searchParams.get("view") || "").toLowerCase()
@@ -79,6 +100,16 @@ export default function TicketsPage() {
         priority: "all",
         category: "all",
         staleDays: 5,
+      }
+    }
+    if (view === "mine") {
+      return {
+        label: locale === "fr" ? "Assignes a moi" : "Assigned to me",
+        status: "all",
+        priority: "all",
+        category: "all",
+        assignedToMe: true,
+        staleDays: 0,
       }
     }
     if (view === "avg-time") {
@@ -171,12 +202,15 @@ export default function TicketsPage() {
 
         <TicketTable
           tickets={tickets}
+          loadState={loadState}
           initialStatusFilter={focusConfig?.status ?? "all"}
           initialPriorityFilter={focusConfig?.priority ?? "all"}
           initialTicketTypeFilter={focusConfig?.ticketType ?? resolvedTicketType}
           initialCategoryFilter={focusConfig?.category ?? "all"}
+          initialAssignedToMe={focusConfig?.assignedToMe ?? false}
           initialSearch={initialSearch}
           minInactiveDays={focusConfig?.staleDays ?? 0}
+          currentUser={user ? { name: user.name, email: user.email } : null}
         />
       </div>
     </AppShell>

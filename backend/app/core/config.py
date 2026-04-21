@@ -46,12 +46,12 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/auth/google/callback"
-    # Groq LLM credentials
+    # Groq provider credentials for text generation
     GROQ_API_KEY: str = ""
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
     # Ollama — used for embeddings only (nomic-embed-text)
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "nomic-embed-text"  # kept for reference; LLM calls go to Groq
+    OLLAMA_MODEL: str = "nomic-embed-text"  # kept for reference; text-generation calls go to Groq
     OLLAMA_EMBED_MODEL: str = "nomic-embed-text"
     OLLAMA_EMBEDDING_DIM: int = 768
     OLLAMA_EMBED_TIMEOUT_SECONDS: int = 60
@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     AI_CLASSIFY_SEMANTIC_TOP_K: int = 5
     AI_CLASSIFY_STRONG_SIMILARITY_THRESHOLD: float = 0.72
     AI_CLASSIFY_MAX_RECOMMENDATIONS: int = 4
+    OFFTOPIC_SIMILARITY_THRESHOLD: float = 0.28
     # jira credentials
     JIRA_BASE_URL: str = ""
     JIRA_EMAIL: str = ""
@@ -83,6 +84,12 @@ class Settings(BaseSettings):
     JIRA_KB_MAX_COMMENTS_PER_ISSUE: int = 5
     JIRA_KB_TOP_MATCHES: int = 5
     JIRA_KB_CACHE_SECONDS: int = 300
+    JIRA_KB_ARTICLE_PROJECT_KEY: str = ""   # KB project for published articles (defaults to JIRA_PROJECT_KEY)
+    JIRA_KB_ARTICLE_ISSUE_TYPE: str = "Story"  # Issue type used when creating KB articles
+    # Confluence Knowledge Base — space key of the JSM-linked Confluence space.
+    # When set, published drafts create a real Confluence page (visible in JSM KB sidebar).
+    # Same JIRA_EMAIL + JIRA_API_TOKEN are used for auth — no extra credentials needed.
+    CONFLUENCE_SPACE_KEY: str = ""  # e.g. "TWC"
 
     # Redis cache
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -97,6 +104,7 @@ class Settings(BaseSettings):
     CACHE_TTL_EMBEDDING: int = 86400   # 24 h   — embedding vectors
     JIRA_SYNC_PAGE_SIZE: int = 50
     JIRA_WEBHOOK_SECRET: str = ""
+    ALLOW_INSECURE_JIRA_WEBHOOKS: bool = False
     JIRA_AUTO_RECONCILE_ENABLED: bool = True
     JIRA_AUTO_RECONCILE_INTERVAL_SECONDS: int = 300
     JIRA_AUTO_RECONCILE_LOOKBACK_DAYS: int = 30
@@ -110,6 +118,9 @@ class Settings(BaseSettings):
     PROMETHEUS_METRICS_ENABLED: bool = True
     PROMETHEUS_METRICS_TOKEN: str = ""
     PROMETHEUS_METRICS_WEAK_TOKENS: str = "local-prom-scrape-token,change-me,changeme,default,metrics-secret"
+    # External monitoring dashboard URLs (surfaced to admin via GET /api/admin/monitoring/dashboards)
+    GRAFANA_BASE_URL: str = "http://localhost:3003"
+    PROMETHEUS_BASE_URL: str = "http://localhost:9090"
 
     # Proxy trust — only set TRUST_PROXY=true when running behind a known
     # reverse proxy (nginx, Caddy, AWS ALB).  When false, the rate limiter
@@ -168,6 +179,11 @@ class Settings(BaseSettings):
         return bool(self.JIRA_KB_ENABLED and self.jira_ready)
 
     @property
+    def confluence_ready(self) -> bool:
+        """True when Jira credentials + Confluence space key are all set."""
+        return bool(self.jira_ready and self.CONFLUENCE_SPACE_KEY.strip())
+
+    @property
     def is_production(self) -> bool:
         return self.ENV.strip().lower() in {"prod", "production"}
 
@@ -200,6 +216,8 @@ class Settings(BaseSettings):
             raise ValueError("CORS wildcard is not allowed in production. Set explicit origins.")
         if self.is_production and "*" in self.allowed_hosts:
             raise ValueError("ALLOWED_HOSTS wildcard is not allowed in production. Set explicit hosts.")
+        if self.is_production and self.ALLOW_INSECURE_JIRA_WEBHOOKS:
+            raise ValueError("ALLOW_INSECURE_JIRA_WEBHOOKS is not allowed in production.")
 
         if weak_secret and not self.is_production:
             logging.getLogger(__name__).warning(

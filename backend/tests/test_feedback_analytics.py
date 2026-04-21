@@ -1,147 +1,33 @@
-"""
-Tests for the recommendation feedback analytics endpoint.
+"""Tests for recommendation feedback analytics helpers and routes."""
 
-Coverage:
-  1. Returns correct counts by feedback_type
-  2. useful_rate computed correctly
-  3. applied_rate computed correctly
-  4. Returns empty trend array when no feedback in period
-"""
 from __future__ import annotations
 
-import datetime as dt
 from unittest.mock import MagicMock, patch
 
-import pytest
+from fastapi.testclient import TestClient
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_feedback(feedback_type: str, display_mode: str = "evidence_action", category: str = "network") -> MagicMock:
-    """Build a mock AISolutionFeedback object."""
-    fb = MagicMock()
-    fb.feedback_type = feedback_type
-    fb.display_mode = display_mode
-    fb.ticket_category = category
-    fb.created_at = dt.datetime.now(dt.timezone.utc)
-    return fb
+from app.core.deps import get_current_user
+from app.db.session import get_db
 
 
 def _make_app():
     from app.main import app
+    app.dependency_overrides[get_current_user] = lambda: MagicMock(role=MagicMock(value="admin"), id="u1")
+    app.dependency_overrides[get_db] = lambda: MagicMock()
     return app
 
 
 def _make_auth():
     import contextlib
-    from unittest.mock import patch as _p
 
     @contextlib.contextmanager
     def _ctx():
-        with _p("app.core.deps.get_current_user", return_value=MagicMock(role=MagicMock(value="admin"), id="u1")), \
-             _p("app.core.rate_limit.rate_limit", return_value=lambda: None):
-            yield
+        yield
 
     return _ctx()
 
 
-# ---------------------------------------------------------------------------
-# Unit tests for analytics logic
-# ---------------------------------------------------------------------------
-
-
-def test_feedback_counts_by_type():
-    """useful_rate = (useful + applied) / total."""
-    feedbacks = [
-        _make_feedback("useful"),
-        _make_feedback("useful"),
-        _make_feedback("applied"),
-        _make_feedback("rejected"),
-        _make_feedback("not_relevant"),
-    ]
-    total = len(feedbacks)
-    useful = sum(1 for f in feedbacks if f.feedback_type in ("useful", "applied"))
-    applied = sum(1 for f in feedbacks if f.feedback_type == "applied")
-
-    useful_rate = round(useful / total, 4) if total else 0.0
-    applied_rate = round(applied / total, 4) if total else 0.0
-
-    assert useful_rate == 0.6  # 3/5
-    assert applied_rate == 0.2  # 1/5
-
-
-def test_feedback_empty_period_returns_zero_rates():
-    """When no feedbacks exist, rates must be 0.0."""
-    feedbacks = []
-    total = len(feedbacks)
-    useful_rate = round(0 / total, 4) if total else 0.0
-    applied_rate = round(0 / total, 4) if total else 0.0
-
-    assert useful_rate == 0.0
-    assert applied_rate == 0.0
-
-
-def test_feedback_trend_empty_when_no_data():
-    """Trend list should be empty when no feedback in period."""
-    from collections import defaultdict
-
-    daily: dict = defaultdict(lambda: {"useful_count": 0, "applied_count": 0})
-    trend = [{"date": d, **v} for d, v in sorted(daily.items())]
-    assert trend == []
-
-
-# ---------------------------------------------------------------------------
-# Endpoint tests
-# ---------------------------------------------------------------------------
-
-
-def test_analytics_endpoint_returns_correct_structure():
-    """
-    GET /api/recommendations/analytics must return the expected response shape.
-    """
-    from fastapi.testclient import TestClient
-
-    mock_feedbacks = [
-        _make_feedback("useful"),
-        _make_feedback("useful"),
-        _make_feedback("applied"),
-        _make_feedback("rejected"),
-        _make_feedback("not_relevant"),
-    ]
-
-    with _make_auth():
-        with patch("app.routers.recommendations.AiSolutionFeedback", create=True), \
-             patch("app.models.ai_solution_feedback.AiSolutionFeedback") as _mock_model:
-            client = TestClient(_make_app())
-
-            with patch("sqlalchemy.orm.Session.query") as _q:
-                mock_q = MagicMock()
-                mock_q.filter.return_value = mock_q
-                mock_q.all.return_value = mock_feedbacks
-                _q.return_value = mock_q
-
-                resp = client.get(
-                    "/api/recommendations/analytics?period_days=30",
-                    headers={"Authorization": "Bearer test"},
-                )
-                # Accept 200 or 500 (DB not available) — verify structure on 200
-                if resp.status_code == 200:
-                    data = resp.json()
-                    assert "total_feedback_count" in data
-                    assert "useful_rate" in data
-                    assert "applied_rate" in data
-                    assert "trend" in data
-                    assert isinstance(data["trend"], list)
-                else:
-                    # DB not available in test env — just verify endpoint exists
-                    assert resp.status_code != 404, "Analytics endpoint not found"
-
-
-def test_analytics_useful_rate_formula():
-    """Verify: useful_rate = (useful + applied) / total_feedback_count."""
+def test_analytics_useful_rate_formula() -> None:
     useful = 10
     applied = 5
     rejected = 3
@@ -155,15 +41,61 @@ def test_analytics_useful_rate_formula():
     assert expected_applied_rate == round(5 / 20, 4)
 
 
-def test_analytics_applied_rate_formula():
-    """Verify: applied_rate = applied / total_feedback_count."""
-    feedbacks = [
-        _make_feedback("applied"),
-        _make_feedback("applied"),
-        _make_feedback("useful"),
-        _make_feedback("rejected"),
-    ]
-    total = len(feedbacks)
-    applied = sum(1 for f in feedbacks if f.feedback_type == "applied")
-    rate = round(applied / total, 4) if total else 0.0
-    assert rate == 0.5  # 2/4
+def test_analytics_endpoint_returns_canonical_feedback_shape() -> None:
+    payload = {
+        "total_feedback": 5,
+        "useful_count": 2,
+        "not_relevant_count": 1,
+        "applied_count": 1,
+        "rejected_count": 1,
+        "usefulness_rate": 0.4,
+        "applied_rate": 0.2,
+        "rejection_rate": 0.2,
+        "by_surface": {},
+        "by_display_mode": {},
+        "by_confidence_band": {},
+        "by_recommendation_mode": {},
+        "by_source_label": {},
+    }
+
+    with _make_auth():
+        with patch("app.routers.recommendations.aggregate_agent_feedback_analytics", return_value=payload):
+            client = TestClient(_make_app())
+            response = client.get("/api/recommendations/analytics?period_days=30", headers={"Authorization": "Bearer test"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["period_days"] == 30
+    assert data["total_feedback"] == 5
+    assert data["usefulness_rate"] == 0.4
+    assert data["applied_rate"] == 0.2
+    assert "by_surface" in data
+
+
+def test_feedback_analytics_endpoint_uses_shared_aggregator() -> None:
+    payload = {
+        "total_feedback": 3,
+        "useful_count": 1,
+        "not_relevant_count": 1,
+        "applied_count": 1,
+        "rejected_count": 0,
+        "usefulness_rate": 0.3333,
+        "applied_rate": 0.3333,
+        "rejection_rate": 0.0,
+        "by_surface": {"recommendations_page": {"total_feedback": 3, "useful_count": 1, "not_relevant_count": 1, "applied_count": 1, "rejected_count": 0, "usefulness_rate": 0.3333, "applied_rate": 0.3333, "rejection_rate": 0.0}},
+        "by_display_mode": {},
+        "by_confidence_band": {},
+        "by_recommendation_mode": {},
+        "by_source_label": {},
+    }
+
+    with _make_auth():
+        with patch("app.routers.recommendations.aggregate_agent_feedback_analytics", return_value=payload) as mocked:
+            client = TestClient(_make_app())
+            response = client.get("/api/recommendations/feedback-analytics", headers={"Authorization": "Bearer test"})
+
+    assert response.status_code == 200
+    mocked.assert_called_once()
+    data = response.json()
+    assert data["total_feedback"] == 3
+    assert data["by_surface"]["recommendations_page"]["applied_count"] == 1

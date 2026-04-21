@@ -4,8 +4,9 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react"
 import { apiFetch, ApiError } from "@/lib/api"
 
-export type UserRole = "admin" | "agent" | "user" | "viewer"
+export type UserRole = "admin" | "agent" | "user"
 export type UserSeniority = "intern" | "junior" | "middle" | "senior"
+type ApiUserRole = UserRole | "viewer"
 
 export interface User {
   id: string
@@ -91,34 +92,35 @@ const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     "use_chat",
     "view_recommendations",
   ],
-  viewer: [
-    "view_dashboard",
-    "view_tickets",
-    "view_ticket_analytics",
-    "use_chat",
-    "view_recommendations",
-  ],
 }
 
 const AuthContext = createContext<AuthContextType | null>(null)
 
-function mapUser(data: {
+interface ApiUserPayload {
   id: string
   email: string
   name: string
-  role: UserRole
+  role: ApiUserRole
   is_verified: boolean
   created_at: string
   specializations: string[]
   seniority_level: UserSeniority
   is_available: boolean
   max_concurrent_tickets: number
-}): User {
+}
+
+function normalizeRole(role: ApiUserRole): UserRole {
+  // Old databases may still send the deprecated "viewer" value; the active UI
+  // role model exposes only admin / agent / user.
+  return role === "viewer" ? "user" : role
+}
+
+function mapUser(data: ApiUserPayload): User {
   return {
     id: data.id,
     email: data.email,
     name: data.name,
-    role: data.role,
+    role: normalizeRole(data.role),
     isVerified: data.is_verified,
     createdAt: data.created_at,
     specializations: data.specializations ?? [],
@@ -152,18 +154,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const loadUser = async () => {
       try {
-      const data = await apiFetch<{
-        id: string
-        email: string
-        name: string
-        role: UserRole
-        is_verified: boolean
-        created_at: string
-        specializations: string[]
-        seniority_level: UserSeniority
-        is_available: boolean
-        max_concurrent_tickets: number
-      }>("/auth/me")
+      const data = await apiFetch<ApiUserPayload>("/auth/me")
       setUser(mapUser(data))
       } catch {
         setUser(null)
@@ -176,18 +167,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signIn = useCallback(async (email: string, password: string) => {
     try {
-      const data = await apiFetch<{
-        id: string
-        email: string
-        name: string
-        role: UserRole
-        is_verified: boolean
-        created_at: string
-        specializations: string[]
-        seniority_level: UserSeniority
-        is_available: boolean
-        max_concurrent_tickets: number
-      }>("/auth/login", {
+      const data = await apiFetch<ApiUserPayload>("/auth/login", {
         method: "POST",
         body: JSON.stringify({ email, password }),
       })
@@ -228,36 +208,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const getAllUsers = useCallback(async () => {
-    const users = await apiFetch<
-      Array<{
-        id: string
-        email: string
-        name: string
-        role: UserRole
-        is_verified: boolean
-        created_at: string
-        specializations: string[]
-        seniority_level: UserSeniority
-        is_available: boolean
-        max_concurrent_tickets: number
-      }>
-    >("/users")
+    const users = await apiFetch<ApiUserPayload[]>("/users")
     return users.map(mapUser)
   }, [])
 
   const updateUserRole = useCallback(async (userId: string, role: UserRole) => {
-    const updated = await apiFetch<{
-      id: string
-      email: string
-      name: string
-      role: UserRole
-      is_verified: boolean
-      created_at: string
-      specializations: string[]
-      seniority_level: UserSeniority
-      is_available: boolean
-      max_concurrent_tickets: number
-    }>(
+    const updated = await apiFetch<ApiUserPayload>(
       `/users/${userId}/role`,
       {
         method: "PATCH",
@@ -276,18 +232,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const result = await apiFetch<{
         message: string
-        user?: {
-          id: string
-          email: string
-          name: string
-          role: UserRole
-          is_verified: boolean
-          created_at: string
-          specializations: string[]
-          seniority_level: UserSeniority
-          is_available: boolean
-          max_concurrent_tickets: number
-        }
+        user?: ApiUserPayload
         requires_verification?: boolean
       }>("/auth/email-login", {
         method: "POST",
@@ -310,18 +255,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const updateUserSeniority = useCallback(async (userId: string, seniorityLevel: UserSeniority) => {
-    const updated = await apiFetch<{
-      id: string
-      email: string
-      name: string
-      role: UserRole
-      is_verified: boolean
-      created_at: string
-      specializations: string[]
-      seniority_level: UserSeniority
-      is_available: boolean
-      max_concurrent_tickets: number
-    }>(
+    const updated = await apiFetch<ApiUserPayload>(
       `/users/${userId}/seniority`,
       {
         method: "PATCH",

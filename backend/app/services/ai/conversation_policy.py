@@ -430,6 +430,11 @@ PROBLEM_LISTING_KEYWORDS = [
     "active problems", "recurring problems",
     "current problems", "existing problems", "what problems do we have",
     "problems", "what are the problems",
+    "most recent problem", "recent problem", "latest problem",
+    "show recent problem", "show the latest problem", "show me the latest problem",
+    "show me the most recent problem", "show recent problems", "latest problems",
+    "dernier probleme", "probleme recent", "problemes recents", "probleme le plus recent",
+    "dernier probleme connu", "affiche le dernier probleme",
 ]
 
 # Problem detail shortcuts — agent is asking about one specific problem.
@@ -477,4 +482,73 @@ STATUS_KEYWORD_MAP: dict[str, str] = {
     "problemes en investigation": "investigating",
     "resolved problems": "resolved",
     "problemes resolus": "resolved",
+}
+
+# ---------------------------------------------------------------------------
+# Off-topic embedding guard
+# ---------------------------------------------------------------------------
+
+# 28 representative ITSM sentences (EN+FR pairs) used as anchors for the
+# embedding-based off-topic guard.  Any message whose max cosine similarity
+# to all anchors is below OFFTOPIC_SIMILARITY_THRESHOLD is rejected without
+# an LLM call.  Covers 8 ITSM domains in both languages.
+ITSM_ANCHOR_PHRASES: list[str] = [
+    "how do I create an incident ticket",
+    "comment créer un ticket d'incident",
+    "what is the status of my ticket",
+    "quel est le statut de mon ticket",
+    "what is an SLA and how does it work",
+    "qu'est-ce que le SLA en gestion de services IT",
+    "explain service level agreement",
+    "ticket SLA breach escalation priority",
+    "what is MFA multi-factor authentication",
+    "qu'est-ce que l'authentification multifacteur MFA",
+    "VPN connection authentication access issue",
+    "problème de connexion VPN accès réseau",
+    "network connectivity problem DNS server",
+    "problème de réseau DNS connexion serveur",
+    "what is DNS and how does it resolve hostnames",
+    "application crash software error bug",
+    "erreur logicielle panne application bug",
+    "hardware failure printer laptop",
+    "password reset account lockout security",
+    "réinitialisation mot de passe sécurité compte",
+    "what is CRM customer relationship management software",
+    "what is artificial intelligence in IT",
+    "qu'est-ce que l'intelligence artificielle",
+    "what is a database and how does it store data",
+    "qu'est-ce qu'une base de données",
+    "incident management problem management ITIL",
+    "gestion des incidents problèmes ITIL",
+    "performance monitoring server response time",
+]
+
+# Prefixes that signal a definitional / explanatory knowledge question.
+# Used by _is_knowledge_query() to route "what is MFA", "qu'est-ce que le SLA"
+# to the lightweight chitchat LLM instead of the full RAG pipeline.
+KNOWLEDGE_QUERY_PREFIXES: frozenset[str] = frozenset({
+    # English
+    "what is", "what are", "what does", "what do",
+    "define ", "explain ", "how does", "how do",
+    "tell me about", "describe ",
+    # French
+    "qu'est-ce que", "qu'est-ce qu'", "c'est quoi",
+    "c'est quoi le", "définit ", "définir ", "expliquer ",
+    "explique ", "qu'est", "comment fonctionne", "comment fonctionnent",
+    "parle moi de", "décris ",
+})
+
+# Short polite rejection returned without any LLM call when the off-topic
+# embedding guard identifies a clearly off-topic message.
+OFFTOPIC_REJECTION_MESSAGES: dict[str, str] = {
+    "fr": (
+        "Je suis un assistant ITSM spécialisé dans la gestion des tickets, "
+        "incidents et services IT. Je ne peux pas répondre à cette question. "
+        "Comment puis-je vous aider sur un sujet IT ?"
+    ),
+    "en": (
+        "I'm an ITSM assistant specialised in ticket management, "
+        "incidents, and IT services. I'm not able to help with that topic. "
+        "Is there an IT-related question I can assist you with?"
+    ),
 }

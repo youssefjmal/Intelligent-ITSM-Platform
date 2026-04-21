@@ -1,11 +1,11 @@
-"""LLM adapter helpers (Groq).
+"""LLM adapter helpers for Groq-hosted text-generation models.
 
 Role:
     This module provides low-level communication with the Groq inference API
     and JSON extraction utilities used throughout the AI service layer.
 
 LLM target:
-    Groq-hosted models configured via ``settings.GROQ_MODEL``.
+    Groq-hosted text-generation models configured via ``settings.GROQ_MODEL``.
     Uses the OpenAI-compatible ``/openai/v1/chat/completions`` endpoint.
     Embeddings are NOT handled here — they remain on Ollama/nomic-embed-text
     via ``app.services.embeddings``.
@@ -42,7 +42,7 @@ _GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
 def ollama_generate(prompt: str, *, json_mode: bool = False) -> str:
-    """Call Groq LLM API and return the raw text response.
+    """Call the Groq-hosted text model API and return the raw text response.
 
     The function name is kept as ``ollama_generate`` for backwards compatibility
     with all existing callers and test mocks.

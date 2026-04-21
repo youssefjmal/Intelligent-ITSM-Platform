@@ -323,24 +323,38 @@ def test_why_is_this_happening_query_is_guidance_intent() -> None:
 
 
 def test_detect_intent_with_confidence_known_keyword_stays_rule_based() -> None:
-    intent, confidence = intents.detect_intent_with_confidence("what should I do for this ticket?")
+    intent, confidence, _ = intents.detect_intent_with_confidence("what should I do for this ticket?")
 
     assert intent == ChatIntent.general
     assert confidence == IntentConfidence.high
 
 
 def test_detect_intent_with_confidence_info_request_is_high_confidence() -> None:
-    intent, confidence = intents.detect_intent_with_confidence("show me details of TW-MOCK-019")
+    intent, confidence, _ = intents.detect_intent_with_confidence("show me details of TW-MOCK-019")
 
     assert intent == ChatIntent.data_query
     assert confidence == IntentConfidence.high
 
 
 def test_detect_intent_with_confidence_service_request_listing_is_data_query() -> None:
-    intent, confidence = intents.detect_intent_with_confidence("list the service requests")
+    intent, confidence, _ = intents.detect_intent_with_confidence("list the service requests")
 
     assert intent == ChatIntent.data_query
     assert confidence == IntentConfidence.high
+
+
+def test_detect_intent_prefers_guidance_for_mixed_status_and_next_step_prompt() -> None:
+    intent, confidence, _ = intents.detect_intent_with_confidence("what should I do next for this ticket status?")
+
+    assert intent == ChatIntent.general
+    assert confidence in {IntentConfidence.high, IntentConfidence.medium}
+
+
+def test_detect_intent_does_not_treat_contextual_followup_as_chitchat() -> None:
+    intent, confidence, _ = intents.detect_intent_with_confidence("what happened on the second one?")
+
+    assert intent == ChatIntent.general
+    assert confidence == IntentConfidence.medium
 
 
 def test_detect_intent_hybrid_uses_llm_fallback_for_unseen_guidance_phrasing(monkeypatch) -> None:
@@ -352,7 +366,7 @@ def test_detect_intent_hybrid_uses_llm_fallback_for_unseen_guidance_phrasing(mon
         lambda text: llm_calls.__setitem__("count", llm_calls["count"] + 1) or "guidance",
     )
 
-    intent, confidence, source, guidance = intents.detect_intent_hybrid_details(
+    intent, confidence, source, guidance, _offtopic = intents.detect_intent_hybrid_details(
         "Can you walk me through fixing this issue?"
     )
 
@@ -364,21 +378,54 @@ def test_detect_intent_hybrid_uses_llm_fallback_for_unseen_guidance_phrasing(mon
 
 
 def test_detect_intent_hybrid_uses_llm_fallback_for_ambiguous_prompt(monkeypatch) -> None:
-    llm_calls = {"count": 0}
+    import importlib
+    emb = importlib.import_module("app.services.embeddings")
+    # Stub embeddings so the off-topic guard returns immediately (no Ollama I/O).
+    monkeypatch.setattr(emb, "compute_embedding", lambda text: [0.5] * 3)
 
+    llm_calls = {"count": 0}
     monkeypatch.setattr(
         intents,
         "_classify_intent_llm_label",
         lambda text: llm_calls.__setitem__("count", llm_calls["count"] + 1) or "guidance",
     )
 
-    intent, confidence, source, guidance = intents.detect_intent_hybrid_details("this looks weird")
+    # Message must: (a) have an ITSM signal so is_chitchat_or_offtopic returns False,
+    # (b) be long enough to pass the length gate, (c) not match any specific shortcut keyword.
+    # "this looks weird" (16 chars, no ITSM signal) was caught as chitchat — latent test bug.
+    # This message has "incident" (ITSM signal), is 61 chars (> 40), and matches no shortcuts.
+    ambiguous = "there is something odd happening with the incident queue today"
+    intent, confidence, source, guidance, _offtopic = intents.detect_intent_hybrid_details(ambiguous)
 
     assert intent == ChatIntent.general
     assert confidence == IntentConfidence.low
     assert source == "llm_fallback"
     assert guidance is True
     assert llm_calls["count"] == 1
+
+
+def test_build_routing_plan_keeps_ticket_thread_shortcut_even_with_ticket_context() -> None:
+    plan = orchestrator.build_routing_plan(
+        "show me comments for this ticket",
+        intent=ChatIntent.ticket_thread,
+        create_requested=False,
+        guidance_requested=False,
+        entity_specific_ticket_query=True,
+    )
+
+    assert plan.name == "shortcut_ticket_thread"
+
+
+def test_build_routing_plan_prefers_guidance_over_entity_specific_ticket_lookup() -> None:
+    plan = orchestrator.build_routing_plan(
+        "what should i do for this ticket status?",
+        intent=ChatIntent.general,
+        create_requested=False,
+        guidance_requested=True,
+        entity_specific_ticket_query=True,
+    )
+
+    assert plan.name == "general_llm"
 
 
 def test_handle_chat_recent_plain_uses_shortcut(monkeypatch) -> None:
@@ -412,6 +459,7 @@ def test_handle_chat_recent_plain_uses_shortcut(monkeypatch) -> None:
     monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: tickets)
     monkeypatch.setattr(orchestrator, "list_assignees", lambda db: [SimpleNamespace(name="Maya")])
     monkeypatch.setattr(orchestrator, "compute_stats", lambda rows: {"total": len(rows)})
+    monkeypatch.setattr(orchestrator, "get_recent_ticket_for_user", lambda db, user, open_only=False: tickets[1])
     monkeypatch.setattr(orchestrator, "_format_most_recent_ticket", lambda recent, lang, open_only=False: "shortcut_recent")
     monkeypatch.setattr(
         orchestrator,

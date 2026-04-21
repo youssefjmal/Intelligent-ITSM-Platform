@@ -21,6 +21,10 @@ SUPPORTING_CONTEXT_BY_TOPIC: Final[dict[str, dict[str, str]]] = {
         "fr": "Confirmez aussi le contexte de routage, de distribution ou de destinataires avec un test controle.",
         "en": "Also confirm routing, distribution, or recipient context with a controlled test.",
     },
+    "database_data": {
+        "fr": "Confirmez aussi le contexte de memoire, de limites de conteneur ou d'hote, et tout changement recent avant de generaliser le correctif.",
+        "en": "Also confirm memory pressure, host or container limits, and any recent change before rolling the fix out more broadly.",
+    },
     "webhook_rotation": {
         "fr": "Confirmez aussi la cadence approuvee, l'equipe responsable et la fenetre de rappel avant de generaliser le workflow.",
         "en": "Also confirm the approved cadence, owning team, and reminder window before rolling the workflow out more broadly.",
@@ -76,14 +80,26 @@ GROUNDED_ACTION_TEMPLATES: Final[dict[str, dict[str, list[str]]]] = {
             "Envoyez un message de test controle et confirmez qu'il traverse la file ou le routage attendu.",
         ],
     },
-    "network_access": {
+    "database_data": {
         "en": [
-            "Verify the VPN route, gateway, or policy path that matches the affected access flow.",
-            "Retest access from one affected user after the route or policy check to confirm the same path is restored.",
+            "Inspect the current PostgreSQL or database memory footprint, including host or container limits, before another restart.",
+            "Review kernel, container, or service logs for OOM-killer evidence and confirm which process exhausted memory first.",
+            "Compare recent workload or configuration changes such as shared buffers, work memory, or new query load against the last stable state.",
         ],
         "fr": [
-            "Verifiez la route VPN, la passerelle ou la politique qui correspond au flux d'acces affecte.",
-            "Retestez l'acces depuis un utilisateur affecte apres la verification de route ou de politique pour confirmer que le meme chemin est retabli.",
+            "Inspectez l'empreinte memoire actuelle de PostgreSQL ou de la base, y compris les limites d'hote ou de conteneur, avant un nouveau redemarrage.",
+            "Controlez les journaux noyau, conteneur ou service pour une preuve d'OOM killer et confirmez quel processus a epuise la memoire en premier.",
+            "Comparez les changements recents de charge ou de configuration, comme shared buffers, work memory ou un nouveau volume de requetes, avec le dernier etat stable.",
+        ],
+    },
+    "network_access": {
+        "en": [
+            "Verify the affected VPN gateway or firewall path, including session timeout, reauthentication, and route or group-policy settings.",
+            "Retest access from one affected user after the gateway, session, or policy check to confirm the same path is restored.",
+        ],
+        "fr": [
+            "Verifiez la passerelle ou le chemin firewall VPN concerne, y compris la temporisation de session, la re-authentification et les parametres de route ou de politique de groupe.",
+            "Retestez l'acces depuis un utilisateur affecte apres la verification de passerelle, de session ou de politique pour confirmer que le meme chemin est retabli.",
         ],
     },
     "auth_path": {
@@ -295,9 +311,13 @@ VALIDATION_STEP_BY_TOPIC: Final[dict[str, dict[str, str]]] = {
         "fr": "Envoyez un test controle et confirmez que le routage ou le transfert est retabli.",
         "en": "Send a controlled test and confirm routing or forwarding is restored.",
     },
+    "database_data": {
+        "fr": "Verifiez qu'aucun nouvel evenement OOM n'apparait, que PostgreSQL reste stable, et que la charge critique s'execute sans nouveau kill.",
+        "en": "Verify that no new OOM event appears, PostgreSQL stays stable, and the critical workload runs without another kill.",
+    },
     "network_access": {
-        "fr": "Retestez la connectivite ou la connexion avec un utilisateur distant affecte.",
-        "en": "Retest connectivity or sign-in with an affected remote user.",
+        "fr": "Retestez la connectivite ou la connexion avec un utilisateur distant affecte et confirmez que la session VPN reste stable apres re-authentification.",
+        "en": "Retest connectivity or sign-in with an affected remote user and confirm the VPN session stays stable after reauthentication.",
     },
     "auth_path": {
         "fr": "Retestez l'acces ou la connexion pour un utilisateur affecte et confirmez l'etat de la politique.",
@@ -342,12 +362,22 @@ VALIDATION_ACTIONS_BY_TOPIC: Final[dict[str, dict[str, list[str]]]] = {
             "Envoyez un message de test controle et confirmez que le chemin relay ou connecteur attendu est retabli.",
         ],
     },
-    "network_access": {
+    "database_data": {
         "en": [
-            "Retest access from one affected user and confirm the same route or policy path stays stable.",
+            "Run one controlled database workload or failing query path and confirm the service remains stable without another OOM-killer event.",
+            "Confirm PostgreSQL memory settings and effective host or container limits now align with the workload that triggered the incident.",
         ],
         "fr": [
-            "Retestez l'acces depuis un utilisateur affecte et confirmez que le meme chemin de route ou de politique reste stable.",
+            "Executez une charge de base de donnees controlee ou le chemin de requete en echec et confirmez que le service reste stable sans nouvel evenement OOM killer.",
+            "Confirmez que les parametres memoire de PostgreSQL et les limites effectives d'hote ou de conteneur sont maintenant alignes avec la charge qui a declenche l'incident.",
+        ],
+    },
+    "network_access": {
+        "en": [
+            "Retest access from one affected user and confirm the same route, firewall, or policy path stays stable.",
+        ],
+        "fr": [
+            "Retestez l'acces depuis un utilisateur affecte et confirmez que le meme chemin de route, de firewall ou de politique reste stable.",
         ],
     },
 }
@@ -369,9 +399,13 @@ SAFE_DIAGNOSTIC_ACTION_BY_TOPIC: Final[dict[str, dict[str, str]]] = {
         "fr": "Verifiez la regle de distribution ou le mapping des destinataires, puis confirmez le routage attendu avec un test controle.",
         "en": "Verify the distribution rule or recipient mapping, then confirm the expected routing with a controlled test.",
     },
+    "database_data": {
+        "fr": "Verifiez la memoire PostgreSQL ou base de donnees, inspectez les journaux OOM noyau ou conteneur, puis comparez les limites effectives et les changements recents avant redemarrage.",
+        "en": "Verify PostgreSQL or database memory usage, inspect kernel or container OOM logs, and compare the effective limits plus recent changes before restarting.",
+    },
     "network_access": {
-        "fr": "Verifiez la configuration de session ou de routage VPN et retestez l'acces avec un utilisateur affecte.",
-        "en": "Verify the VPN session or routing configuration and retest access with an affected user.",
+        "fr": "Verifiez la temporisation de session, la re-authentification et la configuration de passerelle ou de routage VPN, puis retestez l'acces avec un utilisateur affecte.",
+        "en": "Verify VPN session timeout, reauthentication, and the gateway or routing configuration, then retest access with an affected user.",
     },
     "auth_path": {
         "fr": "Verifiez l'etat du token, du certificat ou de la politique d'authentification sur le chemin de connexion affecte.",

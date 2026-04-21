@@ -7,6 +7,15 @@ from typing import Any
 from app.services.ai.routing_validation import validate_ticket_routing_for_ticket
 from app.services.ai.service_requests import service_request_profile_from_ticket, service_request_profile_similarity
 
+_WEAK_SIMILARITY_FLOOR = 0.4
+_STRICT_SIMILARITY_FLOOR = 0.5
+_RESOLVED_STATUSES = {"resolved", "closed"}
+
+
+def _normalized_enum_like(value: Any) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw or "").strip().lower()
+
 
 def select_visible_similar_ticket_matches(
     *,
@@ -36,6 +45,8 @@ def select_visible_similar_ticket_matches(
 
     base_is_service_request = validate_ticket_routing_for_ticket(source_ticket).use_service_request_guidance
     base_profile = service_request_profile_from_ticket(source_ticket) if base_is_service_request else None
+    source_category = _normalized_enum_like(getattr(source_ticket, "category", None))
+    source_type = _normalized_enum_like(getattr(source_ticket, "ticket_type", None))
 
     matches: list[dict[str, Any]] = []
     for row in list(retrieval_rows or []):
@@ -53,8 +64,16 @@ def select_visible_similar_ticket_matches(
             if profile_similarity < 0.2:
                 continue
         similarity_score = round(float(row.get("similarity_score") or 0.0), 4)
-        if similarity_score < min_score:
+        effective_min_score = max(min_score, _WEAK_SIMILARITY_FLOOR if not base_is_service_request else min_score)
+        if similarity_score < effective_min_score:
             continue
+        if not base_is_service_request and similarity_score < _STRICT_SIMILARITY_FLOOR:
+            candidate_status = _normalized_enum_like(getattr(candidate, "status", None))
+            candidate_category = _normalized_enum_like(getattr(candidate, "category", None))
+            candidate_type = _normalized_enum_like(getattr(candidate, "ticket_type", None))
+            same_family = candidate_category == source_category and candidate_type == source_type
+            if candidate_status not in _RESOLVED_STATUSES or not same_family:
+                continue
         matches.append(
             {
                 "ticket": candidate,

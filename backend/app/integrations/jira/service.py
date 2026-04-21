@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+import httpx
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -111,6 +112,41 @@ def _resolve_sync_state(db: Session, project_key: str) -> JiraSyncState:
     return state
 
 
+def _record_sync_error(db: Session, project_key: str, message: str) -> None:
+    if not project_key:
+        return
+    try:
+        state = _resolve_sync_state(db, project_key)
+        state.last_error = message[:2000]
+        state.updated_at = _utcnow()
+        db.add(state)
+        db.commit()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+
+
+def _classify_jira_error(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        if status_code in {401, 403}:
+            return "jira_auth_failed"
+        if status_code == 429:
+            return "jira_rate_limited"
+        if 500 <= status_code <= 599:
+            return "jira_upstream_error"
+        return "jira_request_failed"
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RequestError)):
+        return "jira_connectivity_failed"
+    return "jira_unknown_error"
+
+
+def _ensure_jira_auth(client: JiraClient) -> None:
+    try:
+        client.get_myself()
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(_classify_jira_error(exc)) from exc
+
+
 def _normalized_signature(signature_header: str | None) -> str:
     value = (signature_header or "").strip()
     if not value:
@@ -128,7 +164,7 @@ def validate_webhook_secret(
 ) -> bool:
     configured = (settings.JIRA_WEBHOOK_SECRET or "").strip()
     if not configured:
-        return True
+        return bool(getattr(settings, "ALLOW_INSECURE_JIRA_WEBHOOKS", False))
 
     provided = (secret_header or "").strip()
     if provided and hmac.compare_digest(configured, provided):
@@ -302,6 +338,17 @@ def _resolve_assignee_specialization(db: Session, assignee_name: str) -> str:
     return ", ".join(specializations[:3])
 
 
+def _find_local_user_by_identity(db: Session, value: str | None) -> User | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if "@" in raw:
+        user = db.query(User).filter(User.email.ilike(raw)).first()
+        if user:
+            return user
+    return db.query(User).filter(User.name.ilike(raw)).first()
+
+
 def _identity_slug(value: str | None) -> str:
     return re.sub(r"_+", "_", re.sub(r"[^a-z0-9]", "_", str(value or "").strip().lower())).strip("_")
 
@@ -457,6 +504,22 @@ def _find_ticket_for_issue(
     return None
 
 
+def _resolve_local_reporter_user(db: Session, issue: dict[str, Any], reporter_name: str | None) -> User | None:
+    fields = issue.get("fields") or {}
+    reporter_payload = fields.get("reporter") or {}
+    candidates = [
+        str((reporter_payload or {}).get("emailAddress") or "").strip(),
+        str((reporter_payload or {}).get("displayName") or "").strip(),
+        str((reporter_payload or {}).get("name") or "").strip(),
+        str(reporter_name or "").strip(),
+    ]
+    for candidate in candidates:
+        user = _find_local_user_by_identity(db, candidate)
+        if user:
+            return user
+    return None
+
+
 def _should_update_ticket(existing: Ticket, incoming_updated: dt.datetime | None) -> bool:
     if existing.jira_updated_at is None:
         return True
@@ -556,6 +619,7 @@ def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
 
     if ticket is None:
         resolve_classification()
+        reporter_user = _resolve_local_reporter_user(db, issue, mapped.reporter)
         ticket = Ticket(
             id=_internal_ticket_id(mapped.jira_key or mapped.jira_issue_id),
             title=mapped.title,
@@ -566,6 +630,7 @@ def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
             category=resolved_category,
             assignee=mapped.assignee,
             reporter=mapped.reporter,
+            reporter_id=str(reporter_user.id) if reporter_user else None,
             tags=mapped.tags,
             created_at=mapped.jira_created_at or now,
             updated_at=now,
@@ -601,12 +666,17 @@ def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
         ticket.source = ticket.source or JIRA_SOURCE
         ticket.external_id = ticket.external_id or mapped.jira_key
         ticket.external_source = ticket.external_source or JIRA_SOURCE
+        if not ticket.reporter_id:
+            reporter_user = _resolve_local_reporter_user(db, issue, ticket.reporter)
+            if reporter_user:
+                ticket.reporter_id = str(reporter_user.id)
         db.add(ticket)
         db.flush()
         return ticket, False
 
     resolve_classification()
     previous_assignee = ticket.assignee
+    reporter_user = _resolve_local_reporter_user(db, issue, mapped.reporter)
     ticket.title = mapped.title
     ticket.description = mapped.description
     ticket.status = mapped.status
@@ -615,6 +685,7 @@ def _upsert_ticket(db: Session, issue: dict[str, Any]) -> tuple[Ticket, bool]:
     ticket.category = resolved_category
     ticket.assignee = mapped.assignee
     ticket.reporter = mapped.reporter
+    ticket.reporter_id = str(reporter_user.id) if reporter_user else ticket.reporter_id
     ticket.tags = mapped.tags
     ticket.predicted_priority = ai_priority
     ticket.predicted_ticket_type = ai_ticket_type
@@ -761,6 +832,7 @@ def sync_issue_by_key(db: Session, issue_key: str, *, jira_client: JiraClient | 
         raise ValueError("missing_issue_key")
 
     client = jira_client or JiraClient()
+    _ensure_jira_auth(client)
     issue = client.get_issue(key, fields=SYNC_FIELDS)
     if not isinstance(issue, dict) or not issue:
         raise ValueError("issue_fetch_failed")
@@ -791,6 +863,11 @@ def reconcile(db: Session, payload: JiraReconcileRequest) -> JiraReconcileResult
     if not project_key:
         raise ValueError("missing_project_key")
     state = _resolve_sync_state(db, project_key)
+    try:
+        _ensure_jira_auth(client)
+    except ValueError as exc:
+        _record_sync_error(db, project_key, str(exc))
+        raise
 
     now = _utcnow()
     lookback_start = now - dt.timedelta(days=max(1, payload.lookback_days))

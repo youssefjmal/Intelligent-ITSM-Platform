@@ -250,7 +250,7 @@ def test_resolution_advice_applies_tentative_confidence_penalty() -> None:
     assert strong_advice["tentative"] is False
     assert tentative_advice["tentative"] is True
     assert tentative_advice["display_mode"] == "tentative_diagnostic"
-    assert tentative_advice["recommended_action"].startswith("Verify the VPN route, gateway, or policy path")
+    assert "Verify the affected VPN gateway or firewall path" in tentative_advice["recommended_action"]
     assert tentative_advice["confidence"] < strong_advice["confidence"]
     assert 0.2 <= tentative_advice["confidence"] <= 0.5
 
@@ -382,7 +382,7 @@ def test_resolution_advice_rejects_unrelated_hardware_fix_for_payroll_export_iss
 
     assert advice is not None
     assert advice["display_mode"] == "no_strong_match"
-    assert advice["recommended_action"] is None
+    assert advice["recommended_action"] is not None
     assert advice["recommendation_mode"] == "fallback_diagnostic"
     assert advice["evidence_sources"] == []
     assert advice["match_summary"] == "Matched on payroll, export, csv, date."
@@ -486,6 +486,7 @@ def test_resolution_advice_fallback_respects_selected_export_family_over_notific
     assert advice is not None
     assert advice["display_mode"] == "no_strong_match"
     assert advice["fallback_action"] is not None
+    assert advice["recommended_action"] == advice["fallback_action"]
     assert "export" in advice["fallback_action"].lower()
     assert "notification" not in advice["fallback_action"].lower()
     assert "recipient" not in advice["fallback_action"].lower()
@@ -675,7 +676,7 @@ def test_resolution_advice_filters_mail_transport_fix_for_crm_sync_ticket() -> N
     assert advice is not None
     assert advice["display_mode"] == "no_strong_match"
     assert advice["filtered_weak_match"] is False
-    assert advice["recommended_action"] is None
+    assert advice["recommended_action"] is not None
     assert advice["action_relevance_score"] == 0.0
 
 
@@ -1104,3 +1105,98 @@ def test_resolution_advice_root_cause_stays_inside_selected_cluster() -> None:
     assert "vpn" not in combined_text
     assert "mfa" not in combined_text
     assert "split-tunnel" not in combined_text
+
+
+def test_resolution_advice_returns_memory_specific_database_diagnostic_for_postgres_oom() -> None:
+    retrieval = {
+        "query_context": {
+            "query": "PostgreSQL process killed by OOM killer repeatedly",
+            "title": "PostgreSQL process killed by OOM killer repeatedly",
+            "description": "Kernel logs show postgres is OOM-killed after a recent database configuration update.",
+            "tokens": ["postgresql", "process", "killed", "oom", "killer", "memory", "database", "update"],
+            "title_tokens": ["postgresql", "oom", "killer"],
+            "focus_terms": ["postgresql", "oom", "memory", "database"],
+            "strong_terms": ["postgresql", "oom", "memory", "database"],
+            "domains": ["infrastructure", "application"],
+            "topics": ["database_data"],
+            "metadata": {"category": "infrastructure"},
+        },
+        "similar_tickets": [
+            {
+                "id": "TW-DB-1",
+                "status": "resolved",
+                "resolution_snippet": "Investigate and restart the service.",
+                "similarity_score": 0.67,
+                "context_score": 0.18,
+                "lexical_overlap": 0.1,
+                "title_overlap": 0.08,
+                "strong_overlap": 0.08,
+                "cluster_id": "database_data",
+                "coherence_score": 0.44,
+            }
+        ],
+        "kb_articles": [],
+        "solution_recommendations": [],
+        "related_problems": [],
+        "source": "jira_semantic",
+    }
+
+    advice = build_resolution_advice(retrieval, lang="en")
+
+    assert advice is not None
+    assert advice["display_mode"] == "tentative_diagnostic"
+    assert advice["recommended_action"] is not None
+    combined = " ".join(
+        [
+            advice["recommended_action"] or "",
+            " ".join(advice["next_best_actions"]),
+            " ".join(advice["validation_steps"]),
+        ]
+    ).lower()
+    assert "postgresql" in combined or "database" in combined
+    assert "oom" in combined or "memory" in combined
+    assert "investigate and restart the service" not in combined
+
+
+def test_resolution_advice_returns_session_specific_vpn_diagnostic_for_firewall_change() -> None:
+    retrieval = {
+        "query_context": {
+            "query": "Repeated VPN drops after Cisco ASA firewall update",
+            "title": "Repeated VPN drops after Cisco ASA firewall update",
+            "description": "Multiple users are disconnected and the common factor is the recent ASA update with possible reauthentication drift.",
+            "tokens": ["vpn", "drops", "cisco", "asa", "firewall", "update", "session", "reauthentication"],
+            "title_tokens": ["vpn", "cisco", "asa", "firewall", "update"],
+            "focus_terms": ["vpn", "asa", "firewall", "session", "reauthentication"],
+            "strong_terms": ["vpn", "asa", "firewall", "session", "reauthentication"],
+            "domains": ["network", "security"],
+            "topics": ["network_access"],
+            "metadata": {"category": "network"},
+        },
+        "similar_tickets": [
+            {
+                "id": "TW-VPN-1",
+                "status": "resolved",
+                "resolution_snippet": "Verify access and troubleshoot the issue.",
+                "similarity_score": 0.7,
+                "context_score": 0.16,
+                "lexical_overlap": 0.1,
+                "title_overlap": 0.1,
+                "strong_overlap": 0.1,
+                "cluster_id": "network_access",
+                "coherence_score": 0.46,
+            }
+        ],
+        "kb_articles": [],
+        "solution_recommendations": [],
+        "related_problems": [],
+        "source": "jira_semantic",
+    }
+
+    advice = build_resolution_advice(retrieval, lang="en")
+
+    assert advice is not None
+    assert advice["display_mode"] == "tentative_diagnostic"
+    assert advice["recommended_action"] is not None
+    normalized = advice["recommended_action"].lower()
+    assert "session timeout" in normalized or "reauthentication" in normalized or "gateway" in normalized
+    assert "verify access and troubleshoot the issue" not in normalized

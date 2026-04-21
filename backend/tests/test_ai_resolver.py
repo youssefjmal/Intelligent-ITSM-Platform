@@ -268,6 +268,29 @@ def test_build_resolution_advice_model_keeps_probable_root_cause_unconfirmed() -
     assert advice.root_cause is None
 
 
+def test_build_ticket_retrieval_query_uses_ticket_summary_comments_resolution_and_recent_changes() -> None:
+    ticket = SimpleNamespace(
+        title="PostgreSQL process killed by OOM killer repeatedly",
+        description="The PostgreSQL service is restarted after each OOM event.",
+        ai_summary="The database is unstable after a recent configuration update.",
+        resolution="Increase shared_buffers carefully only after checking current host memory limits.",
+        comments=[
+            SimpleNamespace(content="Kernel log shows postgres was OOM-killed after the nightly reporting burst."),
+            SimpleNamespace(content="Issue started after the firewall and database maintenance update last week."),
+        ],
+        tags=["postgresql", "oom", "database"],
+    )
+
+    query = resolver.build_ticket_retrieval_query(ticket)
+
+    assert "current_summary=The database is unstable after a recent configuration update." in query
+    assert "current_comments=Kernel log shows postgres was OOM-killed after the nightly reporting burst." in query
+    assert "current_resolution=Increase shared_buffers carefully only after checking current host memory limits." in query
+    assert "recent_changes=" in query
+    assert "recent configuration update" in query or "maintenance update last week" in query
+    assert "tags=postgresql, oom, database" in query
+
+
 def test_handle_chat_no_strong_match_uses_resolver_first_reply(monkeypatch) -> None:
     monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: [])
     monkeypatch.setattr(orchestrator, "list_assignees", lambda db: [])
@@ -530,7 +553,7 @@ def test_handle_chat_unseen_guidance_phrase_uses_hybrid_fallback_then_resolver(m
     monkeypatch.setattr(
         orchestrator,
         "detect_intent_hybrid_details",
-        lambda text: (orchestrator.ChatIntent.general, IntentConfidence.low, "llm_fallback", True),
+        lambda text: (orchestrator.ChatIntent.general, IntentConfidence.low, "llm_fallback", True, False),
     )
     monkeypatch.setattr(
         orchestrator,
@@ -799,7 +822,7 @@ def test_handle_chat_generic_non_guidance_can_still_use_llm_first(monkeypatch) -
     monkeypatch.setattr(
         orchestrator,
         "detect_intent_hybrid_details",
-        lambda text: (orchestrator.ChatIntent.general, IntentConfidence.low, "rules_default", False),
+        lambda text: (orchestrator.ChatIntent.general, IntentConfidence.low, "rules_default", False, False),
     )
     monkeypatch.setattr(
         orchestrator,

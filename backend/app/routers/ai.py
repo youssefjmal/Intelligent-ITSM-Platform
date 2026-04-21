@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
 from app.core.deps import get_current_user, require_roles
+from app.core.exceptions import NotFoundError
 from app.db.session import get_db
+from app.models.chat_conversation import ChatConversation, ChatConversationMessage
 from app.models.enums import UserRole
 from app.schemas.ai import (
     AIFeedbackRequest,
@@ -21,6 +26,8 @@ from app.schemas.ai import (
     ChatResponse,
     ClassificationRequest,
     ClassificationResponse,
+    ConversationMessageOut,
+    ConversationOut,
     SuggestRequest,
     SuggestResponse,
 )
@@ -60,7 +67,7 @@ def chat(
     current_user=Depends(get_current_user),
 ) -> ChatResponse:
     try:
-        return handle_chat(payload, db, current_user)
+        response = handle_chat(payload, db, current_user)
     except Exception as exc:
         logger.warning("handle_chat unhandled exception: %s", exc, exc_info=True)
         lang = "fr" if str(payload.locale or "").lower().startswith("fr") else "en"
@@ -70,6 +77,213 @@ def chat(
             else "An error occurred. Please rephrase your question."
         )
         return ChatResponse(reply=fallback_reply)
+
+    # Persist the exchange to the user's conversation history.
+    try:
+        conv_id = payload.conversation_id
+        if conv_id:
+            conv = db.query(ChatConversation).filter_by(id=conv_id, user_id=str(current_user.id)).first()
+        else:
+            conv = None
+
+        if conv is None:
+            # Auto-title from first user message (truncated to 80 chars)
+            first_user_text = next(
+                (m.content for m in payload.messages if m.role == "user"), "New conversation"
+            )
+            title = first_user_text[:80].strip()
+            conv = ChatConversation(
+                id=str(uuid4()),
+                user_id=str(current_user.id),
+                title=title,
+            )
+            db.add(conv)
+            db.flush()
+
+        last_user = payload.messages[-1]
+        db.add(ChatConversationMessage(
+            id=str(uuid4()),
+            conversation_id=conv.id,
+            role="user",
+            content=last_user.content,
+        ))
+        # Store rich rendering metadata so history loads restore full UI
+        assistant_meta: dict = {}
+        if response.action:
+            assistant_meta["action"] = response.action
+        if response.ticket is not None:
+            try:
+                assistant_meta["ticket"] = response.ticket.model_dump(mode="json")
+            except Exception:
+                pass
+        if response.rag_grounding:
+            assistant_meta["rag_grounding"] = True
+        if response.resolution_advice is not None:
+            try:
+                assistant_meta["resolution_advice"] = response.resolution_advice.model_dump(mode="json")
+            except Exception:
+                pass
+        if response.grounding is not None:
+            try:
+                assistant_meta["grounding"] = response.grounding.model_dump(mode="json")
+            except Exception:
+                pass
+        if response.draft_context is not None:
+            try:
+                assistant_meta["draft_context"] = response.draft_context.model_dump(mode="json")
+            except Exception:
+                pass
+        if response.actions:
+            assistant_meta["actions"] = list(response.actions)
+        if response.response_payload is not None:
+            try:
+                assistant_meta["response_payload"] = response.response_payload.model_dump(mode="json")
+            except Exception:
+                pass
+        if response.ticket_results is not None:
+            try:
+                assistant_meta["ticket_results"] = response.ticket_results.model_dump(mode="json")
+            except Exception:
+                pass
+        if response.suggestions and (
+            response.suggestions.tickets
+            or response.suggestions.problems
+            or response.suggestions.kb_articles
+            or response.suggestions.solution_recommendations
+            or response.suggestions.resolution_advice
+        ):
+            try:
+                assistant_meta["suggestions"] = response.suggestions.model_dump(mode="json")
+            except Exception:
+                pass
+        db.add(ChatConversationMessage(
+            id=str(uuid4()),
+            conversation_id=conv.id,
+            role="assistant",
+            content=response.reply,
+            msg_metadata=assistant_meta or None,
+        ))
+        conv.updated_at = dt.datetime.now(dt.timezone.utc)
+        db.add(conv)
+        db.commit()
+        response.conversation_id = conv.id
+    except Exception as exc:
+        logger.warning("Failed to persist chat conversation: %s", exc, exc_info=True)
+        db.rollback()
+
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Conversation history CRUD
+# ---------------------------------------------------------------------------
+
+
+@router.get("/conversations", response_model=list[ConversationOut])
+def list_conversations(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> list[ConversationOut]:
+    rows = (
+        db.query(ChatConversation)
+        .filter_by(user_id=str(current_user.id))
+        .order_by(ChatConversation.updated_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return [
+        ConversationOut(
+            id=r.id,
+            title=r.title,
+            created_at=r.created_at,
+            updated_at=r.updated_at,
+            message_count=len(r.messages),
+        )
+        for r in rows
+    ]
+
+
+@router.get("/conversations/{conversation_id}/messages", response_model=list[ConversationMessageOut])
+def get_conversation_messages(
+    conversation_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> list[ConversationMessageOut]:
+    conv = db.query(ChatConversation).filter_by(id=conversation_id, user_id=str(current_user.id)).first()
+    if not conv:
+        raise NotFoundError("conversation_not_found")
+    from app.schemas.ai import (
+        AIChatGrounding,
+        AIChatStructuredResponse,
+        AIChatTicketResults,
+        AISuggestionBundle,
+        AIResolutionAdvice,
+        AIDraftContext,
+        TicketDraft,
+    )
+
+    result = []
+    for m in conv.messages:
+        meta = m.msg_metadata or {}
+        out = ConversationMessageOut(id=m.id, role=m.role, content=m.content, created_at=m.created_at)
+        if m.role == "assistant" and meta:
+            out.action = str(meta.get("action") or "").strip() or None
+            out.rag_grounding = bool(meta.get("rag_grounding", False))
+            try:
+                if "ticket" in meta:
+                    out.ticket = TicketDraft.model_validate(meta["ticket"])
+            except Exception:
+                pass
+            try:
+                if "resolution_advice" in meta:
+                    out.resolution_advice = AIResolutionAdvice.model_validate(meta["resolution_advice"])
+            except Exception:
+                pass
+            try:
+                if "grounding" in meta:
+                    out.grounding = AIChatGrounding.model_validate(meta["grounding"])
+            except Exception:
+                pass
+            try:
+                if "draft_context" in meta:
+                    out.draft_context = AIDraftContext.model_validate(meta["draft_context"])
+            except Exception:
+                pass
+            try:
+                if "response_payload" in meta:
+                    out.response_payload = AIChatStructuredResponse.model_validate(meta["response_payload"])
+            except Exception:
+                pass
+            try:
+                if "ticket_results" in meta:
+                    out.ticket_results = AIChatTicketResults.model_validate(meta["ticket_results"])
+            except Exception:
+                pass
+            try:
+                if "suggestions" in meta:
+                    out.suggestions = AISuggestionBundle.model_validate(meta["suggestions"])
+            except Exception:
+                pass
+            out.actions = meta.get("actions") or []
+        result.append(out)
+    return result
+
+
+@router.delete("/conversations/{conversation_id}")
+def delete_conversation(
+    conversation_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> Response:
+    conv = db.query(ChatConversation).filter_by(id=conversation_id, user_id=str(current_user.id)).first()
+    if not conv:
+        raise NotFoundError("conversation_not_found")
+    db.delete(conv)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/suggest", response_model=SuggestResponse)

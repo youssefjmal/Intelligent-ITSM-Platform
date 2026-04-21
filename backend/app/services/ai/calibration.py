@@ -177,9 +177,9 @@ ADVISOR_SOURCE_LABEL_BONUS = {
     "fallback_rules": -0.06,
 }
 ADVISOR_ALIGNMENT_THRESHOLDS = {
-    "low_confidence": 0.56,
+    "low_confidence": 0.58,
     "action_relevance": 0.22,
-    "hard_action_relevance": 0.18,
+    "hard_action_relevance": 0.2,
 }
 ADVISOR_ACTIONABILITY_WEIGHTS = {
     "action_hit_cap": 0.7,
@@ -189,7 +189,7 @@ ADVISOR_ACTIONABILITY_WEIGHTS = {
     "structure_hit_cap": 0.15,
     "structure_hit_step": 0.08,
     "generic_penalty_cap": 0.25,
-    "generic_penalty_step": 0.12,
+    "generic_penalty_step": 0.16,
     "short_text_penalty": 0.1,
 }
 ADVISOR_FALLBACK_CONFIDENCE = {

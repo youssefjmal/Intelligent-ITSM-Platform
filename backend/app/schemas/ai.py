@@ -192,6 +192,7 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1, max_length=MAX_CHAT_MESSAGES)
     locale: str | None = Field(default=None, max_length=16)
     solution_quality: str = Field(default="medium", max_length=16)
+    conversation_id: str | None = Field(default=None, max_length=36)
 
     @field_validator("locale", mode="before")
     @classmethod
@@ -425,6 +426,9 @@ class AIResolutionAdvice(BaseModel):
     # "llm_general_knowledge" when the fallback fired, None otherwise.
     # Used by frontend to select correct visual treatment.
     knowledge_source: str | None = None
+    # True when the recommendation was generated entirely by the LLM with no
+    # supporting evidence from past tickets. Frontend shows a warning banner.
+    ai_only_warning: bool = False
 
     @model_validator(mode="after")
     def _backfill_deprecated_mode(self) -> "AIResolutionAdvice":
@@ -803,6 +807,33 @@ class ChatResponse(BaseModel):
     rag_grounding: bool = False
     retrieval_mode: str = "fallback_rules"
     degraded: bool = False
+    conversation_id: str | None = None
+    # Structured fields — required for rich card rendering in the frontend.
+    resolution_advice: AIResolutionAdvice | None = None
+    grounding: AIChatGrounding | None = None
+    suggestions: AISuggestionBundle = Field(default_factory=AISuggestionBundle)
+    draft_context: AIDraftContext | None = None
+    actions: list[str] = Field(default_factory=list)
+    ticket_results: AIChatTicketResults | None = None
+    response_payload: AIChatStructuredResponse | None = None
+
+
+class ConversationOut(BaseModel):
+    id: str
+    title: str
+    created_at: dt.datetime
+    updated_at: dt.datetime
+    message_count: int = 0
+
+
+class ConversationMessageOut(BaseModel):
+    id: str
+    role: str
+    content: str
+    created_at: dt.datetime
+    action: str | None = None
+    ticket: TicketDraft | None = None
+    rag_grounding: bool = False
     resolution_advice: AIResolutionAdvice | None = None
     grounding: AIChatGrounding | None = None
     suggestions: AISuggestionBundle = Field(default_factory=AISuggestionBundle)

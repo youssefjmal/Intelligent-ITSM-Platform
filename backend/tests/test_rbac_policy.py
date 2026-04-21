@@ -44,9 +44,9 @@ def test_user_scope_can_only_view_own_reported_tickets() -> None:
     assert not can_view_ticket(requester, other)
 
 
-def test_viewer_can_view_participating_ticket_but_cannot_edit() -> None:
+def test_viewer_alias_follows_requester_only_scope() -> None:
     viewer = _make_user(UserRole.viewer, name="Viewer", email="viewer@example.com")
-    ticket = _make_ticket(reporter="Another User")
+    ticket = _make_ticket(reporter="Viewer")
     ticket.comments = [
         TicketComment(id="c1", ticket_id=ticket.id, author="Viewer", content="I saw this"),
     ]

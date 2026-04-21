@@ -344,6 +344,72 @@ def _filter_attempted_steps(steps: Iterable[str], *, conversation_state: Any) ->
     return filtered
 
 
+_RECENT_CHANGE_MARKERS = (
+    "after ",
+    "following ",
+    "recent ",
+    "update",
+    "updated",
+    "upgrade",
+    "upgraded",
+    "patch",
+    "patched",
+    "rotation",
+    "rotated",
+    "deploy",
+    "deployed",
+    "rollout",
+    "change",
+    "changed",
+    "config",
+    "configuration",
+)
+
+
+def _ticket_text_attr(ticket: Any, *names: str) -> str:
+    for name in names:
+        normalized = _normalize_line(getattr(ticket, name, ""))
+        if normalized:
+            return normalized
+    return ""
+
+
+def _ticket_comment_context(ticket: Any, *, limit: int = 3) -> str:
+    explicit = _ticket_text_attr(ticket, "comment_context")
+    if explicit:
+        return explicit
+    comments = list(getattr(ticket, "comments", []) or [])
+    snippets: list[str] = []
+    for comment in comments[-limit:]:
+        content = _normalize_line(_message_attr(comment, "content"))
+        if content:
+            snippets.append(content)
+    return " ".join(snippets)
+
+
+def _ticket_recent_change_context(ticket: Any, *, limit: int = 3) -> str:
+    corpus = [
+        _ticket_text_attr(ticket, "title"),
+        _ticket_text_attr(ticket, "description"),
+        _ticket_text_attr(ticket, "ai_summary", "summary_context"),
+        _ticket_comment_context(ticket, limit=limit),
+        _ticket_text_attr(ticket, "resolution", "resolution_context"),
+    ]
+    hits: list[str] = []
+    for text in corpus:
+        if not text:
+            continue
+        for chunk in re.split(r"(?<=[.!?])\s+|\n+", text):
+            normalized = _normalize_line(chunk)
+            lowered = normalized.casefold()
+            if not normalized or not any(marker in lowered for marker in _RECENT_CHANGE_MARKERS):
+                continue
+            hits.append(normalized)
+            if len(hits) >= limit:
+                return " ".join(hits)
+    return " ".join(hits)
+
+
 def build_ticket_retrieval_query(
     ticket: Any,
     *,
@@ -355,15 +421,23 @@ def build_ticket_retrieval_query(
         _normalize_line(getattr(ticket, "title", "")),
         _normalize_line(getattr(ticket, "description", "")),
     ]
-    summary_context = _normalize_line(getattr(ticket, "summary_context", ""))
+    summary_context = _ticket_text_attr(ticket, "summary_context", "ai_summary")
     if summary_context:
         lines.append(f"current_summary={summary_context}")
-    comment_context = _normalize_line(getattr(ticket, "comment_context", ""))
+    comment_context = _ticket_comment_context(ticket)
     if comment_context:
         lines.append(f"current_comments={comment_context}")
-    resolution_context = _normalize_line(getattr(ticket, "resolution_context", ""))
+    resolution_context = _ticket_text_attr(ticket, "resolution_context", "resolution")
     if resolution_context:
         lines.append(f"current_resolution={resolution_context}")
+    recent_change_context = _ticket_recent_change_context(ticket)
+    if recent_change_context:
+        lines.append(f"recent_changes={recent_change_context}")
+    tags = getattr(ticket, "tags", None)
+    if isinstance(tags, (list, tuple)):
+        normalized_tags = [_normalize_line(tag) for tag in tags if _normalize_line(tag)]
+        if normalized_tags:
+            lines.append(f"tags={', '.join(normalized_tags[:8])}")
     if include_priority:
         priority = getattr(ticket, "priority", None)
         status = getattr(ticket, "status", None)

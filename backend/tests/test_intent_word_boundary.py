@@ -92,7 +92,7 @@ class TestIntentFalsePositives:
     def test_open_source_vulnerability_does_not_trigger_open_intent(self):
         """open_source_vulnerability must not trigger the open-ticket route."""
         text = "open_source_vulnerability in our auth library needs patching"
-        intent, _ = detect_intent_with_confidence(text)
+        intent, *_ = detect_intent_with_confidence(text)
         # Must not classify as create_ticket due to "open" substring
         assert intent != ChatIntent.create_ticket, (
             "'open' in 'open_source_vulnerability' triggered create_ticket intent — "
@@ -104,14 +104,14 @@ class TestIntentFalsePositives:
         # 'reopen' alone should not match the open-ticket keyword 'open'
         # (the word 'open' is not present as a standalone word here)
         text = "can you reopen this incident"
-        intent, _ = detect_intent_with_confidence(text)
+        intent, *_ = detect_intent_with_confidence(text)
         # 'reopen' should not drive a create_ticket classification
         assert intent != ChatIntent.create_ticket
 
     def test_close_the_connection_does_not_trigger_close_intent(self):
         """'close the connection' should be general, not a ticket-close action."""
         text = "close the database connection before running the migration"
-        intent, _ = detect_intent_with_confidence(text)
+        intent, *_ = detect_intent_with_confidence(text)
         # Should be general/data_query, not a ticket status close action
         assert intent in {ChatIntent.general, ChatIntent.data_query}
 

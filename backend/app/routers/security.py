@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,30 @@ from app.services.audit_purge import purge_old_audit_events
 router = APIRouter(
     dependencies=[Depends(rate_limit()), Depends(require_admin)],
 )
+
+
+@router.get("/monitoring/dashboards")
+def monitoring_dashboards() -> dict[str, Any]:
+    """Return configured external monitoring destinations for admin tools."""
+    grafana_url = settings.GRAFANA_BASE_URL.strip() or None
+    prometheus_url = settings.PROMETHEUS_BASE_URL.strip() or None
+    return {
+        "grafana_url": grafana_url,
+        "prometheus_url": prometheus_url,
+        "items": [
+            {"name": "grafana", "label": "Grafana", "url": grafana_url},
+            {"name": "prometheus", "label": "Prometheus", "url": prometheus_url},
+        ],
+    }
+
+
+@router.get("/monitoring/grafana")
+def redirect_to_grafana() -> RedirectResponse:
+    """Admin-only redirect helper for Grafana."""
+    target = settings.GRAFANA_BASE_URL.strip()
+    if not target:
+        target = "http://localhost:3003"
+    return RedirectResponse(url=target, status_code=307)
 
 
 @router.get("/security-events")

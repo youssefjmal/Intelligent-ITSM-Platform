@@ -304,15 +304,15 @@ function resolutionModeLabel(mode: ResolutionAdvice["display_mode"], locale: str
     return locale === "fr" ? "Resolution etayee" : "Evidence-backed resolution"
   }
   if (mode === "tentative_diagnostic") {
-    return locale === "fr" ? "Diagnostic prudent" : "Tentative diagnostic"
+    return locale === "fr" ? "Etape diagnostique" : "Diagnostic next step"
   }
   if (mode === "service_request") {
     return locale === "fr" ? "Guidage de demande de service" : "Service request guidance"
   }
-  if (mode === "llm_general_knowledge") {
-    return locale === "fr" ? "Connaissance generale" : "General knowledge"
+  if (mode === "llm_general_knowledge" || mode === "no_strong_match") {
+    return locale === "fr" ? "Repli guide par l'IA" : "AI-guided fallback"
   }
-  return locale === "fr" ? "Pas de correspondance forte" : "No strong match"
+  return locale === "fr" ? "Repli guide par l'IA" : "AI-guided fallback"
 }
 
 function ticketResultsTitle(results: TicketResultsPayload, locale: string): string {
@@ -927,13 +927,20 @@ function downloadChatTxt(messages: ChatMessage[], ticketId: string | null) {
   URL.revokeObjectURL(url)
 }
 
-export function TicketChatbot() {
+interface TicketChatbotProps {
+  conversationId?: string | null
+  onConversationSaved?: (id: string) => void
+}
+
+export function TicketChatbot({ conversationId, onConversationSaved }: TicketChatbotProps = {}) {
   const { t, locale } = useI18n()
   const { user, hasPermission } = useAuth()
   const router = useRouter()
   const [input, setInput] = useState("")
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(false)
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(conversationId ?? null)
+  const [historyLoading, setHistoryLoading] = useState(false)
   const [exportMenuOpen, setExportMenuOpen] = useState(false)
   const [exportSuccess, setExportSuccess] = useState(false)
   // pendingSuggestion holds the suggestion awaiting explicit user confirmation
@@ -956,6 +963,69 @@ export function TicketChatbot() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const endOfMessagesRef = useRef<HTMLDivElement>(null)
   const chatAbortRef = useRef<AbortController | null>(null)
+  const historyRequestRef = useRef(0)
+
+  // Load conversation history when an existing conversationId is passed in
+  useEffect(() => {
+    if (!conversationId) return
+    const requestId = historyRequestRef.current + 1
+    historyRequestRef.current = requestId
+    setActiveConversationId(conversationId)
+    setHistoryLoading(true)
+    apiFetch<Array<{
+      id: string
+      role: string
+      content: string
+      created_at: string
+      action?: string | null
+      ticket?: TicketDraft | null
+      rag_grounding?: boolean
+      resolution_advice?: ResolutionAdvice | null
+      draft_context?: DraftContext | null
+      response_payload?: ChatResponsePayload | null
+      ticket_results?: TicketResultsPayload | null
+      suggestions?: SuggestionBundle | null
+      actions?: string[]
+    }>>(`/ai/conversations/${conversationId}/messages`)
+      .then((msgs) => {
+        if (historyRequestRef.current !== requestId) return
+        setMessages(
+          msgs.map((m) => ({
+            id: m.id,
+            role: m.role as "user" | "assistant",
+            content: m.content,
+            createdAt: m.created_at,
+            ticketDraft: m.ticket ?? undefined,
+            ticketAction: m.action ?? (m.ticket_results ? "show_ticket" : undefined),
+            ragGrounding: Boolean(m.rag_grounding),
+            suggestions: m.suggestions ?? undefined,
+            draftContext: m.draft_context ?? null,
+            actions: m.actions ?? [],
+            responsePayload: normalizeResponsePayload(m.response_payload ?? m),
+            ticketResults: m.ticket_results ?? null,
+            ...(m.resolution_advice
+              ? {
+                  suggestions: {
+                    tickets: m.suggestions?.tickets || [],
+                    problems: m.suggestions?.problems || [],
+                    kb_articles: m.suggestions?.kb_articles || [],
+                    solution_recommendations: m.suggestions?.solution_recommendations || [],
+                    resolution_advice: m.resolution_advice,
+                    confidence: m.suggestions?.confidence || 0,
+                    source: m.suggestions?.source || "llm_fallback",
+                  } satisfies SuggestionBundle,
+                }
+              : {}),
+          }))
+        )
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (historyRequestRef.current === requestId) {
+          setHistoryLoading(false)
+        }
+      })
+  }, [conversationId])
 
   // Derive the last mentioned ticket ID from structured response payloads
   const lastTicketId: string | null = (() => {
@@ -985,15 +1055,14 @@ export function TicketChatbot() {
   async function copyToComments(msgs: ChatMessage[], ticketId: string) {
     const text = formatChatAsText(msgs, ticketId)
     try {
-      const res = await fetch(`/api/tickets/${ticketId}/comments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: text, author: "IA Export" }),
+      await apiFetch(`/tickets/${ticketId}/triage`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          comment: text,
+        }),
       })
-      if (res.ok) {
-        setExportSuccess(true)
-        setTimeout(() => setExportSuccess(false), 3000)
-      }
+      setExportSuccess(true)
+      setTimeout(() => setExportSuccess(false), 3000)
     } catch {
       console.warn("[chatExport] copy to comments failed")
     }
@@ -1733,47 +1802,69 @@ export function TicketChatbot() {
 
       if (payload.type === "problem_list") {
         const pl = payload as ProblemListPayload
+        const statusColor = (s: string) => {
+          const v = (s || "").toLowerCase().replace(/[_\s]/g, "")
+          if (v === "investigating") return "bg-amber-500/10 text-amber-700 border-amber-200 dark:border-amber-700 dark:text-amber-400"
+          if (v === "knownerror") return "bg-red-500/10 text-red-700 border-red-200 dark:border-red-700 dark:text-red-400"
+          if (v === "resolved") return "bg-emerald-500/10 text-emerald-700 border-emerald-200 dark:border-emerald-700 dark:text-emerald-400"
+          return "bg-muted/60 text-muted-foreground border-border"
+        }
         return (
-          <div className="space-y-3" onClick={(event) => event.stopPropagation()}>
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <div className="space-y-2.5" onClick={(event) => event.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center gap-2.5">
+              <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-muted-foreground">
                 {locale === "fr" ? "Problèmes" : "Problems"}
-              </p>
-              <Badge variant="outline" className="text-[10px]">{pl.total_count}</Badge>
-              {pl.status_filter ? <Badge variant="outline" className="text-[10px]">{pl.status_filter}</Badge> : null}
+              </span>
+              <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary/10 px-1.5 text-[10px] font-bold text-primary">
+                {pl.total_count}
+              </span>
+              {pl.status_filter ? (
+                <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${statusColor(pl.status_filter)}`}>
+                  {pl.status_filter}
+                </span>
+              ) : null}
             </div>
-            <div className="overflow-x-auto rounded-lg border border-border/70">
-              <table className="w-full text-[12px]">
-                <thead>
-                  <tr className="border-b border-border/70 bg-muted/30">
-                    <th className="px-3 py-2 text-left font-semibold text-muted-foreground">ID</th>
-                    <th className="px-3 py-2 text-left font-semibold text-muted-foreground">{locale === "fr" ? "Titre" : "Title"}</th>
-                    <th className="px-3 py-2 text-left font-semibold text-muted-foreground">{locale === "fr" ? "Statut" : "Status"}</th>
-                    <th className="px-3 py-2 text-right font-semibold text-muted-foreground">{locale === "fr" ? "Occurrences" : "Occurrences"}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pl.problems.slice(0, 5).map((problem) => (
-                    <tr
-                      key={`pl-row-${problem.id}`}
-                      className="cursor-pointer border-b border-border/40 hover:bg-muted/20 transition-colors"
-                      onClick={() => sendMessage(`tell me about ${problem.id}`)}
-                    >
-                      <td className="px-3 py-2 font-mono text-[10px] text-muted-foreground">{problem.id}</td>
-                      <td className="px-3 py-2 text-foreground line-clamp-1 max-w-[200px]">{problem.title}</td>
-                      <td className="px-3 py-2">
-                        <span className={getBadgeStyle("problem_status", problem.status)}>{problem.status}</span>
-                      </td>
-                      <td className="px-3 py-2 text-right text-muted-foreground">{problem.occurrences_count}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+
+            {/* Problem cards */}
+            <div className="space-y-1.5">
+              {pl.problems.slice(0, 5).map((problem, idx) => (
+                <button
+                  key={`pl-card-${problem.id}`}
+                  type="button"
+                  onClick={() => sendMessage(locale === "fr" ? `dis moi tout sur ${problem.id}` : `tell me about ${problem.id}`)}
+                  className="group w-full rounded-xl border border-border/60 bg-background/60 px-3.5 py-2.5 text-left transition-all hover:border-primary/30 hover:bg-primary/5 hover:shadow-sm"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-[9px] font-semibold text-muted-foreground/70">{problem.id}</span>
+                        <span className={`rounded-full border px-1.5 py-px text-[9px] font-semibold ${statusColor(problem.status)}`}>
+                          {problem.status}
+                        </span>
+                      </div>
+                      <p className="line-clamp-1 text-[12px] font-medium text-foreground group-hover:text-primary transition-colors">
+                        {problem.title}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-0.5">
+                      <span className="text-[10px] font-bold text-muted-foreground">{problem.occurrences_count}</span>
+                      <span className="text-[9px] text-muted-foreground/60">{locale === "fr" ? "occur." : "occur."}</span>
+                    </div>
+                  </div>
+                  {problem.root_cause ? (
+                    <p className="mt-1.5 line-clamp-1 text-[10px] text-muted-foreground/70">
+                      {problem.root_cause}
+                    </p>
+                  ) : null}
+                </button>
+              ))}
             </div>
+
             {pl.problems.length > 5 ? (
               <button
                 type="button"
-                className="text-[11px] text-muted-foreground hover:text-foreground underline-offset-2 hover:underline transition-colors"
+                className="w-full rounded-lg border border-dashed border-border/60 py-1.5 text-[11px] text-muted-foreground transition-colors hover:border-primary/30 hover:text-primary"
                 onClick={() => sendMessage(locale === "fr" ? `voir les problemes page 2` : `show problems page 2`)}
               >
                 {locale === "fr" ? `+${pl.problems.length - 5} autres problèmes` : `+${pl.problems.length - 5} more problems`}
@@ -2098,7 +2189,7 @@ export function TicketChatbot() {
 
   async function sendMessage(text: string) {
     const normalized = text.trim()
-    if (!normalized || loading) return
+    if (!normalized || loading || historyLoading) return
     // Abort any previous in-flight request before starting a new one
     chatAbortRef.current?.abort()
     chatAbortRef.current = new AbortController()
@@ -2138,14 +2229,20 @@ export function TicketChatbot() {
         suggestions?: SuggestionBundle
         draft_context?: DraftContext | null
         actions?: string[]
+        conversation_id?: string | null
       }>("/ai/chat", {
         method: "POST",
         body: JSON.stringify({
           messages: payloadMessages,
           locale,
+          conversation_id: activeConversationId,
         }),
         signal: chatAbortRef.current?.signal,
       })
+      if (result.conversation_id && result.conversation_id !== activeConversationId) {
+        setActiveConversationId(result.conversation_id)
+        onConversationSaved?.(result.conversation_id)
+      }
       const ticketDraft = result.ticket
         ? {
             ...result.ticket,
@@ -2168,7 +2265,7 @@ export function TicketChatbot() {
           draftContext: result.draft_context ?? null,
           actions: result.actions || [],
           ticketResults: result.ticket_results ?? null,
-          responsePayload: normalizeResponsePayload(result.response_payload),
+          responsePayload: normalizeResponsePayload(result.response_payload ?? result),
         },
       ])
     } catch (error) {
@@ -2191,6 +2288,16 @@ export function TicketChatbot() {
 
   function handleSend() {
     sendMessage(input)
+  }
+
+  function handleNewConversation() {
+    historyRequestRef.current += 1
+    setHistoryLoading(false)
+    setActiveConversationId(null)
+    setMessages([])
+    setInput("")
+    setPendingSuggestion(null)
+    setExportMenuOpen(false)
   }
 
   function handleQuickPrompt(prompt: string) {
@@ -2337,7 +2444,7 @@ export function TicketChatbot() {
             {messages.length > 0 && (
               <button
                 type="button"
-                onClick={() => setMessages([])}
+                onClick={handleNewConversation}
                 className="flex h-7 w-7 items-center justify-center rounded-lg border border-border/60 text-muted-foreground hover:border-border hover:text-foreground transition-colors"
                 title={locale === "fr" ? "Nouvelle conversation" : "New conversation"}
               >
@@ -2389,7 +2496,11 @@ export function TicketChatbot() {
 
       <CardContent className="flex flex-1 flex-col overflow-hidden p-0">
         <ScrollArea className="flex-1 px-4 py-4 sm:px-5" ref={scrollRef}>
-          {messages.length === 0 ? (
+          {historyLoading ? (
+            <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
+              {locale === "fr" ? "Chargement de l'historique…" : "Loading conversation…"}
+            </div>
+          ) : messages.length === 0 ? (
             <div className="flex flex-col gap-6 py-5 px-1">
               {/* Welcome */}
               <div className="flex flex-col items-center gap-2 text-center px-2">
@@ -2424,9 +2535,10 @@ export function TicketChatbot() {
                   <button
                     key={label}
                     type="button"
-                    onClick={() => sendMessage(msg)}
-                    className="rounded-full border border-border/60 bg-card px-4 py-2 text-[12px] font-medium text-foreground/75 shadow-sm transition-all hover:-translate-y-px hover:border-primary/30 hover:bg-primary/5 hover:text-foreground hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
-                  >
+                      onClick={() => sendMessage(msg)}
+                      disabled={historyLoading}
+                      className="rounded-full border border-border/60 bg-card px-4 py-2 text-[12px] font-medium text-foreground/75 shadow-sm transition-all hover:-translate-y-px hover:border-primary/30 hover:bg-primary/5 hover:text-foreground hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+                    >
                     {label}
                   </button>
                 ))}
@@ -2772,15 +2884,28 @@ export function TicketChatbot() {
                             ))}
 
                             {message.suggestions?.kb_articles?.slice(0, 1).map((kb) => (
-                              <div key={`kb-sug-${message.id}-${kb.id}`} className="rounded-lg border border-border bg-background/70 p-2.5">
-                                <p className="text-xs font-semibold text-foreground">
+                              <div key={`kb-sug-${message.id}-${kb.id}`} className="rounded-xl border border-sky-200 bg-sky-50/80 p-3">
+                                <div className="flex items-center gap-2">
+                                  <Badge variant="outline" className="border-sky-300 bg-white text-[10px] font-semibold text-sky-700">
+                                    {locale === "fr" ? "Base de connaissance" : "Knowledge base"}
+                                  </Badge>
+                                  <span className="text-[10px] uppercase tracking-wide text-sky-800/80">
+                                    {locale === "fr" ? "Assistance KB" : "KB assistance"}
+                                  </span>
+                                </div>
+                                <p className="mt-2 text-xs font-semibold text-foreground">
                                   <BookOpen className="mr-1 inline h-3.5 w-3.5 text-blue-500" />
                                   {kb.title}
                                 </p>
-                                <p className="mt-1 text-[11px] text-muted-foreground">{kb.excerpt}</p>
+                                <p className="mt-1 text-[11px] leading-relaxed text-slate-700">{kb.excerpt}</p>
+                                <p className="mt-2 text-[10px] text-slate-600">
+                                  {locale === "fr"
+                                    ? "Suggestion issue de la base de connaissance, distincte des recommandations historiques et du repli LLM general."
+                                    : "Suggestion sourced from the knowledge base, separate from historical recommendations and general LLM fallback."}
+                                </p>
                                 <div className="mt-2 flex gap-1.5">
                                   <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[10px]" onClick={() => setInput(`Use this KB guidance: ${kb.excerpt}`)}>
-                                    Use This Solution
+                                    {locale === "fr" ? "Utiliser cette solution" : "Use This Solution"}
                                   </Button>
                                 </div>
                               </div>
@@ -2928,6 +3053,8 @@ export function TicketChatbot() {
                   }
                 }}
                 disabled={loading}
+                aria-busy={historyLoading}
+                readOnly={historyLoading}
                 className="h-9 rounded-xl bg-background/90 pr-8 text-[13px] placeholder:text-muted-foreground/60"
               />
               {input.trim() && !loading && (
@@ -2946,7 +3073,7 @@ export function TicketChatbot() {
             <Button
               type="button"
               onClick={handleSend}
-              disabled={(!input.trim() && !cmdOpen) || loading}
+              disabled={(!input.trim() && !cmdOpen) || loading || historyLoading}
               size="sm"
               className="h-9 w-9 shrink-0 rounded-xl bg-primary p-0 text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >

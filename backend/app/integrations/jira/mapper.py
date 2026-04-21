@@ -328,6 +328,19 @@ def _safe_title(issue_key: str, title: str | None) -> str:
     return text[:255] if text else f"Jira issue {issue_key}"
 
 
+def _safe_description(description: str, *, summary: str, issue_key: str) -> str:
+    text = " ".join(str(description or "").split()).strip()
+    if len(text) >= 5:
+        return text[:4000]
+
+    summary_text = " ".join(str(summary or "").split()).strip()
+    if len(summary_text) >= 5:
+        return summary_text[:4000]
+
+    fallback = f"Jira issue {issue_key}"
+    return fallback[:4000]
+
+
 def map_status(fields: dict[str, Any]) -> TicketStatus:
     status_obj = fields.get("status") or {}
     status_name = str(status_obj.get("name") or "").strip().lower()
@@ -459,7 +472,7 @@ def map_issue(issue: dict[str, Any]) -> NormalizedTicket:
         raise ValueError("missing_issue_key")
 
     summary = _safe_title(issue_key, fields.get("summary"))
-    description = _normalize_text(fields.get("description")) or summary
+    description = _safe_description(_normalize_text(fields.get("description")), summary=summary, issue_key=issue_key)
     assignee = _local_assignee_from_labels(fields) or str(((fields.get("assignee") or {}).get("displayName") or "")).strip()
     assignee = assignee or "Unassigned"
     reporter = _local_reporter_from_labels(fields) or str(((fields.get("reporter") or {}).get("displayName") or "")).strip()
@@ -478,7 +491,7 @@ def map_issue(issue: dict[str, Any]) -> NormalizedTicket:
         jira_issue_id=issue_id or issue_key,
         source=JIRA_SOURCE,
         title=summary,
-        description=description[:4000],
+        description=description,
         status=map_status(fields),
         priority=map_priority(fields),
         ticket_type=map_ticket_type(fields),

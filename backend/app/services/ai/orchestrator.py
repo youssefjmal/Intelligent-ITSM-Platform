@@ -90,9 +90,12 @@ from app.services.ai.formatters import (
     _format_weekly_summary,
     _ticket_to_summary,
 )
+from app.services.ai.conversation_policy import OFFTOPIC_REJECTION_MESSAGES
 from app.services.ai.intents import (
     ACTIVE_STATUSES,
     ChatIntent,
+    detect_intent_hybrid_details,
+    detect_language,
     parse_chat_intent_details,
     extract_problem_id,
     extract_recent_ticket_constraints,
@@ -217,15 +220,6 @@ def build_routing_plan(
             reason="explicit_create_request" if create_requested else "hybrid_create_intent",
         )
 
-    if entity_specific_ticket_query:
-        return RoutingPlan(
-            name="structured_data_query",
-            intent=ChatIntent.data_query,
-            use_llm=False,
-            use_kb=False,
-            reason="entity_specific_ticket_override",
-        )
-
     if guidance_requested:
         return RoutingPlan(
             name="general_llm",
@@ -282,6 +276,15 @@ def build_routing_plan(
             use_llm=False,
             use_kb=False,
             reason=f"deterministic_{intent.value}",
+        )
+
+    if entity_specific_ticket_query and intent == ChatIntent.data_query:
+        return RoutingPlan(
+            name="structured_data_query",
+            intent=ChatIntent.data_query,
+            use_llm=False,
+            use_kb=False,
+            reason="entity_specific_ticket_override",
         )
 
     if intent == ChatIntent.data_query:
@@ -569,6 +572,8 @@ def _is_entity_specific_ticket_query(text: str, ticket_id: str | None) -> bool:
     if is_guidance_request(normalized) or _is_explicit_ticket_create_request(normalized):
         return False
     if _is_multi_ticket_listing_request(normalized):
+        return False
+    if any(token in normalized for token in ["similar", "related", "linked", "compare", "versus", " vs "]):
         return False
     return any(
         token in normalized
@@ -1261,23 +1266,24 @@ def build_chat_reply(
     stats: dict,
     top_tickets: list[str],
     *,
+    lang: str | None = None,
     locale: str | None = None,
     assignees: list[str] | None = None,
     grounding: AIChatGrounding | None = None,
 ) -> tuple[str, str | None, dict[str, Any] | None]:
-    lang = _normalize_locale(locale)
-    greeting = _time_greeting(lang)
+    resolved_lang = lang or _normalize_locale(locale)
+    greeting = _time_greeting(resolved_lang)
     if grounding is not None:
         return _build_grounded_chat_reply(
             question,
             grounding=grounding,
-            lang=lang,
+            lang=resolved_lang,
             greeting=greeting,
         )
     assignee_list = assignees or []
     knowledge_block = build_jira_knowledge_block(
         question,
-        lang=lang,
+        lang=resolved_lang,
         limit=3,
         semantic_only=True,
         semantic_min_score=CHAT_KB_SEMANTIC_MIN_SCORE,
@@ -1286,7 +1292,7 @@ def build_chat_reply(
     prompt = build_chat_prompt(
         question=question,
         knowledge_section=knowledge_section,
-        lang=lang,
+        lang=resolved_lang,
         greeting=greeting,
         assignee_list=assignee_list,
         stats=stats,
@@ -1311,13 +1317,13 @@ def build_chat_reply(
                 if not ticket_payload.get("category") and isinstance(classification.get("category"), str):
                     ticket_payload["category"] = classification.get("category")
             if not reply_text:
-                reply_text = _fallback_reply_from_payload(data, lang=lang, greeting=greeting)
+                reply_text = _fallback_reply_from_payload(data, lang=resolved_lang, greeting=greeting)
             if solution and action in {None, "none"} and solution.casefold() not in reply_text.casefold():
-                reply_text = append_solution(reply_text, solution, lang=lang)
+                reply_text = append_solution(reply_text, solution, lang=resolved_lang)
             if notes and notes.casefold() not in reply_text.casefold():
                 reply_text = f"{reply_text}\n\n{notes}".strip()
             if not (reply_text or "").strip():
-                reply_text = _fallback_reply_from_payload(data, lang=lang, greeting=greeting)
+                reply_text = _fallback_reply_from_payload(data, lang=resolved_lang, greeting=greeting)
             return reply_text, action, ticket_payload
 
         raw_reply = str(reply or "").strip()
@@ -1327,7 +1333,7 @@ def build_chat_reply(
                 raw_reply = ollama_generate(
                     _build_chat_text_fallback_prompt(
                         question=question,
-                        lang=lang,
+                        lang=resolved_lang,
                         greeting=greeting,
                         knowledge_section=knowledge_section,
                         assignee_list=assignee_list,
@@ -1342,13 +1348,13 @@ def build_chat_reply(
         if not raw_reply:
             raw_reply = (
                 f"{greeting}, I could not produce a clear answer. Could you rephrase?"
-                if lang == "en"
+                if resolved_lang == "en"
                 else f"{greeting}, je n'ai pas pu formuler une reponse claire, pouvez-vous reformuler ?"
             )
         return raw_reply, None, None
     except Exception as exc:
         logger.warning("Ollama chat failed: %s", exc)
-        error_reply = "LLM is unavailable. Please try again." if lang == "en" else "LLM indisponible. Reessayez."
+        error_reply = "LLM is unavailable. Please try again." if resolved_lang == "en" else "LLM indisponible. Reessayez."
         return error_reply, None, None
 
 
@@ -1406,7 +1412,7 @@ def _build_forced_ai_ticket_draft(
         force_prompt,
         stats,
         top,
-        locale=lang,
+        lang=lang,
         assignees=assignee_names,
     )
 
@@ -2267,6 +2273,8 @@ def _detect_unified_pattern(question: str, *, plan: RoutingPlan, guidance_reques
     text = _normalize_intent_text(question)
     if any(token in text for token in ["thanks", "thank you", "that worked", "fixed", "resolved", "merci", "resolu", "marche"]):
         return "CONFIRM_RESOLUTION"
+    if any(token in text for token in ["compare", "comparison", "versus", " vs ", "difference"]):
+        return "PROBLEM_ANALYSIS"
     if any(token in text for token in ["similar", "related ticket", "ticket like", "semblable", "similaire"]):
         return "SIMILAR_TICKETS"
     # Priority analysis questions must be caught before PROBLEM_ANALYSIS — "analyse" alone is
@@ -2296,6 +2304,8 @@ def _detect_unified_pattern(question: str, *, plan: RoutingPlan, guidance_reques
         ]
     ):
         return "PROBLEM_ANALYSIS"
+    if guidance_requested or is_guidance_request(text):
+        return "HOW_TO_FIX"
     # Generic "analyse/analysis" without priority or root-cause context → let LLM handle it.
     if any(token in text for token in ["analyse", "analysis", "analyser"]):
         return "GENERAL_ITSM"
@@ -2303,8 +2313,6 @@ def _detect_unified_pattern(question: str, *, plan: RoutingPlan, guidance_reques
         return "STATUS_UPDATE"
     if any(token in text for token in ["escalat", "urgent help", "need escalation", "escalade"]):
         return "ESCALATION_HELP"
-    if guidance_requested or is_guidance_request(text):
-        return "HOW_TO_FIX"
     if plan.intent == ChatIntent.create_ticket or _is_explicit_ticket_create_request(question):
         return "TICKET_CREATE"
     if any(token in text for token in ["fix", "resolve", "solution", "cannot", "can't", "unable", "error", "issue", "panne"]):
@@ -2745,19 +2753,24 @@ def _call_llm_for_chitchat(message: str, history_context: str, *, lang: str) -> 
     and a brief ITSM-assistant system instruction.
     """
     lang_instruction = (
-        "Respond in French. You are a concise ITSM assistant."
+        "Réponds en français. Tu es un assistant ITSM concis. "
+        "Tu peux répondre aux questions générales sur les technologies IT (protocoles, acronymes, outils) "
+        "si elles sont posées dans un contexte de support informatique."
         if lang == "fr"
-        else "Respond in English. You are a concise ITSM assistant."
+        else "Respond in English. You are a concise ITSM assistant. "
+        "You may answer general IT questions (protocols, acronyms, tools) "
+        "when asked in an IT support context."
     )
     history_block = f"\nConversation so far:\n{history_context}\n" if history_context and history_context.strip() else ""
     prompt = (
-        f"{lang_instruction} Keep replies short (1-2 sentences). "
-        f"If the user's message is off-topic (not related to IT support or tickets), "
-        f"politely redirect them."
+        f"{lang_instruction} Keep replies to 1-3 sentences."
         f"{history_block}\nUser: {message}\nAssistant:"
     )
     try:
-        return ollama_generate(prompt).strip()
+        result = ollama_generate(prompt).strip()
+        if not result:
+            raise ValueError("empty_reply")
+        return result
     except Exception:  # noqa: BLE001
         return "Bonjour ! Comment puis-je vous aider ?" if lang == "fr" else "Hello! How can I help you?"
 
@@ -2958,7 +2971,8 @@ def handle_chat(payload: ChatRequest, db: Session, current_user) -> ChatResponse
 def _handle_chat_inner(payload: ChatRequest, db: Session, current_user) -> ChatResponse:
     request_started_at = time.perf_counter()
     last_question = payload.messages[-1].content if payload.messages else ""
-    lang = _normalize_locale(payload.locale)
+    _client_lang = _normalize_locale(payload.locale) if payload.locale else None
+    lang = _client_lang or detect_language(last_question or "")
     lowered = _normalize_intent_text(last_question or "")
     history_session = build_chat_session(payload.messages[:-1])
     conversation_session = build_chat_session(payload.messages)
@@ -2973,6 +2987,23 @@ def _handle_chat_inner(payload: ChatRequest, db: Session, current_user) -> ChatR
     intent_confidence = intent_details.confidence
     intent_source = intent_details.source
     guidance_requested = intent_details.guidance_requested
+
+    # ── Off-topic early exit ───────────────────────────────────────────────
+    # No ticket load, no LLM call — instant polite rejection.
+    if intent_details.filter_meta.get("offtopic_guard"):
+        rejection = OFFTOPIC_REJECTION_MESSAGES.get(lang, OFFTOPIC_REJECTION_MESSAGES["en"])
+        offtopic_plan = build_routing_plan(
+            last_question, intent=ChatIntent.chitchat, create_requested=False,
+            guidance_requested=False, entity_specific_ticket_query=False,
+        )
+        return _compose_chat_response(
+            question=last_question, lang=lang, plan=offtopic_plan, db=db,
+            tickets=[], solution_quality=payload.solution_quality,
+            reply=rejection, action=None, ticket=None,
+            conversation_state=conversation_session,
+            allow_resolver_fallback=False,
+            request_started_at=request_started_at,
+        )
 
     # ── Shortcut intents: use targeted DB queries, skip full table scan ───
     _PURE_SHORTCUTS = {
@@ -3701,6 +3732,7 @@ def _handle_chat_inner(payload: ChatRequest, db: Session, current_user) -> ChatR
             last_question,
             stats,
             top_for_llm,
+            lang=lang,
             locale=payload.locale,
             assignees=assignee_names,
             grounding=chat_guidance.grounding,
@@ -3710,6 +3742,7 @@ def _handle_chat_inner(payload: ChatRequest, db: Session, current_user) -> ChatR
             question_for_llm,
             stats,
             top_for_llm,
+            lang=lang,
             locale=payload.locale,
             assignees=assignee_names,
         )

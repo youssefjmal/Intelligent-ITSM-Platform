@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from app.models.enums import TicketStatus
+from typing import Literal
+
 from app.services.ai.conversation_policy import (
     ACTIVE_TICKET_KEYWORDS,
     CRITICAL_TICKET_KEYWORDS,
@@ -48,6 +50,8 @@ from app.services.ai.conversation_policy import (
     GUIDANCE_REQUEST_KEYWORDS,
     HELP_REQUEST_KEYWORDS,
     INFO_REQUEST_KEYWORDS,
+    ITSM_ANCHOR_PHRASES,
+    KNOWLEDGE_QUERY_PREFIXES,
     MOST_USED_TICKET_KEYWORDS,
     OPEN_TICKET_KEYWORDS,
     PROBLEM_DETAIL_KEYWORDS,
@@ -134,6 +138,166 @@ class ChatIntentDetails:
 
 def _normalize_locale(locale: str | None) -> str:
     return "en" if (locale or "").lower().startswith("en") else "fr"
+
+
+# ---------------------------------------------------------------------------
+# Language detection
+# ---------------------------------------------------------------------------
+
+_FR_ACCENT_CHARS: frozenset[str] = frozenset("éèêëàâäîïôùûüçœæÉÈÊËÀÂÄÎÏÔÙÛÜÇŒÆ")
+
+_FR_STOPWORDS: frozenset[str] = frozenset({
+    "je", "tu", "il", "elle", "nous", "vous", "ils", "elles",
+    "le", "la", "les", "de", "du", "des", "une", "un",
+    "est", "sont", "c'est", "qu'est", "qu'il", "qu'elle",
+    "bonjour", "merci", "salut", "bonsoir", "oui", "non",
+    "mais", "avec", "pour", "dans", "sur", "par",
+    "et", "ne", "pas", "plus", "que", "qui", "quoi",
+    "mon", "ma", "mes", "moi", "ouvert", "resolu", "ferme",
+    "nouveau", "bilan",
+})
+
+_EN_ONLY_ARTICLES: frozenset[str] = frozenset({"the", "a", "an", "my", "your", "our", "their"})
+
+
+def detect_language(text: str) -> Literal["fr", "en"]:
+    """Heuristically detect whether *text* is French or English.
+
+    Priority:
+    1. Any French accented character → immediately "fr".
+    2. FR stopword count vs EN-only article count in first 20 tokens.
+
+    Falls back to "en" when no French signal is found.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return "en"
+    if any(ch in _FR_ACCENT_CHARS for ch in raw):
+        return "fr"
+    tokens = raw.lower().split()[:20]
+    fr_hits = sum(1 for tok in tokens if tok.rstrip("?!.,;:") in _FR_STOPWORDS)
+    en_only_hits = sum(1 for tok in tokens if tok.rstrip("?!.,;:") in _EN_ONLY_ARTICLES)
+    if fr_hits >= 2 or (fr_hits >= 1 and en_only_hits == 0):
+        return "fr"
+    return "en"
+
+
+# ---------------------------------------------------------------------------
+# Off-topic embedding guard helpers
+# ---------------------------------------------------------------------------
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _is_clearly_offtopic(text: str) -> bool:
+    """Return True if the message is semantically unrelated to ITSM topics.
+
+    Computes cosine similarity between the message embedding and 28 ITSM
+    anchor phrases.  Returns True only when max similarity < threshold.
+    Gracefully returns False (pass-through) on any embedding failure.
+    """
+    from app.core.config import settings  # lazy import avoids circular dependency  # noqa: PLC0415
+    try:
+        from app.services.embeddings import compute_embedding  # noqa: PLC0415
+    except Exception:
+        return False
+
+    normalized = _normalize_intent_text(text or "")
+    if not normalized:
+        return False
+
+    try:
+        query_vec = compute_embedding(normalized)
+    except Exception as exc:
+        logger.info("Off-topic guard: query embedding failed, skipping: %s", exc)
+        return False
+
+    max_sim = 0.0
+    best_anchor = ""
+    for phrase in ITSM_ANCHOR_PHRASES:
+        try:
+            anchor_vec = compute_embedding(phrase)
+        except Exception:
+            continue
+        sim = _cosine_similarity(query_vec, anchor_vec)
+        if sim > max_sim:
+            max_sim = sim
+            best_anchor = phrase
+        if max_sim >= settings.OFFTOPIC_SIMILARITY_THRESHOLD:
+            logger.info(
+                "Off-topic guard accepted ITSM context: max_similarity=%.3f threshold=%.3f best_anchor=%r",
+                max_sim,
+                settings.OFFTOPIC_SIMILARITY_THRESHOLD,
+                best_anchor,
+            )
+            return False  # short-circuit: message is ITSM-related
+
+    logger.info(
+        "Off-topic guard verdict: rejected=%s max_similarity=%.3f threshold=%.3f best_anchor=%r",
+        max_sim < settings.OFFTOPIC_SIMILARITY_THRESHOLD,
+        max_sim,
+        settings.OFFTOPIC_SIMILARITY_THRESHOLD,
+        best_anchor,
+    )
+    return max_sim < settings.OFFTOPIC_SIMILARITY_THRESHOLD
+
+
+# ---------------------------------------------------------------------------
+# ITSM knowledge query detector
+# ---------------------------------------------------------------------------
+
+_ITSM_KNOWLEDGE_TERMS: frozenset[str] = frozenset({
+    "vpn", "dns", "ssl", "tls", "smtp", "http", "https", "api", "ldap", "ssh",
+    "dhcp", "tcp", "ip", "nat", "firewall",
+    "sla", "itil", "cmdb", "rca", "itsm", "mttr", "mtta", "kpi",
+    "incident", "problem", "change", "request", "ticket",
+    "mfa", "2fa", "sso", "oauth", "saml", "authentication", "autorisation",
+    "authentification", "permission",
+    "crm", "erp", "saas", "iaas", "paas", "cloud",
+    "database", "base de donnees",
+    "active directory", "gpo",
+    "ai", "intelligence artificielle", "machine learning",
+    "encryption", "chiffrement", "certificat", "certificate",
+    "proxy", "load balancer", "reverse proxy",
+})
+
+# Procedural "how do I <action>" prefixes — excluded from knowledge fast-path
+# because they represent troubleshooting requests, not definitional questions.
+_PROCEDURAL_HOW_PREFIXES: frozenset[str] = frozenset({
+    "how do i fix", "how do i resolve", "how do i reset", "how do i restart",
+    "how do i configure", "how do i install", "how do i set up", "how do i setup",
+    "how do i update", "how do i change", "how do i create", "how do i delete",
+    "how do i remove", "how do i enable", "how do i disable", "how do i troubleshoot",
+    "how do i handle", "how do i deal with", "how do i migrate", "how do i upgrade",
+    "how should i fix", "how should i resolve", "how should i configure",
+    "how can i fix", "how can i resolve", "how can i configure",
+    "comment corriger", "comment resoudre", "comment configurer", "comment installer",
+    "comment reinitialiser", "comment redemarrer", "comment reparer",
+})
+
+
+def _is_knowledge_query(text: str) -> bool:
+    """Return True if the message is a definitional question about an IT/ITSM topic.
+
+    Both conditions must hold: a knowledge prefix AND an ITSM/IT term.
+    This prevents "what is football" from matching, and excludes procedural
+    "how do I fix/configure/reset..." queries which should go through the resolver.
+    """
+    if not text:
+        return False
+    # Exclude procedural action queries before checking knowledge prefixes
+    if any(text.startswith(prefix) for prefix in _PROCEDURAL_HOW_PREFIXES):
+        return False
+    has_prefix = any(text.startswith(prefix) for prefix in KNOWLEDGE_QUERY_PREFIXES)
+    if not has_prefix:
+        return False
+    return any(_matches_keyword(text, term) for term in _ITSM_KNOWLEDGE_TERMS)
 
 
 # Default confidence returned when the LLM fallback does not include a
@@ -328,6 +492,56 @@ def _looks_like_data_query(text: str) -> bool:
         "count",
     ]
     return any(token in text for token in data_tokens)
+
+
+def _has_contextual_reference(text: str) -> bool:
+    contextual_phrases = [
+        "this one",
+        "that one",
+        "other one",
+        "first one",
+        "second one",
+        "third one",
+        "previous one",
+        "first ticket",
+        "second ticket",
+        "third ticket",
+        "this ticket",
+        "that ticket",
+        "the ticket",
+        "this issue",
+        "that issue",
+        "this incident",
+        "that incident",
+    ]
+    return any(token in text for token in contextual_phrases)
+
+
+def _looks_like_contextual_followup(text: str) -> bool:
+    if not _has_contextual_reference(text):
+        return False
+    followup_tokens = [
+        "show",
+        "tell me",
+        "what happened",
+        "what about",
+        "compare",
+        "versus",
+        "vs",
+        "why",
+        "cause",
+        "root cause",
+        "fix",
+        "resolve",
+        "comments",
+        "resolution",
+        "status",
+        "details",
+        "summary",
+        "linked",
+        "similar",
+    ]
+    return any(token in text for token in followup_tokens)
 
 
 def _looks_like_guidance_request(text: str) -> bool:
@@ -638,6 +852,24 @@ def is_chitchat_or_offtopic(text: str) -> bool:
     return False
 
 
+def _should_apply_offtopic_guard(raw_text: str, normalized: str) -> bool:
+    """Apply the embedding guard only to unresolved weak-signal prompts.
+
+    This keeps structured ITSM traffic on the deterministic path and limits the
+    semantic off-topic check to the ambiguous long-form prompts it is meant for.
+    """
+    raw = (raw_text or "").strip()
+    if len(raw) <= _MAX_CHITCHAT_LENGTH:
+        return False
+    if extract_ticket_id(raw) or extract_problem_id(raw):
+        return False
+    if _is_knowledge_query(normalized):
+        return False
+    if _has_itsm_signal(normalized):
+        return False
+    return True
+
+
 def extract_status_filter(text: str) -> str | None:
     """Extract a problem status filter value from a message using STATUS_KEYWORD_MAP.
 
@@ -655,59 +887,78 @@ def extract_status_filter(text: str) -> str | None:
     return None
 
 
-def detect_intent_with_confidence(text: str) -> tuple[ChatIntent, IntentConfidence]:
+def detect_intent_with_confidence(text: str) -> tuple[ChatIntent, IntentConfidence, bool]:
+    """Detect intent with confidence using rule-based checks.
+
+    Returns a 3-tuple of (intent, confidence, offtopic_guard_fired).
+    offtopic_guard_fired is True only when _is_clearly_offtopic() triggered.
+    """
     normalized = _normalize_intent_text(text or "")
-    # Problem and recommendation shortcuts — checked first because they are
-    # more specific than the ticket-focused checks below.
+
+    # ── Structured ITSM intents — checked BEFORE the knowledge fast-path ──
+    # "what are the problems?" has prefix "what are" + ITSM term "problem",
+    # so it would match _is_knowledge_query if not intercepted here first.
     problem_id = extract_problem_id(text or "")
-    # When the text contains a problem ID but also looks like a guidance/fix
-    # request (e.g. "How do I fix PB-0001?"), route to general guidance rather
-    # than the detail shortcut — the resolver/advisor should handle it.
     if problem_id and (_looks_like_guidance_request(normalized) or _is_problem_analysis_request(normalized)):
-        return ChatIntent.general, IntentConfidence.high
+        return ChatIntent.general, IntentConfidence.high, False
     if problem_id and _is_problem_drill_down_request(normalized):
-        return ChatIntent.problem_drill_down, IntentConfidence.high
+        return ChatIntent.problem_drill_down, IntentConfidence.high, False
     if _is_problem_detail_request(normalized, has_problem_id=bool(problem_id)):
-        return ChatIntent.problem_detail, IntentConfidence.high
-    # When text matches problem drill-down but also mentions similar/related
-    # tickets in the context of a specific ticket (not a problem), do not
-    # route to shortcut_problem_linked_tickets — let the resolver handle it.
+        return ChatIntent.problem_detail, IntentConfidence.high, False
     if _is_problem_drill_down_request(normalized) and not any(
         token in normalized for token in ["similar", "semblable", "ressemble"]
     ):
-        return ChatIntent.problem_drill_down, IntentConfidence.high
+        return ChatIntent.problem_drill_down, IntentConfidence.high, False
     if _is_problem_listing_request(normalized):
-        return ChatIntent.problem_listing, IntentConfidence.high
+        return ChatIntent.problem_listing, IntentConfidence.high, False
     if _is_recommendation_listing_request(normalized):
-        return ChatIntent.recommendation_listing, IntentConfidence.high
+        return ChatIntent.recommendation_listing, IntentConfidence.high, False
+
+    # ── ITSM knowledge query fast-path ────────────────────────────────────
+    # Routes "what is MFA", "qu'est-ce que le SLA" to the lightweight
+    # chitchat LLM instead of the full RAG pipeline.
+    # Runs after structured intent checks so listing requests like
+    # "what are the problems?" are not incorrectly caught here.
+    if _is_knowledge_query(normalized):
+        return ChatIntent.chitchat, IntentConfidence.high, False
     if _is_ticket_thread_request(normalized):
-        return ChatIntent.ticket_thread, IntentConfidence.high
+        return ChatIntent.ticket_thread, IntentConfidence.high, False
     # Existing checks below (unchanged)
     if _is_explicit_ticket_create_request(text or ""):
-        return ChatIntent.create_ticket, IntentConfidence.high
+        return ChatIntent.create_ticket, IntentConfidence.high, False
     if _is_recent_ticket_request(normalized):
-        return ChatIntent.recent_ticket, IntentConfidence.high
+        return ChatIntent.recent_ticket, IntentConfidence.high, False
     if _is_most_used_request(normalized):
-        return ChatIntent.most_used_tickets, IntentConfidence.high
+        return ChatIntent.most_used_tickets, IntentConfidence.high, False
     if _is_weekly_summary_request(normalized):
-        return ChatIntent.weekly_summary, IntentConfidence.high
+        return ChatIntent.weekly_summary, IntentConfidence.high, False
     if _is_critical_ticket_request(normalized):
-        return ChatIntent.critical_tickets, IntentConfidence.high
+        return ChatIntent.critical_tickets, IntentConfidence.high, False
     if _is_recurring_solution_request(normalized):
-        return ChatIntent.recurring_solutions, IntentConfidence.high
-    if _looks_like_info_request(normalized):
-        return ChatIntent.data_query, IntentConfidence.high
+        return ChatIntent.recurring_solutions, IntentConfidence.high, False
     if _has_explicit_guidance_keyword(normalized):
-        return ChatIntent.general, IntentConfidence.high
+        return ChatIntent.general, IntentConfidence.high, False
     if _looks_like_guidance_request(normalized):
-        return ChatIntent.general, IntentConfidence.medium
+        return ChatIntent.general, IntentConfidence.medium, False
+    if _looks_like_info_request(normalized):
+        return ChatIntent.data_query, IntentConfidence.high, False
+    if _looks_like_contextual_followup(normalized):
+        return ChatIntent.general, IntentConfidence.medium, False
     if _looks_like_data_query(normalized):
-        return ChatIntent.data_query, IntentConfidence.medium
+        return ChatIntent.data_query, IntentConfidence.medium, False
+    # Only unresolved, weak-signal prompts should hit the semantic off-topic
+    # guard. This keeps the deterministic rules easy to reason about.
+    if _should_apply_offtopic_guard(text or "", normalized):
+        try:
+            if _is_clearly_offtopic(normalized):
+                return ChatIntent.chitchat, IntentConfidence.high, True
+        except Exception as _guard_exc:  # noqa: BLE001
+            logger.info("Off-topic guard error; continuing normal routing: %s", _guard_exc)
     # Chitchat / off-topic — checked last so all specific shortcuts take priority.
     # Returns high confidence to skip the LLM intent-classification call.
     if is_chitchat_or_offtopic(text or ""):
-        return ChatIntent.chitchat, IntentConfidence.high
-    return ChatIntent.general, IntentConfidence.low
+        return ChatIntent.chitchat, IntentConfidence.high, False
+    return ChatIntent.general, IntentConfidence.low, False
 
 
 _VALID_LLM_INTENT_LABELS = frozenset({
@@ -890,7 +1141,7 @@ def _inventory_filter_meta(text: str, *, inventory_kind: str | None) -> dict[str
 
 
 def parse_chat_intent_details(text: str) -> ChatIntentDetails:
-    intent, confidence, source, guidance_requested = detect_intent_hybrid_details(text)
+    intent, confidence, source, guidance_requested, offtopic_guard = detect_intent_hybrid_details(text)
     normalized = _normalize_intent_text(text or "")
     ticket_id = extract_ticket_id(text or "")
     problem_id = extract_problem_id(text or "")
@@ -922,6 +1173,8 @@ def parse_chat_intent_details(text: str) -> ChatIntentDetails:
     elif intent == ChatIntent.data_query and _looks_like_ticket_inventory_target(normalized):
         inventory_kind = "tickets"
 
+    meta = _inventory_filter_meta(normalized, inventory_kind=inventory_kind)
+    meta["offtopic_guard"] = offtopic_guard
     return ChatIntentDetails(
         intent=intent,
         confidence=confidence,
@@ -930,58 +1183,49 @@ def parse_chat_intent_details(text: str) -> ChatIntentDetails:
         entity_kind=entity_kind,
         entity_id=entity_id,
         inventory_kind=inventory_kind,
-        filter_meta=_inventory_filter_meta(normalized, inventory_kind=inventory_kind),
+        filter_meta=meta,
     )
 
 
-def detect_intent_hybrid_details(text: str) -> tuple[ChatIntent, IntentConfidence, str, bool]:
+def detect_intent_hybrid_details(
+    text: str,
+) -> tuple[ChatIntent, IntentConfidence, str, bool, bool]:
     """Detect intent with confidence using rule-based detection first, LLM fallback second.
 
-    Returns a 4-tuple of (intent, confidence, source, is_guidance):
+    Returns a 5-tuple of (intent, confidence, source, is_guidance, offtopic_guard):
     - intent: the detected ChatIntent enum value.
     - confidence: IntentConfidence reflecting the actual detection quality.
-      When the LLM fallback is used, confidence is set to ``low`` rather than
-      the rule-based confidence, because the LLM fallback only fires when
-      rule-based confidence was already low.  This prevents the fallback from
-      appearing more confident than it actually is.
     - source: one of ``"rules"``, ``"rules_default"``, ``"llm_fallback"``.
     - is_guidance: True if the intent maps to the guidance/troubleshooting domain.
+    - offtopic_guard: True when the embedding off-topic guard fired.
 
     Args:
         text: Raw user message (not pre-normalized).
-
-    Returns:
-        4-tuple of (ChatIntent, IntentConfidence, source_str, is_guidance_bool).
     """
     normalized = _normalize_intent_text(text or "")
-    intent, confidence = detect_intent_with_confidence(normalized)
+    intent, confidence, offtopic_guard = detect_intent_with_confidence(normalized)
     if confidence == IntentConfidence.high:
         guidance = _coarse_label_from_rule_intent(intent, normalized) == "guidance"
-        return intent, confidence, "rules", guidance
+        return intent, confidence, "rules", guidance, offtopic_guard
     if confidence == IntentConfidence.medium and intent != ChatIntent.general:
         guidance = _coarse_label_from_rule_intent(intent, normalized) == "guidance"
-        return intent, confidence, "rules", guidance
+        return intent, confidence, "rules", guidance, offtopic_guard
 
     llm_label = _classify_intent_llm_label(text)
     if llm_label is None:
         guidance = _coarse_label_from_rule_intent(intent, normalized) == "guidance"
-        return intent, confidence, "rules_default", guidance
+        return intent, confidence, "rules_default", guidance, offtopic_guard
     llm_intent = _map_llm_label_to_intent(llm_label)
     guidance = llm_label == "guidance"
-    # LLM fallback only fires when rule confidence was already low.
-    # When LLM says "guidance" AND text already has partial guidance signal
-    # (e.g. action verbs + issue context), upgrade to medium — the phrase was
-    # just an unseen phrasing.  For truly ambiguous text with no guidance
-    # signal stay at low (LLM_FALLBACK_DEFAULT_CONFIDENCE).
     if guidance and _looks_like_guidance_request(normalized):
         llm_confidence = IntentConfidence.medium
     else:
         llm_confidence = IntentConfidence(LLM_FALLBACK_DEFAULT_CONFIDENCE)
-    return llm_intent, llm_confidence, "llm_fallback", guidance
+    return llm_intent, llm_confidence, "llm_fallback", guidance, False
 
 
 def detect_intent_hybrid(text: str) -> ChatIntent:
-    return detect_intent_hybrid_details(text)[0]
+    return detect_intent_hybrid_details(text)[0]  # 5-tuple; index 0 = intent
 
 
 def _is_recent_ticket_request(text: str) -> bool:

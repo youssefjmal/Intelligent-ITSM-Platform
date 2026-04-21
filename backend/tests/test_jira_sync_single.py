@@ -4,10 +4,11 @@ from __future__ import annotations
 import logging
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from app.integrations.jira.auto_reconcile import _run_once
-from app.integrations.jira.service import SyncCounts
+from app.integrations.jira.service import SyncCounts, _ensure_jira_auth
 from app.routers.integrations_jira import jira_sync_single
 
 
@@ -92,3 +93,29 @@ def test_jira_sync_single_propagates_value_error_as_bad_request(monkeypatch) -> 
             current_user=SimpleNamespace(id="u-1"),
             _require_admin=None,
         )
+
+
+def test_ensure_jira_auth_classifies_auth_failure() -> None:
+    request = httpx.Request("GET", "https://example.atlassian.net/rest/api/3/myself")
+    response = httpx.Response(401, request=request)
+    client = SimpleNamespace(get_myself=lambda: (_ for _ in ()).throw(httpx.HTTPStatusError("unauthorized", request=request, response=response)))
+
+    with pytest.raises(ValueError, match="jira_auth_failed"):
+        _ensure_jira_auth(client)
+
+
+def test_ensure_jira_auth_classifies_connectivity_failure() -> None:
+    request = httpx.Request("GET", "https://example.atlassian.net/rest/api/3/myself")
+    client = SimpleNamespace(get_myself=lambda: (_ for _ in ()).throw(httpx.ConnectError("boom", request=request)))
+
+    with pytest.raises(ValueError, match="jira_connectivity_failed"):
+        _ensure_jira_auth(client)
+
+
+def test_ensure_jira_auth_classifies_rate_limit_failure() -> None:
+    request = httpx.Request("GET", "https://example.atlassian.net/rest/api/3/myself")
+    response = httpx.Response(429, request=request)
+    client = SimpleNamespace(get_myself=lambda: (_ for _ in ()).throw(httpx.HTTPStatusError("rate limited", request=request, response=response)))
+
+    with pytest.raises(ValueError, match="jira_rate_limited"):
+        _ensure_jira_auth(client)

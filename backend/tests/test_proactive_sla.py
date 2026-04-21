@@ -175,3 +175,52 @@ def test_proactive_sla_constants_values():
     assert PROACTIVE_SLA_AT_RISK_RATIO_THRESHOLD <= 0.95
     assert PROACTIVE_SLA_DEDUP_WINDOW_MINUTES >= 10
     assert PROACTIVE_SLA_DEDUP_WINDOW_MINUTES <= 480
+
+
+def test_notify_at_risk_recipients_prefers_shared_ticket_routing(monkeypatch):
+    from app.services.sla import sla_monitor
+
+    db = MagicMock()
+    ticket = _make_ticket("TW-TEST-003")
+    recipients = [MagicMock(id="admin-1"), MagicMock(id="agent-1")]
+    created_rows = [MagicMock(), MagicMock()]
+
+    monkeypatch.setattr(
+        "app.services.notifications_service.resolve_ticket_recipients",
+        lambda *args, **kwargs: recipients,
+    )
+    monkeypatch.setattr(
+        "app.services.notifications_service.create_notifications_for_users",
+        lambda **kwargs: created_rows,
+    )
+    fallback = MagicMock()
+    monkeypatch.setattr("app.services.notifications_service.create_notification", fallback)
+
+    created = sla_monitor._notify_at_risk_recipients(db, ticket=ticket, ratio=0.91)
+
+    assert created == 2
+    fallback.assert_not_called()
+
+
+def test_notify_at_risk_recipients_uses_reporter_fallback_only_when_no_shared_recipients(monkeypatch):
+    from app.services.sla import sla_monitor
+
+    db = MagicMock()
+    ticket = _make_ticket("TW-TEST-004")
+    ticket.reporter_id = "11111111-1111-1111-1111-111111111111"
+
+    monkeypatch.setattr(
+        "app.services.notifications_service.resolve_ticket_recipients",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "app.services.notifications_service.create_notifications_for_users",
+        lambda **kwargs: [],
+    )
+    fallback = MagicMock()
+    monkeypatch.setattr("app.services.notifications_service.create_notification", fallback)
+
+    created = sla_monitor._notify_at_risk_recipients(db, ticket=ticket, ratio=0.91)
+
+    assert created == 1
+    fallback.assert_called_once()

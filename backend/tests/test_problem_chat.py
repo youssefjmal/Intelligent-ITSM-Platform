@@ -39,7 +39,7 @@ from app.services.ai import orchestrator
 
 def test_problem_listing_intent_fr():
     """'quels sont les problemes' maps to problem_listing with high confidence."""
-    intent, confidence = detect_intent_with_confidence("quels sont les problèmes")
+    intent, confidence, _ = detect_intent_with_confidence("quels sont les problèmes")
     assert intent == ChatIntent.problem_listing
     assert confidence == IntentConfidence.high
 
@@ -51,14 +51,14 @@ def test_problem_listing_intent_fr():
 
 def test_problem_listing_intent_en():
     """'show me problems' maps to problem_listing with high confidence."""
-    intent, confidence = detect_intent_with_confidence("show me problems")
+    intent, confidence, _ = detect_intent_with_confidence("show me problems")
     assert intent == ChatIntent.problem_listing
     assert confidence == IntentConfidence.high
 
 
 def test_problem_listing_intent_current_problems():
     """Natural inventory phrasing like 'current problems' should list problems."""
-    intent, confidence = detect_intent_with_confidence("current problems")
+    intent, confidence, _ = detect_intent_with_confidence("current problems")
     assert intent == ChatIntent.problem_listing
     assert confidence == IntentConfidence.high
 
@@ -82,14 +82,14 @@ def test_known_error_status_filter():
 
 def test_problem_detail_by_id():
     """A message containing PB-MOCK-01 maps to problem_detail."""
-    intent, confidence = detect_intent_with_confidence("tell me about PB-MOCK-01")
+    intent, confidence, _ = detect_intent_with_confidence("tell me about PB-MOCK-01")
     assert intent == ChatIntent.problem_detail
     assert confidence == IntentConfidence.high
 
 
 def test_problem_analysis_query_by_id_prefers_general_guidance():
     """Cause/remediation questions with PB-* should use the richer guidance path."""
-    intent, confidence = detect_intent_with_confidence("why is PB-MOCK-01 happening?")
+    intent, confidence, _ = detect_intent_with_confidence("why is PB-MOCK-01 happening?")
     assert intent == ChatIntent.general
     assert confidence == IntentConfidence.high
 
@@ -101,14 +101,14 @@ def test_problem_analysis_query_by_id_prefers_general_guidance():
 
 def test_problem_drill_down_follow_up():
     """'show linked tickets' maps to problem_drill_down."""
-    intent, confidence = detect_intent_with_confidence("show linked tickets")
+    intent, confidence, _ = detect_intent_with_confidence("show linked tickets")
     assert intent == ChatIntent.problem_drill_down
     assert confidence == IntentConfidence.high
 
 
 def test_problem_drill_down_with_explicit_problem_id():
     """Explicit PB-* linked-ticket requests should stay on the drill-down route."""
-    intent, confidence = detect_intent_with_confidence("show linked tickets for PB-MOCK-01")
+    intent, confidence, _ = detect_intent_with_confidence("show linked tickets for PB-MOCK-01")
     assert intent == ChatIntent.problem_drill_down
     assert confidence == IntentConfidence.high
 
@@ -131,14 +131,14 @@ def test_problem_not_found():
 
 def test_recommendation_listing_intent():
     """'show me recommendations' maps to recommendation_listing."""
-    intent, confidence = detect_intent_with_confidence("show me recommendations")
+    intent, confidence, _ = detect_intent_with_confidence("show me recommendations")
     assert intent == ChatIntent.recommendation_listing
     assert confidence == IntentConfidence.high
 
 
 def test_recommendation_listing_intent_current_recommendations():
     """Natural inventory phrasing like 'current recommendations' should list recommendations."""
-    intent, confidence = detect_intent_with_confidence("current recommendations")
+    intent, confidence, _ = detect_intent_with_confidence("current recommendations")
     assert intent == ChatIntent.recommendation_listing
     assert confidence == IntentConfidence.high
 
@@ -150,7 +150,7 @@ def test_recommendation_listing_intent_current_recommendations():
 
 def test_problem_false_positive_guard():
     """'there are no problems with this implementation' must NOT trigger problem_listing."""
-    intent, _ = detect_intent_with_confidence("there are no problems with this implementation")
+    intent, *_ = detect_intent_with_confidence("there are no problems with this implementation")
     assert intent != ChatIntent.problem_listing
 
 
@@ -302,3 +302,52 @@ def test_resolve_chat_guidance_reuses_last_problem_context_for_follow_up(monkeyp
     assert calls["problem_id"] == "PB-MOCK-01"
     assert context.entity_type == "problem"
     assert context.entity_id == "PB-MOCK-01"
+
+
+# ---------------------------------------------------------------------------
+# 9. FR problem listing returns response_payload with type="problem_list"
+# ---------------------------------------------------------------------------
+
+
+def test_handle_chat_problem_listing_fr_returns_payload(monkeypatch):
+    """handle_chat with FR listing request must return response_payload.type == 'problem_list'."""
+    mock_problem = SimpleNamespace(
+        id="PB-001",
+        title="Serveur mail en panne",
+        status=SimpleNamespace(value="investigating"),
+        category=SimpleNamespace(value="email"),
+        occurrences_count=3,
+        active_count=2,
+        last_seen_at=dt.datetime.now(dt.timezone.utc),
+        workaround="Redémarrer le service.",
+    )
+
+    mock_query = MagicMock()
+    mock_query.filter.return_value = mock_query
+    mock_query.order_by.return_value = mock_query
+    mock_query.limit.return_value = mock_query
+    mock_query.all.return_value = [mock_problem]
+
+    mock_db = MagicMock()
+    mock_db.query.return_value = mock_query
+
+    monkeypatch.setattr(orchestrator, "list_tickets_for_user", lambda db, user: [])
+    monkeypatch.setattr(orchestrator, "list_assignees", lambda db: [])
+    monkeypatch.setattr(orchestrator, "compute_stats", lambda rows: {"total": 0})
+
+    response = orchestrator.handle_chat(
+        ChatRequest(
+            messages=[ChatMessage(role="user", content="Quels sont les problèmes ?")],
+            locale="fr",
+        ),
+        db=mock_db,
+        current_user=SimpleNamespace(role=UserRole.agent, name="Agent Test"),
+    )
+
+    assert response.response_payload is not None, (
+        "response_payload must not be None for problem_listing intent"
+    )
+    assert response.response_payload.type == "problem_list", (
+        f"Expected type='problem_list', got type='{response.response_payload.type}'"
+    )
+    assert response.response_payload.total_count == 1

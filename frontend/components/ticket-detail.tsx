@@ -58,9 +58,14 @@ import {
   fetchTicketHistory,
   fetchSimilarTickets,
   fetchTicketSummary,
+  fetchTicketKnowledgeDraft,
+  fetchExistingKnowledgeDraft,
+  publishKnowledgeDraft,
   fetchResolutionSuggestion,
   type SimilarTicket,
   type TicketHistoryEvent,
+  type TicketKnowledgeDraftResult,
+  type KnowledgeDraftPublishResult,
   type TicketAiSlaRiskLatest,
   type TicketAIRecommendationsPayload,
   type SummaryResult,
@@ -90,6 +95,7 @@ import {
   confidenceBandClass,
   confidenceBandLabel,
   formatConfidencePercent,
+  isLowTrustFallbackMode,
   noStrongMatchMessage,
   recommendationModeLabel,
   recommendationStatusLabel,
@@ -286,6 +292,11 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
   // Feature 5: Resolution suggestion state
   const [resolutionSuggestion, setResolutionSuggestion] = useState<ResolutionSuggestionResult | null>(null)
   const [suggestionDismissed, setSuggestionDismissed] = useState(false)
+  const [knowledgeDraft, setKnowledgeDraft] = useState<TicketKnowledgeDraftResult | null>(null)
+  const [knowledgeDraftLoading, setKnowledgeDraftLoading] = useState(false)
+  const [knowledgeDraftError, setKnowledgeDraftError] = useState<string | null>(null)
+  const [knowledgeDraftPublishing, setKnowledgeDraftPublishing] = useState(false)
+  const [knowledgeDraftPublished, setKnowledgeDraftPublished] = useState<KnowledgeDraftPublishResult | null>(null)
 
   // Duplicate detection state
   const [duplicateCandidates, setDuplicateCandidates] = useState<Array<{ticket_id: string; title: string; status: string; similarity_score: number}>>([])
@@ -363,6 +374,25 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
   const llmGeneralAdvisory = aiSuggestions?.resolutionAdvice?.llmGeneralAdvisory || null
   const advisoryNextActions = aiSuggestions?.nextBestActions || aiSuggestions?.resolutionAdvice?.nextBestActions || []
   const advisoryValidationSteps = aiSuggestions?.validationSteps || aiSuggestions?.resolutionAdvice?.validationSteps || []
+  const aiOnlyWarning = aiSuggestions?.resolutionAdvice?.aiOnlyWarning ?? false
+  const kbEvidenceCount = useMemo(() => {
+    return (aiSuggestions?.evidenceSources || []).filter((item) => {
+      const evidenceType = String(item.evidenceType || "").toLowerCase()
+      const reference = String(item.reference || "").toLowerCase()
+      const title = String(item.title || "").toLowerCase()
+      return (
+        evidenceType.includes("kb") ||
+        evidenceType.includes("knowledge") ||
+        reference.includes("kb") ||
+        reference.includes("knowledge") ||
+        title.includes("kb") ||
+        title.includes("knowledge")
+      )
+    }).length
+  }, [aiSuggestions?.evidenceSources])
+  const hasKnowledgeBaseSupport =
+    recommendationDisplayMode !== "llm_general_knowledge" &&
+    (aiSuggestions?.recommendationMode === "kb_grounded" || kbEvidenceCount > 0)
 
   const applyAiFeedbackResult = useCallback((result: RecommendationFeedbackResponse) => {
     setAiSuggestions((current) => {
@@ -525,6 +555,8 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
   const canResolve = hasPermission("resolve_ticket")
   const canEditTriage = hasPermission("edit_ticket_triage")
   const canViewHistory = hasPermission("view_admin")
+  const canGenerateKnowledgeDraft = canResolve || canEditTriage
+  const isResolvedTicket = ticketData.status === "resolved" || ticketData.status === "closed"
 
   useEffect(() => {
     setTicketData(ticket)
@@ -537,6 +569,9 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
     setStatusError(null)
     setTriageError(null)
     setStatusComment("")
+    setKnowledgeDraft(null)
+    setKnowledgeDraftError(null)
+    setKnowledgeDraftPublished(null)
   }, [ticket])
 
   useEffect(() => {
@@ -647,6 +682,59 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
     applyAiFeedbackResult,
     locale,
   ])
+
+  const loadKnowledgeDraft = useCallback(async (force = false) => {
+    if (!isResolvedTicket) return
+    if (!force && knowledgeDraft) return
+    setKnowledgeDraftLoading(true)
+    setKnowledgeDraftError(null)
+    try {
+      const draft = await fetchTicketKnowledgeDraft(ticketData.id, locale)
+      setKnowledgeDraft(draft)
+    } catch {
+      setKnowledgeDraftError(
+        locale === "fr"
+          ? "Impossible de generer le brouillon de connaissance."
+          : "Unable to generate the knowledge draft.",
+      )
+    } finally {
+      setKnowledgeDraftLoading(false)
+    }
+  }, [isResolvedTicket, knowledgeDraft, locale, ticketData.id])
+
+  // Load persisted draft on mount so it survives page reloads
+  useEffect(() => {
+    if (!isResolvedTicket) return
+    fetchExistingKnowledgeDraft(ticketData.id).then((draft) => {
+      if (!draft) return
+      setKnowledgeDraft(draft)
+      if (draft.status === "published") {
+        setKnowledgeDraftPublished({
+          id: draft.id ?? "",
+          ticketId: ticketData.id,
+          jiraIssueKey: draft.jiraIssueKey ?? null,
+          publishedAt: draft.publishedAt ?? "",
+          kbChunkId: null,
+        })
+      }
+    }).catch(() => { /* silently ignore — draft just won't pre-populate */ })
+  }, [isResolvedTicket, ticketData.id])
+
+  const handlePublishKnowledgeDraft = useCallback(async () => {
+    setKnowledgeDraftPublishing(true)
+    try {
+      const result = await publishKnowledgeDraft(ticketData.id)
+      setKnowledgeDraftPublished(result)
+    } catch {
+      setKnowledgeDraftError(
+        locale === "fr"
+          ? "Impossible de publier le brouillon."
+          : "Unable to publish the draft.",
+      )
+    } finally {
+      setKnowledgeDraftPublishing(false)
+    }
+  }, [locale, ticketData.id])
 
   useEffect(() => {
     let mounted = true
@@ -1324,6 +1412,18 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                     <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-primary">
                       {t("form.recommendedSolutions")}
                     </p>
+
+                    {aiOnlyWarning && (
+                      <div className="mb-3 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 dark:border-amber-700 dark:bg-amber-950/40">
+                        <span className="mt-0.5 shrink-0 text-amber-500">⚠</span>
+                        <p className="text-[11px] leading-relaxed text-amber-800 dark:text-amber-300">
+                          {locale === "fr"
+                            ? "Cette recommandation est générée entièrement par l'IA. Aucun ticket similaire résolu n'a été trouvé — vérifiez avant d'appliquer."
+                            : "This recommendation is generated entirely by AI. No matching resolved ticket was found — verify before applying."}
+                        </p>
+                      </div>
+                    )}
+
                     {!primaryAiAction && recommendationDisplayMode !== "no_strong_match" ? (
                       <p className="text-xs text-muted-foreground">{t("detail.aiRecommendationsEmpty")}</p>
                     ) : (
@@ -1364,15 +1464,11 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                                 {locale === "fr" ? "Statut" : "Status"}
                               </p>
                               <div className="mt-2 flex flex-wrap gap-2">
-                                {recommendationDisplayMode === "no_strong_match" ? (
+                                {isLowTrustFallbackMode(recommendationDisplayMode) ? (
                                   <Badge className="border border-slate-300 bg-slate-100 text-[10px] text-slate-700">
-                                    {locale === "fr" ? "Sans match fort" : "No strong match"}
-                                  </Badge>
-                                ) : recommendationDisplayMode === "service_request" ? (
-                                  <Badge className="border border-sky-300 bg-sky-100 text-[10px] text-sky-800">
                                     {recommendationStatusLabel(aiSuggestions.tentative, locale, recommendationDisplayMode)}
                                   </Badge>
-                                ) : recommendationDisplayMode === "llm_general_knowledge" ? (
+                                ) : recommendationDisplayMode === "service_request" ? (
                                   <Badge className="border border-sky-300 bg-sky-100 text-[10px] text-sky-800">
                                     {recommendationStatusLabel(aiSuggestions.tentative, locale, recommendationDisplayMode)}
                                   </Badge>
@@ -1395,8 +1491,31 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                             locale={locale}
                             displayMode={recommendationDisplayMode}
                             action={primaryAiAction}
+                            fallback={aiSuggestions.resolutionAdvice?.fallbackAction || null}
                             className="mt-3"
                           />
+
+                          {hasKnowledgeBaseSupport ? (
+                            <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50/80 px-3 py-2.5">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge className="border border-sky-300 bg-white text-[10px] font-semibold text-sky-700">
+                                  {locale === "fr" ? "Base de connaissance" : "Knowledge base"}
+                                </Badge>
+                                {kbEvidenceCount > 0 ? (
+                                  <span className="text-[11px] font-medium text-sky-800">
+                                    {locale === "fr"
+                                      ? `${kbEvidenceCount} source(s) KB reliee(s) a cette recommandation`
+                                      : `${kbEvidenceCount} KB source(s) linked to this recommendation`}
+                                  </span>
+                                ) : null}
+                              </div>
+                              <p className="mt-2 text-xs leading-relaxed text-sky-900">
+                                {locale === "fr"
+                                  ? "Cette assistance est appuyee par la base de connaissance et s'affiche distinctement des signaux issus de l'historique des tickets."
+                                  : "This guidance is supported by the knowledge base and is shown separately from ticket-history evidence."}
+                              </p>
+                            </div>
+                          ) : null}
 
                           {recommendationDisplayMode === "llm_general_knowledge" ? (
                             <LLMAdvisoryBlock
@@ -1802,6 +1921,148 @@ export function TicketDetail({ ticket }: TicketDetailProps) {
                       </p>
                     </div>
                   )}
+                  {isResolvedTicket ? (
+                    <div className="mb-3 rounded-xl border border-sky-200 bg-sky-50/80 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">
+                            {locale === "fr" ? "Brouillon de base de connaissance" : "Knowledge base draft"}
+                          </p>
+                          <p className="mt-1 text-[11px] text-sky-900/80">
+                            {locale === "fr"
+                              ? "Generez un brouillon reutilisable a partir de ce ticket resolu. Le contenu reste local et doit etre valide avant publication."
+                              : "Generate a reusable draft from this resolved ticket. The content stays local and must be validated before publication."}
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="border-sky-300 bg-white text-sky-700 hover:bg-sky-100"
+                          disabled={!canGenerateKnowledgeDraft || knowledgeDraftLoading}
+                          onClick={() => loadKnowledgeDraft(true)}
+                        >
+                          {knowledgeDraftLoading
+                            ? (locale === "fr" ? "Generation..." : "Generating...")
+                            : knowledgeDraft
+                              ? (locale === "fr" ? "Regenerer" : "Regenerate")
+                              : (locale === "fr" ? "Generer le brouillon" : "Generate draft")}
+                        </Button>
+                      </div>
+                      {knowledgeDraftError ? (
+                        <p className="mt-2 text-[11px] text-destructive">{knowledgeDraftError}</p>
+                      ) : null}
+                      {knowledgeDraft ? (
+                        <div className="mt-3 space-y-3 rounded-lg border border-sky-200 bg-white/90 p-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge className="border border-sky-300 bg-sky-100 text-[10px] text-sky-800">
+                              {knowledgeDraft.source === "llm"
+                                ? (locale === "fr" ? "Genere par IA" : "AI generated")
+                                : (locale === "fr" ? "Brouillon de secours" : "Fallback draft")}
+                            </Badge>
+                            <Badge variant="outline" className="text-[10px]">
+                              {Math.round(knowledgeDraft.confidence * 100)}%
+                            </Badge>
+                            <span className="text-[11px] text-muted-foreground">
+                              {new Date(knowledgeDraft.generatedAt).toLocaleString(localeCode)}
+                            </span>
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              {locale === "fr" ? "Titre" : "Title"}
+                            </p>
+                            <p className="mt-1 text-sm font-medium text-foreground">{knowledgeDraft.title}</p>
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              {locale === "fr" ? "Resume" : "Summary"}
+                            </p>
+                            <p className="mt-1 text-sm text-foreground">{knowledgeDraft.summary}</p>
+                          </div>
+                          {knowledgeDraft.symptoms.length > 0 ? (
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                {locale === "fr" ? "Symptomes" : "Symptoms"}
+                              </p>
+                              <ul className="mt-1 space-y-1 text-sm text-foreground">
+                                {knowledgeDraft.symptoms.map((item, index) => (
+                                  <li key={`kd-symptom-${index}`} className="flex gap-2">
+                                    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-sky-500" />
+                                    <span>{item}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
+                          {knowledgeDraft.rootCause ? (
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                {locale === "fr" ? "Cause racine" : "Root cause"}
+                              </p>
+                              <p className="mt-1 text-sm text-foreground">{knowledgeDraft.rootCause}</p>
+                            </div>
+                          ) : null}
+                          {knowledgeDraft.workaround ? (
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                {locale === "fr" ? "Contournement" : "Workaround"}
+                              </p>
+                              <p className="mt-1 text-sm text-foreground">{knowledgeDraft.workaround}</p>
+                            </div>
+                          ) : null}
+                          {knowledgeDraft.resolutionSteps.length > 0 ? (
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                {locale === "fr" ? "Etapes de resolution" : "Resolution steps"}
+                              </p>
+                              <ol className="mt-1 space-y-1 text-sm text-foreground">
+                                {knowledgeDraft.resolutionSteps.map((item, index) => (
+                                  <li key={`kd-step-${index}`} className="flex gap-2">
+                                    <span className="font-semibold text-sky-700">{index + 1}.</span>
+                                    <span>{item}</span>
+                                  </li>
+                                ))}
+                              </ol>
+                            </div>
+                          ) : null}
+                          {knowledgeDraft.tags.length > 0 ? (
+                            <div className="flex flex-wrap gap-2">
+                              {knowledgeDraft.tags.map((tag) => (
+                                <Badge key={`kd-tag-${tag}`} variant="outline" className="text-[10px]">
+                                  {tag}
+                                </Badge>
+                              ))}
+                            </div>
+                          ) : null}
+                          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+                            {knowledgeDraft.reviewNote}
+                          </p>
+                          <div className="flex items-center gap-3 pt-1">
+                            {knowledgeDraftPublished ? (
+                              <span className="text-[12px] font-medium text-emerald-600">
+                                {locale === "fr" ? "Publie" : "Published"}
+                                {knowledgeDraftPublished.jiraIssueKey
+                                  ? ` — ${knowledgeDraftPublished.jiraIssueKey}`
+                                  : ""}
+                              </span>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="default"
+                                className="bg-emerald-600 text-white hover:bg-emerald-700"
+                                disabled={knowledgeDraftPublishing}
+                                onClick={handlePublishKnowledgeDraft}
+                              >
+                                {knowledgeDraftPublishing
+                                  ? (locale === "fr" ? "Publication..." : "Publishing...")
+                                  : (locale === "fr" ? "Publier dans la KB" : "Publish to KB")}
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <Textarea
                     value={statusComment}
                     onChange={(event) => setStatusComment(event.target.value)}

@@ -509,3 +509,80 @@ class JiraClient:
                 response.raise_for_status()
                 return True
         return False
+
+    def create_kb_article(
+        self,
+        project_key: str,
+        title: str,
+        body_text: str,
+        source_ticket_id: str,
+    ) -> dict:
+        """Create a Jira issue in the KB project to represent a published knowledge article.
+
+        Tagged with kb_article and kb_source_{ticket_id} labels for KB indexer identification.
+        """
+        description_adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": body_text}],
+                }
+            ],
+        }
+        safe_ticket_id = source_ticket_id.replace(" ", "_")[:50]
+        payload = {
+            "fields": {
+                "project": {"key": project_key},
+                "summary": title[:255],
+                "issuetype": {"name": settings.JIRA_KB_ARTICLE_ISSUE_TYPE},
+                "description": description_adf,
+                "labels": [f"kb_source_{safe_ticket_id}", "kb_article"],
+            }
+        }
+        return self._request("POST", "/rest/api/3/issue", json=payload)
+
+    def create_confluence_kb_article(
+        self,
+        space_key: str,
+        title: str,
+        body_html: str,
+        source_ticket_id: str,
+    ) -> dict:
+        """Publish a knowledge article as a native Confluence page in the JSM-linked space.
+
+        The article appears immediately in the JSM Knowledge Base sidebar because it is
+        created directly in the Confluence space that is linked to the service project.
+
+        Uses the same JIRA_EMAIL + JIRA_API_TOKEN credentials — Atlassian Cloud shares
+        one identity layer across Jira and Confluence on the same site.
+
+        Returns a dict with:
+            ``id``  — Confluence page ID (numeric string, stored as jira_issue_key)
+            ``url`` — full browser URL of the published page
+        """
+        payload = {
+            "type": "page",
+            "title": title[:255],
+            "space": {"key": space_key},
+            "body": {
+                "storage": {
+                    "value": body_html,
+                    "representation": "storage",
+                }
+            },
+            "metadata": {
+                "properties": {
+                    "content-appearance-draft": {"value": "full-width"},
+                    "content-appearance-published": {"value": "full-width"},
+                }
+            },
+        }
+        # Confluence REST API lives at /wiki/rest/api/content on the same Atlassian domain.
+        result = self._request("POST", "/wiki/rest/api/content", json=payload)
+        page_id = str(result.get("id", ""))
+        links = result.get("_links", {})
+        base = links.get("base", self.base_url)
+        webui = links.get("webui", f"/wiki/spaces/{space_key}/pages/{page_id}")
+        return {"id": page_id, "url": f"{base}{webui}"}

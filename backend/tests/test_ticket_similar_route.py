@@ -50,6 +50,8 @@ def test_get_similar_tickets_uses_shared_resolver_retrieval(monkeypatch) -> None
     monkeypatch.setattr(tickets_router, "get_ticket_for_user", lambda db, ticket_id, user: source_ticket)
     monkeypatch.setattr(tickets_router, "list_tickets_for_user", lambda db, user: [source_ticket, visible_match, secondary_match])
     monkeypatch.setattr(tickets_router, "resolve_ticket_advice", fake_resolve_ticket_advice)
+    monkeypatch.setattr(tickets_router._cache, "get", lambda key: None)
+    monkeypatch.setattr(tickets_router._cache, "set", lambda *args, **kwargs: True)
 
     response = tickets_router.get_similar_tickets(
         ticket_id=source_ticket.id,
@@ -113,6 +115,8 @@ def test_get_similar_tickets_uses_cross_check_for_contextual_service_request_det
     monkeypatch.setattr(tickets_router, "get_ticket_for_user", lambda db, ticket_id, user: source_ticket)
     monkeypatch.setattr(tickets_router, "list_tickets_for_user", lambda db, user: [source_ticket, service_request_match, incident_match])
     monkeypatch.setattr(tickets_router, "resolve_ticket_advice", fake_resolve_ticket_advice)
+    monkeypatch.setattr(tickets_router._cache, "get", lambda key: None)
+    monkeypatch.setattr(tickets_router._cache, "set", lambda *args, **kwargs: True)
 
     response = tickets_router.get_similar_tickets(
         ticket_id=source_ticket.id,
@@ -123,3 +127,44 @@ def test_get_similar_tickets_uses_cross_check_for_contextual_service_request_det
     )
 
     assert [item.id for item in response.matches] == [service_request_match.id]
+
+
+def test_get_similar_tickets_filters_weak_open_cross_family_matches(monkeypatch) -> None:
+    source_ticket = _ticket("TW-MOCK-400", "PostgreSQL process killed by OOM killer repeatedly")
+    source_ticket.category = TicketCategory.infrastructure
+    source_ticket.ticket_type = TicketType.incident
+    weak_open_candidate = _ticket("TW-MOCK-401", "VPN reconnect instability after policy change")
+    weak_open_candidate.category = TicketCategory.network
+    weak_open_candidate.ticket_type = TicketType.incident
+    weak_open_candidate.status = TicketStatus.open
+    strong_candidate = _ticket("TW-MOCK-402", "PostgreSQL OOM crash affecting reporting jobs")
+    strong_candidate.category = TicketCategory.infrastructure
+    strong_candidate.ticket_type = TicketType.incident
+    strong_candidate.status = TicketStatus.resolved
+    current_user = SimpleNamespace(id="agent-1", role=UserRole.agent)
+
+    def fake_resolve_ticket_advice(db, ticket, **kwargs):
+        return SimpleNamespace(
+            retrieval={
+                "similar_tickets": [
+                    {"id": weak_open_candidate.id, "similarity_score": 0.41},
+                    {"id": strong_candidate.id, "similarity_score": 0.74},
+                ]
+            }
+        )
+
+    monkeypatch.setattr(tickets_router, "get_ticket_for_user", lambda db, ticket_id, user: source_ticket)
+    monkeypatch.setattr(tickets_router, "list_tickets_for_user", lambda db, user: [source_ticket, weak_open_candidate, strong_candidate])
+    monkeypatch.setattr(tickets_router, "resolve_ticket_advice", fake_resolve_ticket_advice)
+    monkeypatch.setattr(tickets_router._cache, "get", lambda key: None)
+    monkeypatch.setattr(tickets_router._cache, "set", lambda *args, **kwargs: True)
+
+    response = tickets_router.get_similar_tickets(
+        ticket_id=source_ticket.id,
+        limit=5,
+        min_score=0.3,
+        db=object(),
+        current_user=current_user,
+    )
+
+    assert [item.id for item in response.matches] == [strong_candidate.id]

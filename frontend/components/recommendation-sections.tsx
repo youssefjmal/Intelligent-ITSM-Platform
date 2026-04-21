@@ -29,7 +29,7 @@ const DISPLAY_MODE_TOOLTIPS: Record<
     fr: "Fondé sur des preuves : cette suggestion s'appuie sur des tickets résolus ou des articles de base de connaissances. Vérifiez avant d'appliquer.",
   },
   tentative_diagnostic: {
-    en: "Tentative: evidence exists but is not conclusive. Treat this as a starting point, not a confirmed fix. Verify before applying.",
+    en: "Diagnostic next step: evidence exists but is not conclusive. Use this to reduce uncertainty before broader remediation.",
     fr: "Provisoire : des indices existent mais ne sont pas concluants. Utilisez ceci comme point de départ. Vérifiez avant d'appliquer.",
   },
 }
@@ -84,6 +84,10 @@ export type RecommendationDisplayMode =
   | "service_request"
   | "llm_general_knowledge"
   | "no_strong_match"
+
+export function isLowTrustFallbackMode(displayMode?: RecommendationDisplayMode | string | null): boolean {
+  return displayMode === "no_strong_match" || displayMode === "llm_general_knowledge"
+}
 
 export type RecommendationEvidenceItem = {
   evidenceType: string
@@ -188,8 +192,8 @@ export function recommendationStatusLabel(
   if (displayMode === "service_request") {
     return locale === "fr" ? "Workflow planifie" : "Planned workflow"
   }
-  if (displayMode === "llm_general_knowledge") {
-    return locale === "fr" ? "Avis general prudent" : "Low-trust advisory"
+  if (isLowTrustFallbackMode(displayMode)) {
+    return locale === "fr" ? "Repli guide par l'IA" : "AI-guided fallback"
   }
   if (tentative) return locale === "fr" ? "Tentative" : "Tentative"
   return locale === "fr" ? "Validee" : "Validated"
@@ -205,21 +209,16 @@ export function recommendationDisplayTitle(
   if (displayMode === "tentative_diagnostic") {
     return locale === "fr" ? "Etape diagnostique suggeree" : "Suggested diagnostic step"
   }
-  if (displayMode === "no_strong_match") {
-    return locale === "fr" ? "Aucune solution forte" : "No strong match"
-  }
-  if (displayMode === "llm_general_knowledge") {
-    return locale === "fr"
-      ? LLM_ADVISORY_STRINGS.headerFr
-      : LLM_ADVISORY_STRINGS.headerEn
+  if (isLowTrustFallbackMode(displayMode)) {
+    return locale === "fr" ? "Etape de repli guidee par l'IA" : "AI-guided fallback step"
   }
   return locale === "fr" ? "Action recommandee" : "Recommended action"
 }
 
 export function noStrongMatchMessage(locale: RecommendationLocale): string {
   return locale === "fr"
-    ? "Aucune solution appuyee par des preuves fortes n'est disponible pour l'instant."
-    : "No strong evidence-backed solution available yet."
+    ? "Aucun match historique fort n'a ete trouve. Utilisez cette etape de repli avec verification."
+    : "No strong historical match was found. Use this fallback step with verification."
 }
 
 export function primaryEvidenceType(
@@ -235,7 +234,7 @@ export function recommendationDisplayText(
   fallback?: string | null,
 ): string {
   if (displayMode === "no_strong_match") {
-    return noStrongMatchMessage(locale)
+    return String(action || fallback || noStrongMatchMessage(locale)).trim()
   }
   return String(action || fallback || "").trim()
 }
@@ -360,7 +359,11 @@ export function RecommendationActionBlock({
             <p className="mt-2 text-sm font-medium leading-relaxed text-foreground">
               {action}
             </p>
-          ) : null}
+          ) : (
+            <p className="mt-2 text-sm font-medium leading-relaxed text-foreground">
+              {noStrongMatchMessage(locale)}
+            </p>
+          )}
           <ol className={`space-y-1.5 pl-0 ${action ? "mt-3" : "mt-2"}`}>
             {NO_STRONG_MATCH_STEPS[locale].map((step, index) => (
               <li key={`nsm-step-${index}`} className="flex gap-2 text-xs leading-relaxed text-muted-foreground">

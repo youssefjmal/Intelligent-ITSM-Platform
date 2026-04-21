@@ -18,6 +18,12 @@ def list_users(db: Session) -> list[User]:
     return db.query(User).order_by(User.created_at.desc()).all()
 
 
+def _normalize_assignable_role(role: UserRole) -> UserRole:
+    # Old databases may still contain the deprecated viewer value; persist the
+    # active customer role instead so new writes stop spreading the alias.
+    return UserRole.user if role == UserRole.viewer else role
+
+
 def update_role(db: Session, user_id: str, role: UserRole) -> User | None:
     try:
         user_uuid = UUID(user_id)
@@ -27,7 +33,8 @@ def update_role(db: Session, user_id: str, role: UserRole) -> User | None:
     if not user:
         logger.warning("User role update failed (not found): %s", user_id)
         return None
-    user.role = role
+    normalized_role = _normalize_assignable_role(role)
+    user.role = normalized_role
     db.add(user)
     db.flush()
     try:
@@ -38,7 +45,7 @@ def update_role(db: Session, user_id: str, role: UserRole) -> User | None:
         raise
     db.commit()
     db.refresh(user)
-    logger.info("User role updated: %s -> %s", user.email, role.value)
+    logger.info("User role updated: %s -> %s", user.email, normalized_role.value)
     return user
 
 

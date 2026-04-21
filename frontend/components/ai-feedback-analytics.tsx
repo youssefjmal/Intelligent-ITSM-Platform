@@ -56,13 +56,13 @@ function formatDisplayModeLabel(mode: string, locale: "fr" | "en"): string {
     return locale === "fr" ? "Action appuyee" : "Evidence action"
   }
   if (mode === "tentative_diagnostic") {
-    return locale === "fr" ? "Diagnostic prudent" : "Tentative diagnostic"
+    return locale === "fr" ? "Etape diagnostique" : "Diagnostic next step"
   }
   if (mode === "service_request") {
     return locale === "fr" ? "Workflow planifie" : "Planned workflow"
   }
-  if (mode === "no_strong_match") {
-    return locale === "fr" ? "Sans match fort" : "No strong match"
+  if (mode === "no_strong_match" || mode === "llm_general_knowledge") {
+    return locale === "fr" ? "Repli guide par l'IA" : "AI-guided fallback"
   }
   return mode || (locale === "fr" ? "Inconnu" : "Unknown")
 }

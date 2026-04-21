@@ -130,3 +130,67 @@ def test_build_chat_session_prefers_structured_payload_metadata_for_problem_cont
     assert session.last_problem_list == ["PB-MOCK-01", "PB-MOCK-02", "PB-MOCK-03"]
     assert problem_id == "PB-MOCK-02"
     assert source == "list_position"
+
+
+def test_build_chat_session_restores_ticket_list_from_problem_linked_tickets_payload() -> None:
+    session = build_chat_session(
+        [
+            ChatMessage(role="user", content="show linked tickets"),
+            ChatMessage(
+                role="assistant",
+                content="2 linked tickets found.",
+                response_payload_type="problem_linked_tickets",
+                listed_entity_ids=["TW-MOCK-010", "TW-MOCK-011"],
+            ),
+        ]
+    )
+
+    ticket_id, source = resolve_list_reference("show me the second one", session)
+
+    assert session.last_ticket_list == ["TW-MOCK-010", "TW-MOCK-011"]
+    assert ticket_id == "TW-MOCK-011"
+    assert source == "list_position"
+
+
+def test_build_chat_session_restores_active_ticket_from_similar_tickets_payload() -> None:
+    session = build_chat_session(
+        [
+            ChatMessage(
+                role="assistant",
+                content="Similar tickets for TW-MOCK-025",
+                response_payload_type="similar_tickets",
+                entity_id="TW-MOCK-025",
+                listed_entity_ids=["TW-MOCK-010", "TW-MOCK-011"],
+            ),
+            ChatMessage(role="user", content="what should i do next for this ticket?"),
+        ]
+    )
+
+    ticket_id, source = resolve_contextual_reference("what should i do next for this ticket?", session)
+
+    assert session.last_ticket_id == "TW-MOCK-025"
+    assert ticket_id == "TW-MOCK-025"
+    assert source == "context"
+
+
+def test_resolve_comparison_targets_supports_ordinals_from_last_list() -> None:
+    session = build_chat_session(
+        [
+            ChatMessage(role="user", content="Show high SLA tickets"),
+            ChatMessage(
+                role="assistant",
+                content="Matching tickets: TW-MOCK-010 TW-MOCK-011 TW-MOCK-012",
+                response_payload_type="ticket_list",
+                inventory_kind="tickets",
+                listed_entity_ids=["TW-MOCK-010", "TW-MOCK-011", "TW-MOCK-012"],
+            ),
+        ]
+    )
+
+    current_ticket, previous_ticket = resolve_comparison_targets(
+        "compare the first one with the second one",
+        session,
+    )
+
+    assert current_ticket == "TW-MOCK-010"
+    assert previous_ticket == "TW-MOCK-011"

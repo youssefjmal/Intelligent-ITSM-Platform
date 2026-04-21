@@ -301,3 +301,32 @@ class TicketSimilarOut(BaseModel):
 class TicketSimilarResponse(BaseModel):
     ticket_id: str
     matches: list[TicketSimilarOut]
+
+
+class TicketKnowledgeDraftOut(BaseModel):
+    id: str | None = None
+    ticket_id: str
+    title: str
+    summary: str
+    symptoms: list[str] = Field(default_factory=list)
+    root_cause: str | None = None
+    workaround: str | None = None
+    resolution_steps: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    review_note: str
+    confidence: float
+    source: str
+    generated_at: dt.datetime
+    published_at: dt.datetime | None = None
+    jira_issue_key: str | None = None
+    confluence_url: str | None = None
+    status: str = "draft"
+
+
+class KnowledgeDraftPublishOut(BaseModel):
+    id: str
+    ticket_id: str
+    jira_issue_key: str | None
+    confluence_url: str | None = None
+    published_at: dt.datetime
+    kb_chunk_id: int | None = None

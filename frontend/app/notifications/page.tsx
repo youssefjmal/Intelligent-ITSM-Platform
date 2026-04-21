@@ -21,6 +21,8 @@ import {
 import { AlertCircle, Bell, CheckCircle2, Circle, Trash2 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { apiFetch } from "@/lib/api"
+import { useI18n } from "@/lib/i18n"
+import { toast } from "@/hooks/use-toast"
 
 const PAGE_SIZE = 10
 
@@ -36,23 +38,83 @@ function severityIcon(severity: string) {
   return <CheckCircle2 className="h-4 w-4 text-blue-500" />
 }
 
-function prettyTime(iso: string): string {
-  const ts = new Date(iso).getTime()
-  const diff = Math.max(1, Math.floor((Date.now() - ts) / 1000))
-  if (diff < 60) return `${diff}s ago`
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-  return `${Math.floor(diff / 86400)}d ago`
+function eventLabel(eventType: string | undefined, locale: "fr" | "en"): string {
+  const normalized = String(eventType || "").replace(/_/g, " ").trim()
+  if (!normalized) return locale === "fr" ? "mise a jour" : "update"
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1)
 }
 
-function eventLabel(eventType: string | undefined): string {
-  const normalized = String(eventType || "").replace(/_/g, " ").trim()
-  if (!normalized) return "update"
-  return normalized.charAt(0).toUpperCase() + normalized.slice(1)
+function prettyTime(iso: string, locale: "fr" | "en"): string {
+  const ts = new Date(iso).getTime()
+  const diff = Math.max(1, Math.floor((Date.now() - ts) / 1000))
+  if (diff < 60) return locale === "fr" ? `il y a ${diff}s` : `${diff}s ago`
+  if (diff < 3600) return locale === "fr" ? `il y a ${Math.floor(diff / 60)} min` : `${Math.floor(diff / 60)}m ago`
+  if (diff < 86400) return locale === "fr" ? `il y a ${Math.floor(diff / 3600)} h` : `${Math.floor(diff / 3600)}h ago`
+  return locale === "fr" ? `il y a ${Math.floor(diff / 86400)} j` : `${Math.floor(diff / 86400)}d ago`
 }
 
 export default function NotificationsPage() {
   const router = useRouter()
+  const { locale } = useI18n()
+  const isFr = locale === "fr"
+  const labels = {
+    pageCaption: isFr ? "Notifications" : "Notifications",
+    pageTitle: isFr ? "Centre de notifications" : "Notification Center",
+    pageDescription: isFr
+      ? "Suivez les escalades SLA, les incidents critiques et les alertes d'automatisation."
+      : "Track SLA escalations, critical incidents, and automation alerts.",
+    notificationsTitle: isFr ? "Flux de notifications" : "Notification feed",
+    filtersTitle: isFr ? "Filtres rapides" : "Quick filters",
+    unreadOnly: isFr ? "Non lues" : "Unread",
+    all: isFr ? "Toutes" : "All",
+    allSeverities: isFr ? "Toutes severites" : "All severities",
+    allSources: isFr ? "Toutes sources" : "All sources",
+    markAll: isFr ? "Tout marquer comme lu" : "Mark all read",
+    marking: isFr ? "Mise a jour..." : "Marking...",
+    loading: isFr ? "Chargement des notifications..." : "Loading notifications...",
+    empty: isFr ? "Aucune notification trouvee." : "No notifications found.",
+    unread: isFr ? "Non lue" : "Unread",
+    read: isFr ? "Lue" : "Read",
+    pinned: isFr ? "Epinglee" : "Pinned",
+    markRead: isFr ? "Marquer lue" : "Mark read",
+    markUnread: isFr ? "Marquer non lue" : "Mark unread",
+    previous: isFr ? "Precedent" : "Previous",
+    next: isFr ? "Suivant" : "Next",
+    openDetails: isFr ? "Cliquer pour ouvrir les details" : "Click to open details",
+    preferencesTitle: isFr ? "Preferences de notification" : "Notification preferences",
+    preferencesDescription: isFr
+      ? "Gardez les alertes visibles dans le centre de notifications et ajustez l'email, le digest et les categories sensibles."
+      : "Keep alerts visible in the notification center and tune email, digest, and sensitive categories.",
+    preferencesUnavailable: isFr ? "Preferences indisponibles." : "Preferences unavailable.",
+    emailEnabled: isFr ? "Email active" : "Email enabled",
+    emailDisabled: isFr ? "Email inactive" : "Email disabled",
+    digestEnabled: isFr ? "Digest actif" : "Digest enabled",
+    digestDisabled: isFr ? "Digest inactif" : "Digest disabled",
+    slaAlerts: isFr ? "Alertes SLA" : "SLA alerts",
+    assignmentAlerts: isFr ? "Alertes d'assignation" : "Assignment alerts",
+    commentAlerts: isFr ? "Alertes de commentaire" : "Comment alerts",
+    problemAlerts: isFr ? "Alertes probleme" : "Problem alerts",
+    aiAlerts: isFr ? "Alertes IA" : "AI alerts",
+    immediateSeverity: isFr ? "Email immediat" : "Immediate email",
+    digestFrequency: isFr ? "Digest" : "Digest",
+    critical: isFr ? "Critique" : "Critical",
+    high: isFr ? "Elevee" : "High",
+    warning: isFr ? "Avertissement" : "Warning",
+    info: isFr ? "Info" : "Info",
+    digestHourly: isFr ? "Toutes les heures" : "Hourly",
+    digestOff: isFr ? "Desactive" : "Off",
+    saveSuccess: isFr ? "Preferences mises a jour." : "Preferences updated.",
+    saveError: isFr ? "Impossible de mettre a jour les preferences." : "Unable to update preferences.",
+    actionError: isFr ? "Action indisponible pour cette notification." : "This notification action is unavailable.",
+    navigationError: isFr ? "Le statut de lecture sera resynchronise plus tard." : "Read status will resync later.",
+    deleteError: isFr ? "Impossible de supprimer cette notification." : "Unable to delete that notification.",
+    view: isFr ? "Voir" : "View",
+    dismiss: isFr ? "Ignorer" : "Dismiss",
+    approve: isFr ? "Approuver" : "Approve",
+    escalate: isFr ? "Escalader" : "Escalate",
+    reassign: isFr ? "Reassigner" : "Reassign",
+  } as const
+
   const [rows, setRows] = React.useState<NotificationItem[]>([])
   const [loading, setLoading] = React.useState(false)
   const [unreadOnly, setUnreadOnly] = React.useState(false)
@@ -115,13 +177,22 @@ export default function NotificationsPage() {
           sla_notifications_enabled: data.sla_notifications_enabled,
           problem_notifications_enabled: data.problem_notifications_enabled,
           ai_notifications_enabled: data.ai_notifications_enabled,
-        })
+        }),
       )
       .catch(() => setPrefs(null))
   }, [])
 
   const hasPrev = offset > 0
   const hasNext = rows.length === PAGE_SIZE
+
+  const actionLabel = (actionType: string | null | undefined): string => {
+    const normalized = String(actionType || "").toLowerCase()
+    if (normalized === "reassign") return labels.reassign
+    if (normalized === "approve") return labels.approve
+    if (normalized === "escalate") return labels.escalate
+    if (normalized === "dismiss") return labels.dismiss
+    return labels.view
+  }
 
   const onMark = async (item: NotificationItem, read: boolean) => {
     setBusyId(item.id)
@@ -143,6 +214,11 @@ export default function NotificationsPage() {
     try {
       await deleteNotification(id)
       setRows((prev) => prev.filter((n) => n.id !== id))
+    } catch {
+      toast({
+        title: labels.deleteError,
+        variant: "destructive",
+      })
     } finally {
       setBusyId(null)
     }
@@ -165,7 +241,10 @@ export default function NotificationsPage() {
         await markNotificationRead(item.id)
         setRows((prev) => prev.map((n) => (n.id === item.id ? { ...n, read_at: new Date().toISOString() } : n)))
       } catch {
-        // keep navigation smooth even if mark-read fails
+        toast({
+          title: labels.navigationError,
+          variant: "destructive",
+        })
       }
     }
     router.push(item.link)
@@ -188,30 +267,28 @@ export default function NotificationsPage() {
     }
     const ticketId = ticketIdFromNotification(item)
     if (!ticketId) return
-    if (actionType === "reassign") {
-      const assignee = String(item.action_payload?.assignee || item.metadata_json?.assignee || "").trim()
-      if (!assignee) return
-      await apiFetch(`/tickets/${ticketId}/triage`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          assignee,
-          comment: "Applied from SLA high-risk notification action.",
-        }),
+    try {
+      if (actionType === "reassign") {
+        const assignee = String(item.action_payload?.assignee || item.metadata_json?.assignee || "").trim()
+        if (!assignee) return
+        await apiFetch(`/tickets/${ticketId}/triage`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            assignee,
+            comment: "Applied from SLA high-risk notification action.",
+          }),
+        })
+      } else {
+        const endpoint = actionType === "approve" ? `/tickets/${ticketId}/approve` : `/tickets/${ticketId}/escalate`
+        await apiFetch(endpoint, { method: "PATCH" })
+      }
+      await onMark(item, true)
+    } catch {
+      toast({
+        title: labels.actionError,
+        variant: "destructive",
       })
-    } else {
-      const endpoint = actionType === "approve" ? `/tickets/${ticketId}/approve` : `/tickets/${ticketId}/escalate`
-      await apiFetch(endpoint, { method: "PATCH" })
     }
-    await onMark(item, true)
-  }
-
-  const actionLabel = (actionType: string | null | undefined): string => {
-    const normalized = String(actionType || "").toLowerCase()
-    if (normalized === "reassign") return "Reassign"
-    if (normalized === "approve") return "Approve"
-    if (normalized === "escalate") return "Escalate"
-    if (normalized === "dismiss") return "Dismiss"
-    return normalized || "Action"
   }
 
   const updatePrefs = async (next: Partial<NonNullable<typeof prefs>>) => {
@@ -246,6 +323,12 @@ export default function NotificationsPage() {
         problem_notifications_enabled: updated.problem_notifications_enabled,
         ai_notifications_enabled: updated.ai_notifications_enabled,
       })
+      toast({ title: labels.saveSuccess })
+    } catch {
+      toast({
+        title: labels.saveError,
+        variant: "destructive",
+      })
     } finally {
       setPrefsBusy(false)
     }
@@ -255,20 +338,23 @@ export default function NotificationsPage() {
     <AppShell>
       <div className="page-shell fade-slide-in">
         <div className="page-hero">
-          <p className="section-caption">Notifications</p>
-          <h2 className="mt-2 text-3xl font-bold text-foreground sm:text-4xl">Notification Center</h2>
+          <p className="section-caption">{labels.pageCaption}</p>
+          <h2 className="mt-2 text-3xl font-bold text-foreground sm:text-4xl">{labels.pageTitle}</h2>
           <p className="mt-2 max-w-3xl text-sm text-muted-foreground sm:text-base">
-            Track SLA escalations, critical incidents, and automation alerts.
+            {labels.pageDescription}
           </p>
         </div>
 
         <Card className="surface-card">
           <CardHeader className="pb-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <CardTitle className="flex items-center gap-2 text-base font-semibold">
-                <Bell className="h-4 w-4 text-primary" />
-                Notifications
-              </CardTitle>
+              <div className="space-y-1">
+                <CardTitle className="flex items-center gap-2 text-base font-semibold">
+                  <Bell className="h-4 w-4 text-primary" />
+                  {labels.notificationsTitle}
+                </CardTitle>
+                <p className="text-xs text-muted-foreground">{labels.filtersTitle}</p>
+              </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Select
                   value={unreadOnly ? "unread" : "all"}
@@ -281,8 +367,8 @@ export default function NotificationsPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    <SelectItem value="unread">Unread</SelectItem>
+                    <SelectItem value="all">{labels.all}</SelectItem>
+                    <SelectItem value="unread">{labels.unreadOnly}</SelectItem>
                   </SelectContent>
                 </Select>
 
@@ -293,12 +379,12 @@ export default function NotificationsPage() {
                     setOffset(0)
                   }}
                 >
-                  <SelectTrigger className="h-8 w-[130px] text-xs">
+                  <SelectTrigger className="h-8 w-[140px] text-xs">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All severities</SelectItem>
-                    <SelectItem value="critical">Critical</SelectItem>
+                    <SelectItem value="all">{labels.allSeverities}</SelectItem>
+                    <SelectItem value="critical">{labels.critical}</SelectItem>
                   </SelectContent>
                 </Select>
 
@@ -309,32 +395,32 @@ export default function NotificationsPage() {
                     setOffset(0)
                   }}
                 >
-                  <SelectTrigger className="h-8 w-[140px] text-xs">
+                  <SelectTrigger className="h-8 w-[150px] text-xs">
                     <SelectValue />
                   </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All sources</SelectItem>
-                      <SelectItem value="n8n">n8n</SelectItem>
-                      <SelectItem value="ticket">Ticket</SelectItem>
-                      <SelectItem value="problem">Problem</SelectItem>
-                      <SelectItem value="ai">AI</SelectItem>
-                      <SelectItem value="system">System</SelectItem>
-                      <SelectItem value="user">User</SelectItem>
-                      <SelectItem value="sla">SLA</SelectItem>
+                  <SelectContent>
+                    <SelectItem value="all">{labels.allSources}</SelectItem>
+                    <SelectItem value="n8n">n8n</SelectItem>
+                    <SelectItem value="ticket">Ticket</SelectItem>
+                    <SelectItem value="problem">Problem</SelectItem>
+                    <SelectItem value="ai">AI</SelectItem>
+                    <SelectItem value="system">System</SelectItem>
+                    <SelectItem value="user">User</SelectItem>
+                    <SelectItem value="sla">SLA</SelectItem>
                   </SelectContent>
                 </Select>
 
                 <Button variant="outline" size="sm" className="h-8 text-xs" onClick={onMarkAllRead} disabled={markAllBusy}>
-                  {markAllBusy ? "Marking..." : "Mark all read"}
+                  {markAllBusy ? labels.marking : labels.markAll}
                 </Button>
               </div>
             </div>
           </CardHeader>
           <CardContent>
             {loading ? (
-              <div className="py-8 text-center text-sm text-muted-foreground">Loading notifications...</div>
+              <div className="py-8 text-center text-sm text-muted-foreground">{labels.loading}</div>
             ) : rows.length === 0 ? (
-              <div className="py-12 text-center text-sm text-muted-foreground">No notifications found.</div>
+              <div className="py-12 text-center text-sm text-muted-foreground">{labels.empty}</div>
             ) : (
               <div className="space-y-2">
                 {rows.map((item) => {
@@ -344,11 +430,7 @@ export default function NotificationsPage() {
                     <div
                       key={item.id}
                       className={`rounded-lg border border-border/60 px-3 py-2 ${isUnread ? "bg-[var(--color-background-secondary)]" : "bg-[var(--color-background-primary)]"} ${item.severity === "critical" ? "border-l-[4px] border-l-[#E24B4A]" : item.severity === "warning" || item.severity === "high" ? "border-l-[4px] border-l-[#EF9F27]" : item.severity === "info" ? "border-l-[4px] border-l-[#378ADD]" : ""} ${isLink ? "cursor-pointer transition-colors hover:border-primary/40 hover:bg-accent/30" : ""}`}
-                      title={
-                        isLink
-                          ? `${item.title}${item.body ? `\n${item.body}` : ""}\nSeverité: ${item.severity} | Source: ${item.source || "system"}\nHover for preview — click to open details`
-                          : undefined
-                      }
+                      title={isLink ? `${item.title}${item.body ? `\n${item.body}` : ""}\n${labels.openDetails}` : undefined}
                       onClick={() => {
                         if (isLink) {
                           openNotificationDetail(item).catch(() => {})
@@ -374,12 +456,11 @@ export default function NotificationsPage() {
                           {item.body ? <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{item.body}</p> : null}
                           <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                             <Badge className={`border text-[10px] ${severityBadgeClass(item.severity)}`}>{item.severity}</Badge>
-                            <Badge variant="outline" className="text-[10px]">{eventLabel(item.event_type)}</Badge>
+                            <Badge variant="outline" className="text-[10px]">{eventLabel(item.event_type, isFr ? "fr" : "en")}</Badge>
                             {item.source ? <Badge variant="outline" className="text-[10px]">{item.source}</Badge> : null}
-                            {item.pinned_until_read && !item.read_at ? <Badge variant="outline" className="text-[10px]">Pinned</Badge> : null}
-                            <span>{prettyTime(item.created_at)}</span>
-                            <span>{isUnread ? "Unread" : "Read"}</span>
-                            {/* tooltip text moved to title attribute on container */}
+                            {item.pinned_until_read && !item.read_at ? <Badge variant="outline" className="text-[10px]">{labels.pinned}</Badge> : null}
+                            <span>{prettyTime(item.created_at, isFr ? "fr" : "en")}</span>
+                            <span>{isUnread ? labels.unread : labels.read}</span>
                           </div>
                         </div>
                         <div className="flex items-center gap-1">
@@ -408,7 +489,7 @@ export default function NotificationsPage() {
                                 onMark(item, isUnread).catch(() => {})
                               }}
                             >
-                              {isUnread ? "Mark read" : "Mark unread"}
+                              {isUnread ? labels.markRead : labels.markUnread}
                             </Button>
                           ) : null}
                           <Button
@@ -427,24 +508,22 @@ export default function NotificationsPage() {
                       </div>
                     </div>
                   )
-                  return (
-                    isLink ? (
-                      <HoverCard key={item.id} openDelay={90} closeDelay={90}>
-                        <HoverCardTrigger asChild>{rowContent}</HoverCardTrigger>
-                        <HoverCardContent className="w-96 space-y-2 p-3">
-                          <p className="text-xs font-semibold">{item.title}</p>
-                          {item.body ? <p className="text-xs text-muted-foreground">{item.body}</p> : null}
-                          <div className="text-[11px] text-muted-foreground">
-                            <p>Event: {eventLabel(item.event_type)}</p>
-                            <p>Severity: {item.severity}</p>
-                            <p>Source: {item.source || "system"}</p>
-                            <p>Click to open details</p>
-                          </div>
-                        </HoverCardContent>
-                      </HoverCard>
-                    ) : (
-                      rowContent
-                    )
+                  return isLink ? (
+                    <HoverCard key={item.id} openDelay={90} closeDelay={90}>
+                      <HoverCardTrigger asChild>{rowContent}</HoverCardTrigger>
+                      <HoverCardContent className="w-96 space-y-2 p-3">
+                        <p className="text-xs font-semibold">{item.title}</p>
+                        {item.body ? <p className="text-xs text-muted-foreground">{item.body}</p> : null}
+                        <div className="text-[11px] text-muted-foreground">
+                          <p>{eventLabel(item.event_type, isFr ? "fr" : "en")}</p>
+                          <p>{item.severity}</p>
+                          <p>{item.source || "system"}</p>
+                          <p>{labels.openDetails}</p>
+                        </div>
+                      </HoverCardContent>
+                    </HoverCard>
+                  ) : (
+                    rowContent
                   )
                 })}
               </div>
@@ -458,7 +537,7 @@ export default function NotificationsPage() {
                 onClick={() => setOffset((prev) => Math.max(0, prev - PAGE_SIZE))}
                 disabled={!hasPrev}
               >
-                Previous
+                {labels.previous}
               </Button>
               <Button
                 variant="outline"
@@ -467,7 +546,7 @@ export default function NotificationsPage() {
                 onClick={() => setOffset((prev) => prev + PAGE_SIZE)}
                 disabled={!hasNext}
               >
-                Next
+                {labels.next}
               </Button>
             </div>
           </CardContent>
@@ -475,88 +554,113 @@ export default function NotificationsPage() {
 
         <Card className="surface-card">
           <CardHeader className="pb-3">
-            <CardTitle className="text-base font-semibold">Email Notification Preferences</CardTitle>
+            <CardTitle className="text-base font-semibold">{labels.preferencesTitle}</CardTitle>
+            <p className="text-sm text-muted-foreground">{labels.preferencesDescription}</p>
           </CardHeader>
           <CardContent>
             {!prefs ? (
-              <p className="text-sm text-muted-foreground">Preferences unavailable.</p>
+              <p className="text-sm text-muted-foreground">{labels.preferencesUnavailable}</p>
             ) : (
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  variant={prefs.email_enabled ? "default" : "outline"}
-                  size="sm"
-                  className="h-8 text-xs"
-                  disabled={prefsBusy}
-                  onClick={() => updatePrefs({ email_enabled: !prefs.email_enabled }).catch(() => {})}
-                >
-                  {prefs.email_enabled ? "Email enabled" : "Email disabled"}
-                </Button>
-                <Select
-                  value={prefs.immediate_email_min_severity}
-                  onValueChange={(v) =>
-                    updatePrefs({ immediate_email_min_severity: v as typeof prefs.immediate_email_min_severity }).catch(() => {})
-                  }
-                  disabled={prefsBusy}
-                >
-                  <SelectTrigger className="h-8 w-[170px] text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="critical">Immediate email: Critical</SelectItem>
-                    <SelectItem value="high">Immediate email: High</SelectItem>
-                    <SelectItem value="warning">Immediate email: Warning</SelectItem>
-                    <SelectItem value="info">Immediate email: Info</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Select
-                  value={prefs.digest_frequency}
-                  onValueChange={(v) => updatePrefs({ digest_frequency: v as typeof prefs.digest_frequency }).catch(() => {})}
-                  disabled={prefsBusy}
-                >
-                  <SelectTrigger className="h-8 w-[170px] text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="hourly">Digest: Hourly</SelectItem>
-                    <SelectItem value="none">Digest: Off</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Button
-                  variant={prefs.digest_enabled ? "default" : "outline"}
-                  size="sm"
-                  className="h-8 text-xs"
-                  disabled={prefsBusy}
-                  onClick={() => updatePrefs({ digest_enabled: !prefs.digest_enabled }).catch(() => {})}
-                >
-                  {prefs.digest_enabled ? "Digest enabled" : "Digest disabled"}
-                </Button>
-                <Button
-                  variant={prefs.sla_notifications_enabled ? "default" : "outline"}
-                  size="sm"
-                  className="h-8 text-xs"
-                  disabled={prefsBusy}
-                  onClick={() => updatePrefs({ sla_notifications_enabled: !prefs.sla_notifications_enabled }).catch(() => {})}
-                >
-                  SLA alerts
-                </Button>
-                <Button
-                  variant={prefs.ticket_assignment_enabled ? "default" : "outline"}
-                  size="sm"
-                  className="h-8 text-xs"
-                  disabled={prefsBusy}
-                  onClick={() => updatePrefs({ ticket_assignment_enabled: !prefs.ticket_assignment_enabled }).catch(() => {})}
-                >
-                  Assignment alerts
-                </Button>
-                <Button
-                  variant={prefs.ticket_comment_enabled ? "default" : "outline"}
-                  size="sm"
-                  className="h-8 text-xs"
-                  disabled={prefsBusy}
-                  onClick={() => updatePrefs({ ticket_comment_enabled: !prefs.ticket_comment_enabled }).catch(() => {})}
-                >
-                  Comment alerts
-                </Button>
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant={prefs.email_enabled ? "default" : "outline"}
+                    size="sm"
+                    className="h-8 text-xs"
+                    disabled={prefsBusy}
+                    onClick={() => updatePrefs({ email_enabled: !prefs.email_enabled }).catch(() => {})}
+                  >
+                    {prefs.email_enabled ? labels.emailEnabled : labels.emailDisabled}
+                  </Button>
+                  <Button
+                    variant={prefs.digest_enabled ? "default" : "outline"}
+                    size="sm"
+                    className="h-8 text-xs"
+                    disabled={prefsBusy}
+                    onClick={() => updatePrefs({ digest_enabled: !prefs.digest_enabled }).catch(() => {})}
+                  >
+                    {prefs.digest_enabled ? labels.digestEnabled : labels.digestDisabled}
+                  </Button>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Select
+                    value={prefs.immediate_email_min_severity}
+                    onValueChange={(v) =>
+                      updatePrefs({ immediate_email_min_severity: v as typeof prefs.immediate_email_min_severity }).catch(() => {})
+                    }
+                    disabled={prefsBusy}
+                  >
+                    <SelectTrigger className="h-8 w-[190px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="critical">{labels.immediateSeverity}: {labels.critical}</SelectItem>
+                      <SelectItem value="high">{labels.immediateSeverity}: {labels.high}</SelectItem>
+                      <SelectItem value="warning">{labels.immediateSeverity}: {labels.warning}</SelectItem>
+                      <SelectItem value="info">{labels.immediateSeverity}: {labels.info}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={prefs.digest_frequency}
+                    onValueChange={(v) => updatePrefs({ digest_frequency: v as typeof prefs.digest_frequency }).catch(() => {})}
+                    disabled={prefsBusy}
+                  >
+                    <SelectTrigger className="h-8 w-[170px] text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="hourly">{labels.digestFrequency}: {labels.digestHourly}</SelectItem>
+                      <SelectItem value="none">{labels.digestFrequency}: {labels.digestOff}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant={prefs.sla_notifications_enabled ? "default" : "outline"}
+                    size="sm"
+                    className="h-8 text-xs"
+                    disabled={prefsBusy}
+                    onClick={() => updatePrefs({ sla_notifications_enabled: !prefs.sla_notifications_enabled }).catch(() => {})}
+                  >
+                    {labels.slaAlerts}
+                  </Button>
+                  <Button
+                    variant={prefs.ticket_assignment_enabled ? "default" : "outline"}
+                    size="sm"
+                    className="h-8 text-xs"
+                    disabled={prefsBusy}
+                    onClick={() => updatePrefs({ ticket_assignment_enabled: !prefs.ticket_assignment_enabled }).catch(() => {})}
+                  >
+                    {labels.assignmentAlerts}
+                  </Button>
+                  <Button
+                    variant={prefs.ticket_comment_enabled ? "default" : "outline"}
+                    size="sm"
+                    className="h-8 text-xs"
+                    disabled={prefsBusy}
+                    onClick={() => updatePrefs({ ticket_comment_enabled: !prefs.ticket_comment_enabled }).catch(() => {})}
+                  >
+                    {labels.commentAlerts}
+                  </Button>
+                  <Button
+                    variant={prefs.problem_notifications_enabled ? "default" : "outline"}
+                    size="sm"
+                    className="h-8 text-xs"
+                    disabled={prefsBusy}
+                    onClick={() => updatePrefs({ problem_notifications_enabled: !prefs.problem_notifications_enabled }).catch(() => {})}
+                  >
+                    {labels.problemAlerts}
+                  </Button>
+                  <Button
+                    variant={prefs.ai_notifications_enabled ? "default" : "outline"}
+                    size="sm"
+                    className="h-8 text-xs"
+                    disabled={prefsBusy}
+                    onClick={() => updatePrefs({ ai_notifications_enabled: !prefs.ai_notifications_enabled }).catch(() => {})}
+                  >
+                    {labels.aiAlerts}
+                  </Button>
+                </div>
               </div>
             )}
           </CardContent>
@@ -565,4 +669,3 @@ export default function NotificationsPage() {
     </AppShell>
   )
 }
-

@@ -46,6 +46,23 @@ def create_app() -> FastAPI:
             import logging
             logging.getLogger(__name__).warning("Audit purge failed on startup: %s", _purge_exc)
         await start_jira_auto_reconcile()
+        # Pre-warm off-topic anchor embeddings so the first chat request
+        # doesn't pay the full cold-cache penalty (8–22 s for 28 Ollama calls).
+        try:
+            import asyncio
+            from app.services.ai.conversation_policy import ITSM_ANCHOR_PHRASES
+            from app.services.embeddings import compute_embedding
+
+            async def _prewarm():
+                for phrase in ITSM_ANCHOR_PHRASES:
+                    try:
+                        await asyncio.to_thread(compute_embedding, phrase)
+                    except Exception:
+                        break  # Ollama not ready yet; skip silently
+
+            asyncio.ensure_future(_prewarm())
+        except Exception as _pw_exc:  # noqa: BLE001
+            logger.debug("Anchor pre-warm skipped: %s", _pw_exc)
         # Start proactive SLA monitor background task
         try:
             from app.services.sla.sla_monitor import start_sla_monitor, stop_sla_monitor

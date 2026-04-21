@@ -340,10 +340,16 @@ def build_chat_session(messages: Any, *, max_recent: int = MAX_RECENT_CHAT_TURNS
             _record_active_ticket(session, payload_entity_id)
         elif payload_entity_kind == "problem" and payload_entity_id:
             session.last_problem_id = payload_entity_id
+        elif payload_type == "similar_tickets" and payload_entity_id:
+            _record_active_ticket(session, payload_entity_id)
         if payload_inventory_kind == "tickets" and payload_listed_entity_ids:
             session.last_ticket_list = payload_listed_entity_ids[:8]
         elif payload_inventory_kind == "problems" and payload_listed_entity_ids:
             session.last_problem_list = payload_listed_entity_ids[:8]
+        elif payload_type == "problem_linked_tickets" and payload_listed_entity_ids:
+            session.last_ticket_list = payload_listed_entity_ids[:8]
+        elif payload_type == "similar_tickets" and payload_listed_entity_ids:
+            session.last_ticket_list = payload_listed_entity_ids[:8]
         topic = _detect_topic(text)
         if topic:
             session.active_topic = topic
@@ -422,6 +428,16 @@ def resolve_comparison_targets(text: str, session: ChatSession) -> tuple[str | N
     explicit_ids = _extract_unique_ticket_ids(text)
     if len(explicit_ids) >= 2:
         return explicit_ids[0], explicit_ids[1]
+
+    if session.last_ticket_list:
+        matched_positions: list[int] = []
+        for index, hints in _ORDINAL_HINTS.items():
+            if any(hint in normalized for hint in hints):
+                matched_positions.append(index)
+        matched_positions = [index for index in matched_positions if index < len(session.last_ticket_list)]
+        if len(matched_positions) >= 2:
+            first_idx, second_idx = matched_positions[:2]
+            return session.last_ticket_list[first_idx], session.last_ticket_list[second_idx]
 
     previous_ticket = _previous_ticket_id(session)
     current_ticket = explicit_ids[0] if explicit_ids else session.last_ticket_id

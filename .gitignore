@@ -52,8 +52,9 @@ docs/n8n/.env
 .DS_Store
 Thumbs.db
 
-# PFE report — local only, never push
+# PFE report and all documentation — local only, never push
 rapport/
+docs/*.md
 
 # Personal portfolio — separate project, not part of this repo
 portfolio/
